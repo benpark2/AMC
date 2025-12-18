@@ -27,10 +27,7 @@ jobs:
         run: |
           mkdir -p build docs
           papermill notebooks/report.ipynb build/report.executed.ipynb
-          jupyter nbconvert --to html build/report.executed.ipynb \
-            --output index.html \
-            --output-dir docs \
-            --embed-images
+          jupyter nbconvert --to html build/report.executed.ipynb --output index.html --output-dir docs --embed-images
 
           # Always create/update a stamp file so there’s always something to commit
           date -u +"%Y-%m-%dT%H:%M:%SZ" > docs/last_run_utc.txt
