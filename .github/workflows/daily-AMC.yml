@@ -27,8 +27,7 @@ jobs:
         run: |
           mkdir -p build docs
           papermill notebooks/AMC_Scraper_5.ipynb build/report.executed.ipynb
-          jupyter nbconvert --to html build/report.executed.ipynb --output docs/index.html --embed-images
-          date -u > docs/last_run_utc.txt
+          jupyter nbconvert --to html build/report.executed.ipynb --output index.html --output-dir docs --embed-images
 
       - name: Commit and push updated report
         run: |
