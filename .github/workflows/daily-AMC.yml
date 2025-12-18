@@ -27,7 +27,7 @@ jobs:
         run: |
           mkdir -p build docs
           papermill notebooks/AMC_Scraper_5.ipynb build/report.executed.ipynb
-          jupyter nbconvert --to html build/report.executed.ipynb --output index.html --output-dir docs --embed-images --no-input --HTMLExporter.exclude_output_prompt=True
+          jupyter nbconvert --to html build/report.executed.ipynb --template lab --output index.html --output-dir docs --embed-images --no-input --HTMLExporter.exclude_output_prompt=True
 
           # Always create/update a stamp file so there’s always something to commit
           date -u +"%Y-%m-%dT%H:%M:%SZ" > docs/last_run_utc.txt
@@ -35,6 +35,58 @@ jobs:
           # Optional sanity checks (helps debugging)
           test -f docs/index.html
           ls -la docs
+
+      - name: Make HTML mobile-friendly
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path("docs/index.html")
+          html = p.read_text(encoding="utf-8")
+
+          viewport = '<meta name="viewport" content="width=device-width, initial-scale=1" />\n'
+
+          css = """
+<style>
+/* --- Mobile fixes (added by CI) --- */
+img, svg, video, canvas { max-width: 100%; height: auto; }
+
+@media (max-width: 900px) {
+  /* Make wide notebook outputs scroll instead of getting clipped */
+  .jp-OutputArea-child { display: block !important; overflow-x: auto !important; width: 100% !important; }
+  .jp-RenderedHTMLCommon, .jp-OutputArea-output,
+  .output_area, .output_subarea {
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch;
+    max-width: 100% !important;
+  }
+
+  table, table.dataframe {
+    display: block;
+    overflow-x: auto;
+    max-width: 100%;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  pre {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+</style>
+"""
+
+          insert = ""
+          if 'name="viewport"' not in html:
+            insert += viewport
+          if "Mobile fixes (added by CI)" not in html:
+            insert += css
+
+          if insert and "</head>" in html:
+            html = html.replace("</head>", insert + "\n</head>", 1)
+            p.write_text(html, encoding="utf-8")
+          PY
+
 
       - name: Commit and push updated report
         run: |
