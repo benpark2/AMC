@@ -37,6 +37,7 @@ jobs:
           ls -la docs
 
       - name: Make HTML mobile-friendly
+        shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -46,45 +47,39 @@ jobs:
 
           viewport = '<meta name="viewport" content="width=device-width, initial-scale=1" />\n'
 
-          css = """
-<style>
-/* --- Mobile fixes (added by CI) --- */
-img, svg, video, canvas { max-width: 100%; height: auto; }
-
-@media (max-width: 900px) {
-  /* Make wide notebook outputs scroll instead of getting clipped */
-  .jp-OutputArea-child { display: block !important; overflow-x: auto !important; width: 100% !important; }
-  .jp-RenderedHTMLCommon, .jp-OutputArea-output,
-  .output_area, .output_subarea {
-    overflow-x: auto !important;
-    -webkit-overflow-scrolling: touch;
-    max-width: 100% !important;
-  }
-
-  table, table.dataframe {
-    display: block;
-    overflow-x: auto;
-    max-width: 100%;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  pre {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-}
-</style>
-"""
+          css = r"""<style>
+          /* Mobile fixes (added by CI) */
+          img, svg, video, canvas { max-width: 100%; height: auto; }
+          @media (max-width: 900px) {
+            .jp-OutputArea-child { display: block !important; overflow-x: auto !important; width: 100% !important; }
+            .jp-RenderedHTMLCommon, .jp-OutputArea-output, .output_area, .output_subarea {
+              overflow-x: auto !important;
+              -webkit-overflow-scrolling: touch;
+              max-width: 100% !important;
+            }
+            table, table.dataframe {
+              display: block;
+              overflow-x: auto;
+              max-width: 100%;
+              -webkit-overflow-scrolling: touch;
+            }
+            pre {
+              overflow-x: auto;
+              -webkit-overflow-scrolling: touch;
+            }
+          }
+          </style>
+          """
 
           insert = ""
           if 'name="viewport"' not in html:
-            insert += viewport
+              insert += viewport
           if "Mobile fixes (added by CI)" not in html:
-            insert += css
+              insert += css + "\n"
 
           if insert and "</head>" in html:
-            html = html.replace("</head>", insert + "\n</head>", 1)
-            p.write_text(html, encoding="utf-8")
+              html = html.replace("</head>", insert + "</head>", 1)
+              p.write_text(html, encoding="utf-8")
           PY
 
 
