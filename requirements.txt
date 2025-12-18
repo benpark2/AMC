@@ -1,3 +1,7 @@
 papermill
 nbconvert
 jupyter
+requests
+beautifulsoup4
+pandas
+rapidfuzz
