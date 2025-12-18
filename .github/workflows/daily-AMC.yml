@@ -26,13 +26,27 @@ jobs:
       - name: Execute notebook and export HTML
         run: |
           mkdir -p build docs
-          papermill notebooks/AMC_Scraper_5.ipynb build/report.executed.ipynb
-          jupyter nbconvert --to html build/report.executed.ipynb --output index.html --output-dir docs --embed-images
+          papermill notebooks/report.ipynb build/report.executed.ipynb
+          jupyter nbconvert --to html build/report.executed.ipynb \
+            --output index.html \
+            --output-dir docs \
+            --embed-images
+
+          # Always create/update a stamp file so there’s always something to commit
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > docs/last_run_utc.txt
+
+          # Optional sanity checks (helps debugging)
+          test -f docs/index.html
+          ls -la docs
 
       - name: Commit and push updated report
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/index.html docs/last_run_utc.txt
+
+          # Stage the whole docs folder (won’t fail if a specific file name changes)
+          git add -A docs
+
           git commit -m "Daily report refresh" || exit 0
           git push
+
