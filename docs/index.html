@@ -7508,10 +7508,33 @@ a.anchor-link {
     white-space: normal;
   }
 </style>
-<!-- End of mermaid configuration --></head>
+<!-- End of mermaid configuration --><style>
+/* Mobile fixes (added by CI) */
+img, svg, video, canvas { max-width: 100%; height: auto; }
+@media (max-width: 900px) {
+  .jp-OutputArea-child { display: block !important; overflow-x: auto !important; width: 100% !important; }
+  .jp-RenderedHTMLCommon, .jp-OutputArea-output, .output_area, .output_subarea {
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch;
+    max-width: 100% !important;
+  }
+  table, table.dataframe {
+    display: block;
+    overflow-x: auto;
+    max-width: 100%;
+    -webkit-overflow-scrolling: touch;
+  }
+  pre {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+</style>
+
+</head>
 <body class="jp-Notebook" data-jp-theme-light="true" data-jp-theme-name="JupyterLab Light">
-<main><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs jp-mod-noInput" id="cell-id=066202c4">
-</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noInput" id="cell-id=8f10afce">
+<main><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs jp-mod-noInput" id="cell-id=361bcfb3">
+</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noInput" id="cell-id=6a50186b">
 <div class="jp-Cell-outputWrapper">
 <div class="jp-Collapser jp-OutputCollapser jp-Cell-outputCollapser">
 </div>
