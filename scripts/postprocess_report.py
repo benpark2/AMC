@@ -23,7 +23,7 @@ PLANNER_HTML = """
     Enter <b>2–4</b> movie numbers (from the <b>#</b> column), then click <b>Suggest plan</b>.
   </p>
   <div class="movie-planner-controls">
-    <input id="movie-planner-input" type="text" inputmode="numeric" placeholder="e.g., 3, 4, 5" />
+    <input id="movie-planner-input" type="text" placeholder="e.g., 3, 4, 5" />
     <button id="movie-planner-btn" type="button">Suggest plan</button>
   </div>
   <div id="movie-planner-output" class="movie-planner-output"></div>
@@ -32,6 +32,28 @@ PLANNER_HTML = """
 
 CSS = r"""
 /* Planner + mobile fixes (injected by CI) */
+
+/* Force Watch Planner to use system-ui (regular + bold) */
+#movie-planner,
+#movie-planner * {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+               Arial, "Noto Sans", "Liberation Sans", sans-serif !important;
+}
+
+#movie-planner b,
+#movie-planner strong,
+#movie-planner h2,
+#movie-planner h3 {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+               Arial, "Noto Sans", "Liberation Sans", sans-serif !important;
+  font-weight: 700 !important;
+}
+
+/* (Optional) ensure normal text is regular weight */
+#movie-planner {
+  font-weight: 400;
+}
+
 .movie-planner{
   max-width: 980px; margin: 16px auto; padding: 14px 16px;
   border: 1px solid rgba(0,0,0,.12); border-radius: 12px;
