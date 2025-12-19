@@ -31,88 +31,192 @@ PLANNER_HTML = """
 """
 
 CSS = r"""
-/* Global system-ui font override (injected by CI) */
+/* ========== Base variables / system font ========== */
 :root{
-  --jp-ui-font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
-                       Arial, "Noto Sans", "Liberation Sans", sans-serif;
-  --jp-content-font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
-                            Arial, "Noto Sans", "Liberation Sans", sans-serif;
-  --jp-code-font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
-                         Arial, "Noto Sans", "Liberation Sans", sans-serif;
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+             Arial, "Noto Sans", "Liberation Sans", sans-serif;
+  --font-code: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+               Arial, "Noto Sans", "Liberation Sans", sans-serif;
+
+  --page-bg: #f6f7fb;
+  --card-bg: #ffffff;
+  --text: #0f172a;
+  --muted: rgba(15,23,42,.72);
+
+  /* One shared border color for BOTH inner gridlines and rounded outer border */
+  --grid: rgba(15,23,42,0.22);
+  --grid-soft: rgba(15,23,42,0.12);
+
+  --shadow: 0 12px 30px rgba(15,23,42,0.08);
 }
 
-/* Most notebook text */
+/* JupyterLab font vars (nbconvert templates use these) */
+:root{
+  --jp-ui-font-family: var(--font-ui);
+  --jp-content-font-family: var(--font-ui);
+  --jp-code-font-family: var(--font-code);
+}
+
+/* Global font enforcement (kills Consolas/monospace) */
 html, body,
 .jp-Notebook, .jp-RenderedHTMLCommon, .jp-RenderedMarkdown, .jp-RenderedText,
-.jp-OutputArea-output, .jp-Cell, .jp-OutputArea, .jp-OutputPrompt, .jp-InputPrompt {
-  font-family: var(--jp-ui-font-family) !important;
+.jp-OutputArea-output, .jp-Cell, .jp-OutputArea, .jp-OutputPrompt, .jp-InputPrompt,
+table, th, td, input, button, select, textarea {
+  font-family: var(--font-ui) !important;
 }
 
-/* Force code-ish things (often Consolas/monospace) to system-ui too */
 pre, code, kbd, samp, tt,
 .jp-RenderedText pre, .jp-RenderedText code,
 .jp-RenderedHTMLCommon pre, .jp-RenderedHTMLCommon code {
-  font-family: var(--jp-code-font-family) !important;
+  font-family: var(--font-code) !important;
 }
 
-/* (Optional but helps if some elements set a different font explicitly) */
-table, th, td, input, button, select, textarea {
-  font-family: var(--jp-ui-font-family) !important;
+/* Generated timestamp */
+.report-generated{
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0 0 12px 0;
 }
 
-/* Make table show clear borders/gridlines */
-table, table.dataframe {
-  border-collapse: collapse !important;
-  border-spacing: 0 !important;
+/* ========== Page chrome ========== */
+body{
+  margin: 0 !important;
+  background: var(--page-bg) !important;
+  color: var(--text) !important;
+  line-height: 1.55 !important;
 }
 
-table th, table td,
-table.dataframe th, table.dataframe td {
-  border: 1px solid rgba(0,0,0,0.35) !important;
-  padding: 8px 10px !important;
-  vertical-align: top !important;
+/* Primary content card: nbconvert lab uses <main> */
+main{
+  max-width: 1100px;
+  margin: 24px auto !important;
+  padding: 22px !important;
+  background: var(--card-bg) !important;
+  border-radius: 18px !important;
+  box-shadow: var(--shadow) !important;
 }
 
-/* ---------- Table card styling ---------- */
+/* Fallback for other templates */
+.jp-NotebookPanel-notebook,
+#notebook-container{
+  max-width: 1100px;
+  margin: 24px auto !important;
+  padding: 22px !important;
+  background: var(--card-bg) !important;
+  border-radius: 18px !important;
+  box-shadow: var(--shadow) !important;
+}
+
+/* If fallback containers are inside <main>, neutralize them to avoid double cards */
+main .jp-NotebookPanel-notebook,
+main #notebook-container{
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+/* Notebook typography ONLY inside report content (not the planner) */
+main h1, main h2, main h3,
+.jp-NotebookPanel-notebook h1, .jp-NotebookPanel-notebook h2, .jp-NotebookPanel-notebook h3,
+#notebook-container h1, #notebook-container h2, #notebook-container h3{
+  letter-spacing: -0.02em !important;
+  margin-top: 0.9em !important;
+  margin-bottom: 0.4em !important;
+}
+
+main p,
+.jp-NotebookPanel-notebook p,
+#notebook-container p{
+  margin: 0 0 0.9em 0 !important;
+}
+
+main hr,
+.jp-NotebookPanel-notebook hr,
+#notebook-container hr{
+  border: 0 !important;
+  border-top: 1px solid var(--grid-soft) !important;
+  margin: 18px 0 !important;
+}
+
+a{ text-decoration: none !important; }
+a:hover{ text-decoration: underline !important; }
+
+/* Code blocks — still system-ui, but polished */
+pre, code{
+  background: rgba(15,23,42,0.04) !important;
+  border-radius: 10px !important;
+}
+code{ padding: 0.15em 0.35em !important; }
+pre{
+  padding: 12px 14px !important;
+  border: 1px solid var(--grid-soft) !important;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ========== Table styling (rounded border matches inner gridlines) ========== */
+/* Wrapper provides rounded corners + outer border (same color as cell lines) */
 .table-wrap{
-  border: 1px solid rgba(15,23,42,0.14) !important;
+  border: 1px solid var(--grid) !important;
   border-radius: 14px !important;
-  overflow: hidden !important;
   margin: 14px 0 !important;
+  background: #fff !important;
+  overflow: hidden !important;
 }
 
-/* Keep your gridlines, but make them cleaner */
-.table-wrap table{
+/* Mobile: make wrapper the horizontal scroll container */
+@media (max-width: 900px){
+  .table-wrap{
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch;
+  }
+  .table-wrap table{
+    width: max-content !important;
+    min-width: 100% !important;
+  }
+}
+
+/* Table itself */
+.table-wrap table,
+.table-wrap table.dataframe{
   width: 100% !important;
   border-collapse: collapse !important;
+  border: 0 !important; /* prevent double outer border */
 }
+
+/* Cell gridlines (same darkness as outer rounded border) */
 .table-wrap th, .table-wrap td{
-  border: 1px solid rgba(15,23,42,0.14) !important;
+  border: 1px solid var(--grid) !important;
   padding: 10px 12px !important;
   vertical-align: top !important;
 }
 
-/* Zebra + hover = instantly more readable */
-.table-wrap tbody tr:nth-child(odd){
-  background: rgba(15,23,42,0.02) !important;
-}
-.table-wrap tbody tr:hover{
-  background: rgba(37,99,235,0.06) !important;
-}
+/* Make wrapper border be the ONLY outer border:
+   remove perimeter cell borders so corners don't look lighter/thicker. */
+.table-wrap thead tr:first-child th{ border-top: 0 !important; }
+.table-wrap tbody tr:last-child td{ border-bottom: 0 !important; }
+.table-wrap tr th:first-child, .table-wrap tr td:first-child{ border-left: 0 !important; }
+.table-wrap tr th:last-child, .table-wrap tr td:last-child{ border-right: 0 !important; }
 
-/* Sticky header (nice on desktop; harmless on mobile) */
+/* Zebra + hover */
+.table-wrap tbody tr:nth-child(odd){ background: rgba(15,23,42,0.02) !important; }
+.table-wrap tbody tr:hover{ background: rgba(37,99,235,0.06) !important; }
+
+/* Sticky header */
 .table-wrap thead th{
   position: sticky !important;
   top: 0 !important;
-  background: #ffffff !important;
+  background: #fff !important;
   z-index: 2 !important;
 }
 
-/* Column-specific polish for your final schema:
-   #, Movie, RT_C/A, IMDB, Showtimes, Runtime */
+/* Column polish for schema: #, Movie, RT_C/A, IMDB, Showtimes, Runtime */
 .table-wrap th:nth-child(1), .table-wrap td:nth-child(1){
   text-align: center !important;
-  width: 54px;
+  width: 54px !important;
   white-space: nowrap !important;
 }
 .table-wrap th:nth-child(3), .table-wrap td:nth-child(3),
@@ -126,101 +230,77 @@ table.dataframe th, table.dataframe td {
   line-height: 1.35 !important;
 }
 
-
-/* ---------- Professional page chrome ---------- */
-body{
-  margin: 0 !important;
-  background: #f6f7fb !important;
-  color: #0f172a !important;
-  line-height: 1.55 !important;
+/* ========== Watch Planner styling ========== */
+#movie-planner{
+  font-family: var(--font-ui) !important;
+  max-width: 980px;
+  margin: 16px auto;
+  padding: 14px 16px;
+  border: 1px solid var(--grid-soft);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 8px 22px rgba(15,23,42,0.06);
 }
 
-/* Center the exported notebook content in a card */
-#notebook-container,
-.jp-Notebook,
-.jp-NotebookPanel-notebook,
-main{
-  max-width: 1100px;
-  margin: 24px auto !important;
-  padding: 22px 22px !important;
-  background: #ffffff !important;
-  border-radius: 18px !important;
-  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08) !important;
+#movie-planner h2{
+  margin: 0 0 6px 0;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
 }
-
-/* Improve headings / spacing */
-h1, h2, h3{
-  letter-spacing: -0.02em !important;
-  margin-top: 0.9em !important;
-  margin-bottom: 0.4em !important;
+#movie-planner .movie-planner-sub{
+  margin: 0 0 10px 0;
+  color: var(--muted);
 }
-p{ margin: 0 0 0.9em 0 !important; }
-hr{ border: 0 !important; border-top: 1px solid rgba(15,23,42,0.12) !important; margin: 18px 0 !important; }
-a{ text-decoration: none !important; }
-a:hover{ text-decoration: underline !important; }
-
-/* Make code blocks look less “raw” (still system-ui) */
-pre, code{
-  background: rgba(15,23,42,0.04) !important;
-  border-radius: 10px !important;
-  padding: 0.15em 0.35em !important;
+#movie-planner .movie-planner-controls{
+  display:flex;
+  gap:10px;
+  align-items:center;
+  flex-wrap:wrap;
+  margin:10px 0 8px 0;
 }
-pre{
-  padding: 12px 14px !important;
-  border: 1px solid rgba(15,23,42,0.10) !important;
+#movie-planner .movie-planner-controls input{
+  flex:1;
+  min-width:220px;
+  padding:10px 12px;
+  border-radius:10px;
+  border:1px solid rgba(15,23,42,0.18);
+  background: #fff;
+  outline: none;
 }
-
-/* --- existing planner + mobile CSS continues below --- */
-/* Planner + mobile fixes (injected by CI) */
-
-/* Force Watch Planner to use system-ui (regular + bold) */
-#movie-planner,
-#movie-planner * {
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
-               Arial, "Noto Sans", "Liberation Sans", sans-serif !important;
+#movie-planner .movie-planner-controls input:focus{
+  border-color: rgba(37,99,235,0.45);
+  box-shadow: 0 0 0 4px rgba(37,99,235,0.12);
 }
-
-#movie-planner b,
-#movie-planner strong,
-#movie-planner h2,
-#movie-planner h3 {
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
-               Arial, "Noto Sans", "Liberation Sans", sans-serif !important;
-  font-weight: 700 !important;
+#movie-planner .movie-planner-controls button{
+  padding:10px 12px;
+  border-radius:10px;
+  border:1px solid rgba(15,23,42,0.18);
+  background: rgba(37,99,235,0.10);
+  cursor:pointer;
+  font-weight: 700;
 }
-
-/* (Optional) ensure normal text is regular weight */
-#movie-planner {
-  font-weight: 400;
+#movie-planner .movie-planner-controls button:hover{
+  background: rgba(37,99,235,0.16);
 }
-
-.movie-planner{
-  max-width: 980px; margin: 16px auto; padding: 14px 16px;
-  border: 1px solid rgba(0,0,0,.12); border-radius: 12px;
+#movie-planner .movie-planner-output{ margin-top: 10px; }
+#movie-planner .movie-planner-card{
+  border:1px solid var(--grid-soft);
+  border-radius:12px;
+  padding:12px;
+  margin:10px 0;
+  background: #fff;
 }
-.movie-planner h2{ margin: 0 0 6px 0; font-size: 20px; }
-.movie-planner-sub{ margin: 0 0 10px 0; opacity: .85; }
-.movie-planner-controls{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:10px 0 8px 0; }
-.movie-planner-controls input{
-  flex:1; min-width:220px; padding:10px 12px; border-radius:10px;
-  border:1px solid rgba(0,0,0,.2);
+#movie-planner .movie-planner-card h3{
+  margin:0 0 6px 0;
+  font-size:16px;
+  font-weight: 800;
 }
-.movie-planner-controls button{
-  padding:10px 12px; border-radius:10px; border:1px solid rgba(0,0,0,.2); cursor:pointer;
-}
-.movie-planner-output{ margin-top: 10px; }
-.movie-planner-card{ border:1px solid rgba(0,0,0,.12); border-radius:12px; padding:12px; margin:10px 0; }
-.movie-planner-card h3{ margin:0 0 6px 0; font-size:16px; }
-.movie-planner-muted{ opacity:.8; }
+#movie-planner .movie-planner-muted{ color: var(--muted); }
 
 img, svg, video, canvas { max-width: 100%; height: auto; }
-@media (max-width: 900px){
-  table, table.dataframe{
-    display:block; overflow-x:auto; -webkit-overflow-scrolling:touch; max-width:100%;
-  }
-  pre{ overflow-x:auto; -webkit-overflow-scrolling:touch; }
-}
 """
+
 
 # JS expects payload.movies and payload.showtimes.
 # Each showtime item must have: movie_id, movie, theater, format, date, start, runtime_min
@@ -713,6 +793,8 @@ def apply_final_table_schema(soup: BeautifulSoup, table) -> None:
         tr.append(runtime_td)
 
 def main() -> None:
+    from datetime import datetime, timezone
+    
     if not HTML_PATH.exists():
         print(f"ERROR: {HTML_PATH} not found", file=sys.stderr)
         sys.exit(1)
@@ -844,8 +926,38 @@ def main() -> None:
         style.string = CSS
         soup.head.append(style)
 
+    # Pick a container (prefer <main> so it appears inside the card)
+    container = soup.find("main") or soup.body or soup
+
+    # Remove any prior injected timestamp
+    old_ts = soup.find(id="report-generated")
+    if old_ts:
+        old_ts.decompose()
+
+    # Build a readable timestamp (local + UTC)
+    now_utc = datetime.now(timezone.utc)
+    label_utc = now_utc.strftime("%Y-%m-%d %H:%M UTC")
+
+    label_local = None
+    try:
+        from zoneinfo import ZoneInfo
+        la = ZoneInfo("America/Los_Angeles")
+        label_local = now_utc.astimezone(la).strftime("%Y-%m-%d %I:%M %p %Z")
+    except Exception:
+        pass
+
+    ts_text = f"Report generated: {label_local} / {label_utc}" if label_local else f"Report generated: {label_utc}"
+
+    ts_div = soup.new_tag("div", id="report-generated", **{"class": "report-generated"})
+    ts_div.string = ts_text
+
+    # Put it at the very top of the container
+    container.insert(0, ts_div)
+
+    
     body = soup.body or soup
-    body.insert(0, BeautifulSoup(PLANNER_HTML, "html.parser"))
+    #old code: body.insert(0, BeautifulSoup(PLANNER_HTML, "html.parser"))
+    container.insert(1, BeautifulSoup(PLANNER_HTML, "html.parser"))
 
     data_tag = soup.new_tag("script", id="showtimes-data", type="application/json")
     data_tag.string = json.dumps({
