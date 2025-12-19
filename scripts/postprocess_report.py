@@ -905,6 +905,15 @@ def main() -> None:
 
     soup = BeautifulSoup(HTML_PATH.read_text(encoding="utf-8"), "html.parser")
 
+    # Set browser tab title
+    desired_title = "Weekend Movies"
+    if soup.title:
+        soup.title.string = desired_title
+    elif soup.head:
+        t = soup.new_tag("title")
+        t.string = desired_title
+        soup.head.append(t)
+
     table = soup.find("table", class_=re.compile(r"\bdataframe\b")) or soup.find("table")
     if not table:
         HTML_PATH.write_text(str(soup), encoding="utf-8")
