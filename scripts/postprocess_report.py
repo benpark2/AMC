@@ -60,6 +60,73 @@ table, th, td, input, button, select, textarea {
   font-family: var(--jp-ui-font-family) !important;
 }
 
+/* Make table show clear borders/gridlines */
+table, table.dataframe {
+  border-collapse: collapse !important;
+  border-spacing: 0 !important;
+}
+
+table th, table td,
+table.dataframe th, table.dataframe td {
+  border: 1px solid rgba(0,0,0,0.35) !important;
+  padding: 8px 10px !important;
+  vertical-align: top !important;
+}
+
+/* ---------- Table card styling ---------- */
+.table-wrap{
+  border: 1px solid rgba(15,23,42,0.14) !important;
+  border-radius: 14px !important;
+  overflow: hidden !important;
+  margin: 14px 0 !important;
+}
+
+/* Keep your gridlines, but make them cleaner */
+.table-wrap table{
+  width: 100% !important;
+  border-collapse: collapse !important;
+}
+.table-wrap th, .table-wrap td{
+  border: 1px solid rgba(15,23,42,0.14) !important;
+  padding: 10px 12px !important;
+  vertical-align: top !important;
+}
+
+/* Zebra + hover = instantly more readable */
+.table-wrap tbody tr:nth-child(odd){
+  background: rgba(15,23,42,0.02) !important;
+}
+.table-wrap tbody tr:hover{
+  background: rgba(37,99,235,0.06) !important;
+}
+
+/* Sticky header (nice on desktop; harmless on mobile) */
+.table-wrap thead th{
+  position: sticky !important;
+  top: 0 !important;
+  background: #ffffff !important;
+  z-index: 2 !important;
+}
+
+/* Column-specific polish for your final schema:
+   #, Movie, RT_C/A, IMDB, Showtimes, Runtime */
+.table-wrap th:nth-child(1), .table-wrap td:nth-child(1){
+  text-align: center !important;
+  width: 54px;
+  white-space: nowrap !important;
+}
+.table-wrap th:nth-child(3), .table-wrap td:nth-child(3),
+.table-wrap th:nth-child(4), .table-wrap td:nth-child(4),
+.table-wrap th:nth-child(6), .table-wrap td:nth-child(6){
+  text-align: center !important;
+  white-space: nowrap !important;
+}
+.table-wrap td:nth-child(5){
+  font-size: 14px !important;
+  line-height: 1.35 !important;
+}
+
+
 /* ---------- Professional page chrome ---------- */
 body{
   margin: 0 !important;
@@ -758,6 +825,13 @@ def main() -> None:
         if old:
             old.decompose()
 
+    # Wrap table so we can give it rounded corners + a clean border
+    parent = table.parent
+    if not (parent and parent.name == "div" and "table-wrap" in (parent.get("class") or [])):
+        wrap = soup.new_tag("div", **{"class": "table-wrap"})
+        table.wrap(wrap)
+
+    
     # Ensure viewport + styles in <head>
     if soup.head:
         if not soup.head.find("meta", attrs={"name": "viewport"}):
