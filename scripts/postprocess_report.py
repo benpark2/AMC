@@ -379,54 +379,38 @@ def score_show_blob(text: str) -> int:
     low = (text or "").lower()
     return low.count("amc ") * 10 + low.count("2025-") * 5 + text.count("•") * 3
 
-def parse_showtimes_blob(blob: str) -> tuple[list[dict], list[str]]:
+def parse_showtimes_blob(blob: str) -> list[dict]:
     """
-    Parses the cell that contains:
+    Parses the cell that contains multiple theater blocks like:
+
+      AMC Bay Street 16
+      • 2025-12-20: 10:40 am [Laser at AMC], ...
       AMC Orange 30
       • 2025-12-20: 8:30 am [Laser at AMC], ...
-    Returns:
-      (showings, cleaned_lines_without_bay_street)
+
+    Returns list of dicts: {theater, date, start, format}
     """
     if not blob:
-        return [], []
+        return []
 
-    # Make sure bullets start new lines
     blob = blob.replace("•", "\n•")
     lines = [ln.strip() for ln in blob.splitlines() if ln.strip()]
 
     showings: list[dict] = []
-    cleaned: list[str] = []
-
     current_theater: str | None = None
-    skipping = False
 
     for ln in lines:
-        # theater heading
         if ln.lower().startswith("amc "):
             current_theater = ln.strip()
-            skipping = IGNORE_THEATER.lower() in current_theater.lower()
-            if not skipping:
-                cleaned.append(current_theater)
             continue
 
         m = DATE_LINE_RE.match(ln)
         if not m or not current_theater:
-            # keep non-date lines only if not skipping (rare)
-            if not skipping and current_theater and ln.startswith("•"):
-                cleaned.append(ln)
             continue
 
         date = m.group(1)
         rest = m.group(2)
-
-        # split times by comma
         parts = [p.strip() for p in rest.split(",") if p.strip()]
-
-        if not skipping:
-            cleaned.append(f"• {date}: {', '.join(parts)}")
-
-        if skipping:
-            continue
 
         for p in parts:
             tm = TIME_RE.search(p)
@@ -442,16 +426,9 @@ def parse_showtimes_blob(blob: str) -> tuple[list[dict], list[str]]:
                 "format": fmt,
             })
 
-    return showings, cleaned
+    return showings
 
-def rewrite_cell_lines(soup: BeautifulSoup, cell_tag, lines: list[str]) -> None:
-    cell_tag.clear()
-    first = True
-    for ln in lines:
-        if not first:
-            cell_tag.append(soup.new_tag("br"))
-        cell_tag.append(ln)
-        first = False
+
 
 def find_runtime_in_row(texts: list[str]) -> int | None:
     # prefer something like "1h 48m"
@@ -539,11 +516,8 @@ def main() -> None:
                 best_i = i
         blob = texts[best_i] if best_i is not None else ""
 
-        parsed_showings, cleaned_lines = parse_showtimes_blob(blob)
+        parsed_showings = parse_showtimes_blob(blob)
 
-        # Rewrite the HTML cell so Bay Street block is removed from the visible table too
-        if best_i is not None and cleaned_lines:
-            rewrite_cell_lines(soup, cells[best_i], cleaned_lines)
 
         # Emit showtimes rows
         for sh in parsed_showings:
