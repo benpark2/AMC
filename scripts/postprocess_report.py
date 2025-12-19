@@ -61,9 +61,7 @@ CSS = r"""
 img, svg, video, canvas { max-width: 100%; height: auto; }
 
 /* Make tables scroll on small screens instead of clipping */
-table.dataframe{
-  max-width: 100%;
-}
+table.dataframe{ max-width: 100%; }
 @media (max-width: 900px){
   table, table.dataframe{
     display: block;
@@ -78,6 +76,8 @@ table.dataframe{
 }
 """
 
+# JS stays the same as your "improved parsing" version, but expects payload.movies + payload.showtimes
+# (This is the same JS you already updated to show "Can't plan..." reasons.)
 JS = r"""
 (() => {
   const dataEl = document.getElementById('showtimes-data');
@@ -89,7 +89,6 @@ JS = r"""
 
   const payload = JSON.parse(dataEl.textContent || "{}");
   const raw = Array.isArray(payload.showtimes) ? payload.showtimes : [];
-
   const IGNORE = (payload.ignore_theater || "AMC Bay Street 16").toLowerCase();
 
   function theaterRank(theater) {
@@ -113,9 +112,6 @@ JS = r"""
     return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
   }
 
-  // More forgiving date parsing:
-  // - supports YYYY-MM-DD, MM/DD[/YYYY], Date() fallback
-  // - if still unknown, returns the raw trimmed string (so we don't drop rows)
   function parseDateKeyFromString(s){
     if (!s) return null;
     const str = String(s).trim();
@@ -136,14 +132,25 @@ JS = r"""
     const d = new Date(str);
     if (!isNaN(d.getTime())) return toISODateFromDateObj(d);
 
-    return str; // last-resort label, prevents dropping data
+    return str;
   }
 
-  // More robust time parsing:
-  // Handles "2025-12-19 7:05 PM" by taking the LAST time-like token.
   function parseTimeToMinutes(s){
     if (!s) return null;
-    const str = String(s);
+    let str = String(s).replace(/\u00a0/g, " ").replace(/\u202f/g, " ");
+
+    // Support a/p shorthand: "7p", "7:10p"
+    const apShort = Array.from(str.matchAll(/(\d{1,2})(?::(\d{2}))?\s*([ap])\b/gi));
+    if (apShort.length){
+      const m = apShort[apShort.length - 1];
+      let h = parseInt(m[1],10);
+      let min = m[2] ? parseInt(m[2],10) : 0;
+      const ap = m[3].toLowerCase();
+      if (h === 12) h = 0;
+      if (ap === "p") h += 12;
+      if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+      return h*60 + min;
+    }
 
     const ampm = Array.from(str.matchAll(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/gi));
     if (ampm.length){
@@ -157,7 +164,7 @@ JS = r"""
       return h*60 + min;
     }
 
-    const hm = Array.from(str.matchAll(/\b([01]?\d|2[0-3]):([0-5]\d)\b/g));
+    const hm = Array.from(str.matchAll(/\b([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?\b/g));
     if (hm.length){
       const m = hm[hm.length - 1];
       const h = parseInt(m[1],10);
@@ -168,7 +175,6 @@ JS = r"""
     return null;
   }
 
-  // Robust runtime parsing (handles "2 hr 10 min", "2h 10m", "2:10", "130 min")
   function parseRuntimeMin(v){
     if (v === null || v === undefined) return null;
     if (typeof v === "number" && isFinite(v) && v > 0) return Math.round(v);
@@ -200,10 +206,9 @@ JS = r"""
     const ampm = h >= 12 ? "PM" : "AM";
     h = h % 12;
     if (h === 0) h = 12;
-    return `${h}:${pad2(min)} ${ampm}`;
+    return `${h}:${String(min).padStart(2,"0")} ${ampm}`;
   }
 
-  // Build an "authoritative" movie index from payload.movies (or fallback to raw rows).
   const movieIndex = new Map();
   const movies = Array.isArray(payload.movies) ? payload.movies : [];
   for (const m of movies){
@@ -219,7 +224,6 @@ JS = r"""
     }
   }
 
-  // Keep raw rows by movie for diagnostics.
   const rawByMovie = new Map();
   for (const r of raw){
     const id = Number(r.movie_id);
@@ -228,7 +232,6 @@ JS = r"""
     rawByMovie.get(id).push(r);
   }
 
-  // Normalize showings (only keep those usable for scheduling)
   const showings = raw
     .filter(r => !String(r.theater || "").toLowerCase().includes(IGNORE))
     .map(r => {
@@ -243,12 +246,12 @@ JS = r"""
 
       if (!movie_id || !movie || !theater || !dateKey || startMin === null || runtimeMin === null) return null;
 
-      const endMin = startMin + runtimeMin + 30; // rule: runtime + 30
+      const endMin = startMin + runtimeMin + 30;
       return {
         movie_id, movie, theater, format,
         dateKey, startMin, endMin, runtimeMin,
         tRank: theaterRank(theater),
-        fRank: formatRank(format),
+        fRank: (formatRank(format)),
       };
     })
     .filter(Boolean);
@@ -320,7 +323,7 @@ JS = r"""
         ((first.fRank + second.fRank) * 100) +
         gap;
 
-      const cand = { dayKey, entries: [first, second], cost: c, transit, sameTheater: same };
+      const cand = { dayKey, entries: [first, second], cost: c };
       if (!best || cand.cost < best.cost) best = cand;
     }
 
@@ -452,7 +455,6 @@ JS = r"""
       return;
     }
 
-    // Unknown numbers should only mean "not in the table at all"
     const missing = ids.filter(id => !movieIndex.has(id));
     if (missing.length){
       outEl.innerHTML = `<div class="movie-planner-card">
@@ -462,7 +464,6 @@ JS = r"""
       return;
     }
 
-    // Known movie IDs, but maybe we couldn't parse usable showtimes for scheduling.
     const noUsable = ids.filter(id => !(byMovie.get(id) || []).length);
     if (noUsable.length){
       const lines = noUsable.map(id => {
@@ -482,8 +483,7 @@ JS = r"""
       outEl.innerHTML = `<div class="movie-planner-card">
         <h3>No feasible plan found</h3>
         <div class="movie-planner-muted">
-          I couldn’t find showtimes that fit the constraints (max 2/day, same-theater preference, buffer & transit rules).
-          Try different movie numbers or verify date/start/runtime are present for each showing.
+          I couldn’t find showtimes that fit the constraints. Try different movie numbers or verify date/start/runtime are present.
         </div>
       </div>`;
       return;
@@ -494,6 +494,14 @@ JS = r"""
 })();
 """
 
+# --- Robust row inference helpers (NEW) ---
+
+TIME_AMPM_RE = re.compile(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", re.I)
+TIME_AP_RE = re.compile(r"\b(\d{1,2})(?::(\d{2}))?\s*([ap])\b", re.I)   # "7p"
+TIME24_RE = re.compile(r"\b([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?\b")
+
+DATE_ISO_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
+DATE_SLASH_RE = re.compile(r"\b(\d{1,2}/\d{1,2}(?:/\d{2,4})?)\b")
 
 def norm_header(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
@@ -511,25 +519,105 @@ def runtime_to_minutes(text: str | None) -> int | None:
         return None
     t = text.strip().lower()
 
-    # 2h 5m
     mh = re.search(r"(\d+)\s*h", t)
     mm = re.search(r"(\d+)\s*m", t)
     if mh:
         return int(mh.group(1)) * 60 + (int(mm.group(1)) if mm else 0)
 
-    # 130 min / 130
+    m = re.search(r"(\d+)\s*:\s*(\d{2})", t)
+    if m:
+        return int(m.group(1))*60 + int(m.group(2))
+
     nums = re.findall(r"\d+", t)
     if not nums:
         return None
     return int(nums[0])
 
-def split_start_times(start_text: str) -> list[str]:
-    if not start_text:
+def extract_times(text: str) -> list[str]:
+    if not text:
         return []
-    t = start_text.replace("\u00a0", " ").strip()
-    parts = re.split(r"(?:\s*,\s*|\s*\n\s*|\s*;\s*)", t)
-    parts = [p.strip() for p in parts if p.strip()]
-    return parts or [t]
+    s = text.replace("\u00a0", " ").replace("\u202f", " ")
+
+    out: list[str] = []
+
+    # 7p / 7:10p
+    for h, m, ap in TIME_AP_RE.findall(s):
+        hh = int(h)
+        mm = int(m) if m else 0
+        apu = "AM" if ap.lower() == "a" else "PM"
+        out.append(f"{hh}:{mm:02d} {apu}")
+
+    # 7:05 PM
+    for h, m, ap in TIME_AMPM_RE.findall(s):
+        hh = int(h)
+        mm = int(m) if m else 0
+        out.append(f"{hh}:{mm:02d} {ap.upper()}")
+
+    # 24h
+    for h, m, _sec in TIME24_RE.findall(s):
+        out.append(f"{int(h):02d}:{int(m):02d}")
+
+    # de-dupe preserving order
+    seen = set()
+    uniq = []
+    for t in out:
+        if t not in seen:
+            seen.add(t)
+            uniq.append(t)
+    return uniq
+
+def infer_theater(all_text: str, cells_text: list[str]) -> str:
+    # Strongest: exact preferred theaters
+    low = all_text.lower()
+    for t in PREFERRED_THEATERS:
+        if t.lower() in low:
+            return t
+
+    # Any line/cell containing "AMC"
+    for x in cells_text:
+        if "amc" in x.lower():
+            return x.strip()
+
+    # Regex fallback: extract a chunk starting with AMC...
+    m = re.search(r"\bAMC\b[^\n|]{3,80}", all_text, re.I)
+    if m:
+        return m.group(0).strip()
+    return ""
+
+def infer_format(all_text: str) -> str:
+    if re.search(r"dolby", all_text, re.I):
+        return "Dolby Cinema"
+    if re.search(r"imax", all_text, re.I) and re.search(r"laser", all_text, re.I):
+        return "IMAX with Laser"
+    if re.search(r"\bimax\b", all_text, re.I):
+        return "IMAX"
+    return ""
+
+def infer_date(all_text: str) -> str:
+    m = DATE_ISO_RE.search(all_text)
+    if m:
+        return m.group(1)
+    m = DATE_SLASH_RE.search(all_text)
+    if m:
+        return m.group(1)
+    return ""
+
+def infer_runtime_raw(all_text: str) -> str:
+    # first try "123 min"
+    m = re.search(r"\b(\d{2,3})\s*(min|mins|minute|minutes)\b", all_text, re.I)
+    if m:
+        return f"{m.group(1)} min"
+    # then "2h 10m"
+    m = re.search(r"\b(\d+)\s*h(?:\s*(\d+)\s*m)?\b", all_text, re.I)
+    if m:
+        h = m.group(1)
+        mm = m.group(2)
+        return f"{h}h {mm}m" if mm else f"{h}h"
+    # then "2:10"
+    m = re.search(r"\b(\d+)\s*:\s*(\d{2})\b", all_text)
+    if m:
+        return f"{m.group(1)}:{m.group(2)}"
+    return ""
 
 def main() -> None:
     if not HTML_PATH.exists():
@@ -543,36 +631,47 @@ def main() -> None:
         HTML_PATH.write_text(str(soup), encoding="utf-8")
         return
 
+    # Handle both thead/tbody and "flat" tables
     thead = table.find("thead")
     tbody = table.find("tbody")
-    if not thead or not tbody:
-        HTML_PATH.write_text(str(soup), encoding="utf-8")
-        return
 
-    header_row = thead.find("tr")
+    if thead and tbody:
+        header_row = thead.find("tr")
+        body_rows = list(tbody.find_all("tr", recursive=False))
+    else:
+        rows = list(table.find_all("tr", recursive=False))
+        if not rows:
+            HTML_PATH.write_text(str(soup), encoding="utf-8")
+            return
+        header_row = rows[0]
+        body_rows = rows[1:]
+
     header_cells = header_row.find_all(["th", "td"], recursive=False)
     headers = [c.get_text(" ", strip=True) for c in header_cells]
     headers_norm = [norm_header(h) for h in headers]
 
-    # Heuristic column detection
     movie_i = pick_col(headers_norm, ["movie", "title", "film", "name"])
-    theater_i = pick_col(headers_norm, ["theater", "cinema", "location", "venue"])
+    theater_i = pick_col(headers_norm, ["theater", "theatre", "cinema", "location", "venue"])
     format_i = pick_col(headers_norm, ["format", "presentation", "experience", "screen"])
     date_i = pick_col(headers_norm, ["date", "day"])
-    start_i = pick_col(headers_norm, ["start time", "showtime", "start", "time"])
+    start_i = pick_col(headers_norm, ["start time", "showtime", "showtimes", "start", "time"])
     runtime_i = pick_col(headers_norm, ["runtime", "duration", "length", "run time", "minutes"])
 
-    # Detect if already numbered
     already_numbered = bool(headers and headers[0].strip().lower() in ["#", "movie #", "no", "num"])
 
     movie_id_by_title: dict[str, int] = {}
     next_id = 1
     showtimes: list[dict] = []
 
-    rows = list(tbody.find_all("tr", recursive=False))
-    for tr in rows:
+    for tr in list(body_rows):
         cells = tr.find_all(["th", "td"], recursive=False)
         texts = [c.get_text("\n", strip=True) for c in cells]
+        all_text = " | ".join([t for t in texts if t]).strip()
+
+        # Rule #1: ignore Bay Street 16 even if it appears in any column
+        if IGNORE_THEATER_SUBSTR.lower() in all_text.lower():
+            tr.decompose()
+            continue
 
         def get(idx: int | None) -> str:
             if idx is None:
@@ -586,24 +685,34 @@ def main() -> None:
         start_raw = (get(start_i) or "").strip()
         runtime_raw = (get(runtime_i) or "").strip()
 
-        # Rule #1: ignore Bay Street data (remove from table + planner data)
-        if IGNORE_THEATER_SUBSTR.lower() in theater.lower():
-            tr.decompose()
-            continue
-
+        # If movie column detection failed, fall back to first "non-empty" text
         if not title:
             title = next((t for t in texts if t.strip()), "").strip()
 
         if not title:
-            # If we can't even find a title, drop row from planner data
             continue
+
+        # Robust inference if columns weren't found / are blank
+        if not theater:
+            theater = infer_theater(all_text, texts)
+        if not fmt:
+            fmt = infer_format(all_text)
+        if not date:
+            date = infer_date(all_text)
+        if not runtime_raw:
+            runtime_raw = infer_runtime_raw(all_text)
+
+        # Extract times from the "start" cell or whole row if needed
+        times = extract_times(start_raw) if start_raw else []
+        if not times:
+            times = extract_times(all_text)
 
         if title not in movie_id_by_title:
             movie_id_by_title[title] = next_id
             next_id += 1
         mid = movie_id_by_title[title]
 
-        # Add numbering column to the left of the first column
+        # Add numbering column
         if not already_numbered:
             td = soup.new_tag("td")
             td.string = str(mid)
@@ -611,10 +720,8 @@ def main() -> None:
 
         runtime_min = runtime_to_minutes(runtime_raw)
 
-        # If a cell contains multiple showtimes, split them
-        for start in split_start_times(start_raw):
-            if not start:
-                continue
+        # Emit a row per time (if we found any)
+        for start in times:
             showtimes.append({
                 "movie_id": mid,
                 "movie": title,
@@ -630,7 +737,11 @@ def main() -> None:
         th.string = "#"
         header_row.insert(0, th)
 
-    # Replace existing injected blocks if present
+    # Build authoritative movie list
+    movies = [{"movie_id": mid, "movie": title}
+              for title, mid in sorted(movie_id_by_title.items(), key=lambda x: x[1])]
+
+    # Remove old injected blocks
     for el_id in ["movie-planner", "showtimes-data", "movie-planner-style", "movie-planner-js"]:
         old = soup.find(id=el_id)
         if old:
@@ -651,15 +762,12 @@ def main() -> None:
 
     body = soup.body or soup
 
-    # Insert planner at top of <body>
+    # Insert planner at top
     planner = BeautifulSoup(PLANNER_HTML, "html.parser")
     body.insert(0, planner)
 
     # Data blob for JS
     data_tag = soup.new_tag("script", id="showtimes-data", type="application/json")
-    movies = [{"movie_id": mid, "movie": title}
-          for title, mid in sorted(movie_id_by_title.items(), key=lambda x: x[1])]
-
     data_tag.string = json.dumps({
         "ignore_theater": IGNORE_THEATER_SUBSTR,
         "preferred_theaters": PREFERRED_THEATERS,
@@ -667,7 +775,6 @@ def main() -> None:
         "showtimes": showtimes,
     }, ensure_ascii=False)
 
-    # JS
     js_tag = soup.new_tag("script", id="movie-planner-js")
     js_tag.string = JS
 
@@ -678,3 +785,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+PY
