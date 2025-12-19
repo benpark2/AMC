@@ -496,6 +496,111 @@ def find_runtime_in_row(texts: list[str]) -> int | None:
             if r:
                 return r
     return None
+    
+def _norm_col(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", (s or "").strip().lower()).strip("_")
+
+def _find_col_idx(headers: list[str], keys: list[str]) -> int | None:
+    keys_norm = {_norm_col(k) for k in keys}
+    for i, h in enumerate(headers):
+        if _norm_col(h) in keys_norm:
+            return i
+    return None
+
+def _fmt_score(s: str) -> str:
+    s = (s or "").strip()
+    if not s:
+        return ""
+    m = re.search(r"-?\d+(?:\.\d+)?", s)
+    if not m:
+        return s
+    v = float(m.group(0))
+    if abs(v - round(v)) < 1e-9:
+        return str(int(round(v)))
+    # fallback: strip trailing zeros
+    out = f"{v:.1f}".rstrip("0").rstrip(".")
+    return out
+
+def _clone_cell_as_td(soup: BeautifulSoup, cell) -> "bs4.element.Tag":
+    td = soup.new_tag("td")
+    if not cell:
+        return td
+    # copy attributes (useful for showtimes formatting)
+    for k, v in getattr(cell, "attrs", {}).items():
+        td.attrs[k] = v
+    # move children (preserves <br>, bullets, etc.)
+    for child in list(cell.contents):
+        td.append(child)
+    return td
+
+def apply_final_table_schema(soup: BeautifulSoup, table) -> None:
+    thead = table.find("thead")
+    tbody = table.find("tbody")
+    if not thead or not tbody:
+        return
+
+    header_row = thead.find("tr")
+    if not header_row:
+        return
+
+    header_cells = header_row.find_all(["th", "td"], recursive=False)
+    headers = [c.get_text(" ", strip=True) for c in header_cells]
+
+    # Locate columns (support both "before" and "after" names)
+    idx_hash = next((i for i, h in enumerate(headers) if h.strip() == "#"), None)
+    idx_movie = _find_col_idx(headers, ["movie_title", "movie"])
+    idx_rtca = _find_col_idx(headers, ["rt_c/a", "rt_c_a", "rt_c a", "rt_c/a "])
+    idx_rt_critic = _find_col_idx(headers, ["rt_critic", "rt critic"])
+    idx_rt_audience = _find_col_idx(headers, ["rt_audience", "rt audience"])
+    idx_imdb = _find_col_idx(headers, ["imdb_rating", "imdb"])
+    idx_showtimes = _find_col_idx(headers, ["showtimes", "showtime"])
+    idx_runtime = _find_col_idx(headers, ["runtime"])
+
+    # Rewrite header to final schema
+    header_row.clear()
+    for title in ["#", "Movie", "RT_C/A", "IMDB", "Showtimes", "Runtime"]:
+        th = soup.new_tag("th")
+        th.string = title
+        header_row.append(th)
+
+    # Rewrite each body row to match final schema
+    for tr in tbody.find_all("tr", recursive=False):
+        cells = tr.find_all(["th", "td"], recursive=False)
+
+        def get_cell(i: int | None):
+            return cells[i] if i is not None and 0 <= i < len(cells) else None
+
+        # # column: prefer data-movie-id (set earlier), else existing # cell
+        movie_id = (tr.get("data-movie-id") or
+                    (get_cell(idx_hash).get_text(" ", strip=True) if get_cell(idx_hash) else "")).strip()
+
+        num_td = soup.new_tag("td")
+        num_td.string = movie_id
+
+        movie_td = _clone_cell_as_td(soup, get_cell(idx_movie))
+
+        # RT_C/A: use existing RT_C/A if present, otherwise compute from rt_critic/rt_audience
+        if get_cell(idx_rtca):
+            rtca_txt = get_cell(idx_rtca).get_text(" ", strip=True)
+        else:
+            c = _fmt_score(get_cell(idx_rt_critic).get_text(" ", strip=True) if get_cell(idx_rt_critic) else "")
+            a = _fmt_score(get_cell(idx_rt_audience).get_text(" ", strip=True) if get_cell(idx_rt_audience) else "")
+            rtca_txt = f"{c}/{a}".strip("/")
+
+        rtca_td = soup.new_tag("td")
+        rtca_td.string = rtca_txt
+
+        imdb_td = _clone_cell_as_td(soup, get_cell(idx_imdb))
+        show_td = _clone_cell_as_td(soup, get_cell(idx_showtimes))
+        runtime_td = _clone_cell_as_td(soup, get_cell(idx_runtime))
+
+        tr.clear()
+        tr.append(num_td)
+        tr.append(movie_td)
+        tr.append(rtca_td)
+        tr.append(imdb_td)
+        tr.append(show_td)
+        tr.append(runtime_td)
 
 def main() -> None:
     if not HTML_PATH.exists():
@@ -543,6 +648,8 @@ def main() -> None:
             mid = next_id
             next_id += 1
 
+        tr["data-movie-id"] = str(mid)
+        
         # title is usually the 2nd cell if numbered; else first non-empty
         title = ""
         if already_numbered and len(texts) >= 2:
@@ -597,6 +704,8 @@ def main() -> None:
         th.string = "#"
         header_row.insert(0, th)
 
+    apply_final_table_schema(soup, table)
+    
     # Build movies list (authoritative for input validation)
     movies = [{"movie_id": mid, "movie": movie_by_id[mid]} for mid in sorted(movie_by_id.keys())]
 
