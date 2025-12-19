@@ -7538,6 +7538,73 @@ table, th, td, input, button, select, textarea {
   font-family: var(--jp-ui-font-family) !important;
 }
 
+/* Make table show clear borders/gridlines */
+table, table.dataframe {
+  border-collapse: collapse !important;
+  border-spacing: 0 !important;
+}
+
+table th, table td,
+table.dataframe th, table.dataframe td {
+  border: 1px solid rgba(0,0,0,0.35) !important;
+  padding: 8px 10px !important;
+  vertical-align: top !important;
+}
+
+/* ---------- Table card styling ---------- */
+.table-wrap{
+  border: 1px solid rgba(15,23,42,0.14) !important;
+  border-radius: 14px !important;
+  overflow: hidden !important;
+  margin: 14px 0 !important;
+}
+
+/* Keep your gridlines, but make them cleaner */
+.table-wrap table{
+  width: 100% !important;
+  border-collapse: collapse !important;
+}
+.table-wrap th, .table-wrap td{
+  border: 1px solid rgba(15,23,42,0.14) !important;
+  padding: 10px 12px !important;
+  vertical-align: top !important;
+}
+
+/* Zebra + hover = instantly more readable */
+.table-wrap tbody tr:nth-child(odd){
+  background: rgba(15,23,42,0.02) !important;
+}
+.table-wrap tbody tr:hover{
+  background: rgba(37,99,235,0.06) !important;
+}
+
+/* Sticky header (nice on desktop; harmless on mobile) */
+.table-wrap thead th{
+  position: sticky !important;
+  top: 0 !important;
+  background: #ffffff !important;
+  z-index: 2 !important;
+}
+
+/* Column-specific polish for your final schema:
+   #, Movie, RT_C/A, IMDB, Showtimes, Runtime */
+.table-wrap th:nth-child(1), .table-wrap td:nth-child(1){
+  text-align: center !important;
+  width: 54px;
+  white-space: nowrap !important;
+}
+.table-wrap th:nth-child(3), .table-wrap td:nth-child(3),
+.table-wrap th:nth-child(4), .table-wrap td:nth-child(4),
+.table-wrap th:nth-child(6), .table-wrap td:nth-child(6){
+  text-align: center !important;
+  white-space: nowrap !important;
+}
+.table-wrap td:nth-child(5){
+  font-size: 14px !important;
+  line-height: 1.35 !important;
+}
+
+
 /* ---------- Professional page chrome ---------- */
 body{
   margin: 0 !important;
@@ -7668,8 +7735,8 @@ img, svg, video, canvas { max-width: 100%; height: auto; }
 <div class="movie-planner-output" id="movie-planner-output"></div>
 </div>
 
-<main><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs jp-mod-noInput" id="cell-id=eb1fef6a">
-</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noInput" id="cell-id=b032532c">
+<main><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs jp-mod-noInput" id="cell-id=adf1cae2">
+</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noInput" id="cell-id=39002c4d">
 <div class="jp-Cell-outputWrapper">
 <div class="jp-Collapser jp-OutputCollapser jp-Cell-outputCollapser">
 </div>
@@ -7688,7 +7755,7 @@ table.dataframe th, table.dataframe td {
   vertical-align: top;
 }
 </style>
-<table border="1" class="dataframe">
+<div class="table-wrap"><table border="1" class="dataframe">
 <thead>
 <tr style="text-align: right;"><th>#</th><th>Movie</th><th>RT_C/A</th><th>IMDB</th><th>Showtimes</th><th>Runtime</th></tr>
 </thead>
@@ -7721,7 +7788,7 @@ table.dataframe th, table.dataframe td {
 <tr data-movie-id="26"><td>26</td><td><a href="https://www.rottentomatoes.com/m/bha_bha_ba" rel="noopener noreferrer" target="_blank">Bha. Bha. Ba.</a></td><td>NaN/NaN</td><td>4.5</td><td>AMC Orange 30<br/>• 2025-12-20: 5:50 pm [Malayalam Spoken with English Subtitles], 10:30 pm [Malayalam Spoken with English Subtitles]<br/>• 2025-12-21: 10:30 pm [Malayalam Spoken with English Subtitles]</td><td>2h 33m</td></tr>
 <tr data-movie-id="27"><td>27</td><td>Royal Ballet: The Nutcracker (2025)</td><td>NaN/NaN</td><td>NaN</td><td>AMC Bay Street 16<br/>• 2025-12-21: 3:00 pm⛔ [Laser at AMC]<br/>AMC Orange 30<br/>• 2025-12-21: 3:00 pm⛔ [Laser at AMC]</td><td>None</td></tr>
 </tbody>
-</table>
+</table></div>
 </div>
 </div>
 </div>
