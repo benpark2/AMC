@@ -746,7 +746,7 @@ def _clone_cell_as_td(soup: BeautifulSoup, cell) -> "bs4.element.Tag":
         td.append(child)
     return td
 
-def apply_final_table_schema(soup: BeautifulSoup, table) -> None:
+def apply_final_table_schema(soup: BeautifulSoup, table, movie_by_id: dict[int, str], poster_by_id: dict[int, str]) -> None:
     thead = table.find("thead")
     tbody = table.find("tbody")
     if not thead or not tbody:
@@ -798,6 +798,8 @@ def apply_final_table_schema(soup: BeautifulSoup, table) -> None:
             mid_int = None
 
         title = movie_by_id.get(mid_int, "") if mid_int is not None else ""
+        poster_url = poster_by_id.get(mid_int) if mid_int is not None else None
+
         if not title:
             # fallback to whatever was already in the movie column
             title = (get_cell(idx_movie).get_text(" ", strip=True) if get_cell(idx_movie) else "").strip()
@@ -998,7 +1000,14 @@ def main() -> None:
         th.string = "#"
         header_row.insert(0, th)
 
-    apply_final_table_schema(soup, table)
+    poster_by_id: dict[int, str] = {}
+    for mid, title in movie_by_id.items():
+        poster = wikipedia_thumbnail_url(title)
+        if poster:
+            poster_by_id[mid] = poster
+
+    apply_final_table_schema(soup, table, movie_by_id, poster_by_id)
+
     
     # Build movies list (authoritative for input validation)
     movies = [{"movie_id": mid, "movie": movie_by_id[mid]} for mid in sorted(movie_by_id.keys())]
