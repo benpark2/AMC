@@ -31,6 +31,36 @@ PLANNER_HTML = """
 """
 
 CSS = r"""
+/* Global system-ui font override (injected by CI) */
+:root{
+  --jp-ui-font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+                       Arial, "Noto Sans", "Liberation Sans", sans-serif;
+  --jp-content-font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+                            Arial, "Noto Sans", "Liberation Sans", sans-serif;
+  --jp-code-font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+                         Arial, "Noto Sans", "Liberation Sans", sans-serif;
+}
+
+/* Most notebook text */
+html, body,
+.jp-Notebook, .jp-RenderedHTMLCommon, .jp-RenderedMarkdown, .jp-RenderedText,
+.jp-OutputArea-output, .jp-Cell, .jp-OutputArea, .jp-OutputPrompt, .jp-InputPrompt {
+  font-family: var(--jp-ui-font-family) !important;
+}
+
+/* Force code-ish things (often Consolas/monospace) to system-ui too */
+pre, code, kbd, samp, tt,
+.jp-RenderedText pre, .jp-RenderedText code,
+.jp-RenderedHTMLCommon pre, .jp-RenderedHTMLCommon code {
+  font-family: var(--jp-code-font-family) !important;
+}
+
+/* (Optional but helps if some elements set a different font explicitly) */
+table, th, td, input, button, select, textarea {
+  font-family: var(--jp-ui-font-family) !important;
+}
+
+/* --- existing planner + mobile CSS continues below --- */
 /* Planner + mobile fixes (injected by CI) */
 
 /* Force Watch Planner to use system-ui (regular + bold) */
