@@ -89,77 +89,107 @@ JS = r"""
 
   const payload = JSON.parse(dataEl.textContent || "{}");
   const raw = Array.isArray(payload.showtimes) ? payload.showtimes : [];
-  const IGNORE = (payload.ignore_theater || "AMC Bay Street 16").toLowerCase();
 
-  const preferred = Array.isArray(payload.preferred_theaters) ? payload.preferred_theaters : [];
+  const IGNORE = (payload.ignore_theater || "AMC Bay Street 16").toLowerCase();
 
   function theaterRank(theater) {
     const t = (theater || "").toLowerCase();
-    // Preferred order: Tustin -> Woodbridge -> Orange
     if (t.includes("amc tustin 14") && (t.includes("district") || t.includes("the district"))) return 0;
     if (t.includes("amc woodbridge 5")) return 1;
     if (t.includes("amc orange 30")) return 2;
-    // Other theaters (allowed but less preferred)
     return 3;
   }
 
   function isDolby(fmt){ return /dolby/i.test(fmt || ""); }
   function isImaxLaser(fmt){ return /imax/i.test(fmt || "") && /laser/i.test(fmt || ""); }
   function formatRank(fmt){
-    if (isDolby(fmt)) return 0;               // best
-    if (isImaxLaser(fmt)) return 1;          // next best
-    return 2;                                 // other
+    if (isDolby(fmt)) return 0;
+    if (isImaxLaser(fmt)) return 1;
+    return 2;
   }
 
   function pad2(n){ return String(n).padStart(2,"0"); }
-
   function toISODateFromDateObj(d){
     return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
   }
 
+  // More forgiving date parsing:
+  // - supports YYYY-MM-DD, MM/DD[/YYYY], Date() fallback
+  // - if still unknown, returns the raw trimmed string (so we don't drop rows)
   function parseDateKeyFromString(s){
     if (!s) return null;
-    const str = String(s);
+    const str = String(s).trim();
+    if (!str) return null;
 
-    // YYYY-MM-DD
     let m = str.match(/(\d{4}-\d{2}-\d{2})/);
     if (m) return m[1];
 
-    // MM/DD/YYYY or MM/DD/YY
-    m = str.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+    m = str.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/);
     if (m){
       const mm = pad2(parseInt(m[1],10));
       const dd = pad2(parseInt(m[2],10));
-      let yy = parseInt(m[3],10);
+      let yy = m[3] ? parseInt(m[3],10) : (new Date()).getFullYear();
       if (yy < 100) yy = 2000 + yy;
       return `${yy}-${mm}-${dd}`;
     }
 
-    // Try Date() fallback (best-effort)
     const d = new Date(str);
     if (!isNaN(d.getTime())) return toISODateFromDateObj(d);
+
+    return str; // last-resort label, prevents dropping data
+  }
+
+  // More robust time parsing:
+  // Handles "2025-12-19 7:05 PM" by taking the LAST time-like token.
+  function parseTimeToMinutes(s){
+    if (!s) return null;
+    const str = String(s);
+
+    const ampm = Array.from(str.matchAll(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/gi));
+    if (ampm.length){
+      const m = ampm[ampm.length - 1];
+      let h = parseInt(m[1],10);
+      let min = m[2] ? parseInt(m[2],10) : 0;
+      const ap = m[3].toLowerCase();
+      if (h === 12) h = 0;
+      if (ap === "pm") h += 12;
+      if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+      return h*60 + min;
+    }
+
+    const hm = Array.from(str.matchAll(/\b([01]?\d|2[0-3]):([0-5]\d)\b/g));
+    if (hm.length){
+      const m = hm[hm.length - 1];
+      const h = parseInt(m[1],10);
+      const min = parseInt(m[2],10);
+      return h*60 + min;
+    }
 
     return null;
   }
 
-  function parseTimeToMinutes(s){
+  // Robust runtime parsing (handles "2 hr 10 min", "2h 10m", "2:10", "130 min")
+  function parseRuntimeMin(v){
+    if (v === null || v === undefined) return null;
+    if (typeof v === "number" && isFinite(v) && v > 0) return Math.round(v);
+
+    const s = String(v).trim().toLowerCase();
     if (!s) return null;
-    const str = String(s).trim();
 
-    // "7:05 PM", "7 PM", "19:05"
-    let m = str.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
-    if (!m) return null;
+    let m = s.match(/(\d+)\s*:\s*(\d{2})/);
+    if (m) return parseInt(m[1],10)*60 + parseInt(m[2],10);
 
-    let h = parseInt(m[1],10);
-    let min = m[2] ? parseInt(m[2],10) : 0;
-    const ampm = m[3] ? m[3].toLowerCase() : null;
+    const h = s.match(/(\d+)\s*(h|hr|hrs|hour|hours)\b/);
+    const mm = s.match(/(\d+)\s*(m|min|mins|minute|minutes)\b/);
+    if (h) return parseInt(h[1],10)*60 + (mm ? parseInt(mm[1],10) : 0);
 
-    if (ampm){
-      if (h === 12) h = 0;
-      if (ampm === "pm") h += 12;
-    }
-    if (h < 0 || h > 23 || min < 0 || min > 59) return null;
-    return h*60 + min;
+    m = s.match(/(\d+)\s*(min|mins|minute|minutes)\b/);
+    if (m) return parseInt(m[1],10);
+
+    m = s.match(/\b(\d{2,3})\b/);
+    if (m) return parseInt(m[1],10);
+
+    return null;
   }
 
   function minutesToLabel(totalMinutes){
@@ -173,10 +203,32 @@ JS = r"""
     return `${h}:${pad2(min)} ${ampm}`;
   }
 
-  // Normalize showtimes rows into objects we can plan with.
-  // Rules enforced:
-  // - Ignore AMC Bay Street 16
-  // - End time = start + runtime + 30 minutes
+  // Build an "authoritative" movie index from payload.movies (or fallback to raw rows).
+  const movieIndex = new Map();
+  const movies = Array.isArray(payload.movies) ? payload.movies : [];
+  for (const m of movies){
+    const id = Number(m.movie_id);
+    const name = String(m.movie || "").trim();
+    if (id && name && !movieIndex.has(id)) movieIndex.set(id, name);
+  }
+  if (movieIndex.size === 0){
+    for (const r of raw){
+      const id = Number(r.movie_id);
+      const name = String(r.movie || "").trim();
+      if (id && name && !movieIndex.has(id)) movieIndex.set(id, name);
+    }
+  }
+
+  // Keep raw rows by movie for diagnostics.
+  const rawByMovie = new Map();
+  for (const r of raw){
+    const id = Number(r.movie_id);
+    if (!id) continue;
+    if (!rawByMovie.has(id)) rawByMovie.set(id, []);
+    rawByMovie.get(id).push(r);
+  }
+
+  // Normalize showings (only keep those usable for scheduling)
   const showings = raw
     .filter(r => !String(r.theater || "").toLowerCase().includes(IGNORE))
     .map(r => {
@@ -184,13 +236,14 @@ JS = r"""
       const movie = String(r.movie || "").trim();
       const theater = String(r.theater || "").trim();
       const format = String(r.format || "").trim();
+
       const dateKey = parseDateKeyFromString(r.date) || parseDateKeyFromString(r.start);
       const startMin = parseTimeToMinutes(r.start);
-      const runtimeMin = Number(r.runtime_min);
+      const runtimeMin = parseRuntimeMin(r.runtime_min);
 
-      if (!movie_id || !movie || !theater || !dateKey || startMin === null || !runtimeMin) return null;
+      if (!movie_id || !movie || !theater || !dateKey || startMin === null || runtimeMin === null) return null;
 
-      const endMin = startMin + runtimeMin + 30; // rule #5
+      const endMin = startMin + runtimeMin + 30; // rule: runtime + 30
       return {
         movie_id, movie, theater, format,
         dateKey, startMin, endMin, runtimeMin,
@@ -200,7 +253,6 @@ JS = r"""
     })
     .filter(Boolean);
 
-  // Quick index
   const byMovie = new Map();
   for (const s of showings){
     if (!byMovie.has(s.movie_id)) byMovie.set(s.movie_id, []);
@@ -214,15 +266,24 @@ JS = r"""
       .filter(Boolean)
       .map(x => Number(x))
       .filter(n => Number.isFinite(n) && n > 0);
-
-    // unique
-    const uniq = Array.from(new Set(parts));
-    return uniq;
+    return Array.from(new Set(parts));
   }
 
-  function costSingle(s){
-    // Strongly prefer theater order, then premium formats.
-    return (s.tRank * 1000) + (s.fRank * 100) + (s.startMin / 1000);
+  function explainWhyNoUsableShowings(id){
+    const rows = (rawByMovie.get(id) || []).filter(r => !String(r.theater||"").toLowerCase().includes(IGNORE));
+    const probs = new Set();
+    if (!rows.length) probs.add("no rows (or all ignored theater)");
+    for (const r of rows){
+      const theater = String(r.theater || "").trim();
+      const dateKey = parseDateKeyFromString(r.date) || parseDateKeyFromString(r.start);
+      const startMin = parseTimeToMinutes(r.start);
+      const runtimeMin = parseRuntimeMin(r.runtime_min);
+      if (!theater) probs.add("missing theater");
+      if (!dateKey) probs.add("missing/unparseable date");
+      if (startMin === null) probs.add("missing/unparseable start time");
+      if (runtimeMin === null) probs.add("missing/unparseable runtime");
+    }
+    return Array.from(probs);
   }
 
   function bestSingle(movieId, dayKey){
@@ -230,7 +291,7 @@ JS = r"""
     if (!options.length) return null;
     let best = null;
     for (const s of options){
-      const c = costSingle(s);
+      const c = (s.tRank * 1000) + (s.fRank * 100) + (s.startMin / 1000);
       if (!best || c < best.cost) best = { dayKey, entries: [s], cost: c };
     }
     return best;
@@ -241,9 +302,8 @@ JS = r"""
     const B = (byMovie.get(bId) || []).filter(x => x.dateKey === dayKey);
     if (!A.length || !B.length) return null;
 
-    const SAME_THEATER_BONUS = 0;     // handled by penalty below
-    const DIFF_THEATER_PENALTY = 5000; // big preference for same theater (rule #6)
-    const TRANSIT_MIN = 35;           // rule #7
+    const DIFF_THEATER_PENALTY = 5000;
+    const TRANSIT_MIN = 35;
 
     let best = null;
 
@@ -254,20 +314,13 @@ JS = r"""
       const gap = second.startMin - earliestSecond;
       if (gap < 0) return;
 
-      // prefer same theater, preferred theaters, premium formats, then small gap
       const c =
-        (same ? SAME_THEATER_BONUS : DIFF_THEATER_PENALTY) +
+        (same ? 0 : DIFF_THEATER_PENALTY) +
         ((first.tRank + second.tRank) * 1000) +
         ((first.fRank + second.fRank) * 100) +
         gap;
 
-      const cand = {
-        dayKey,
-        entries: [first, second],
-        cost: c,
-        transit,
-        sameTheater: same,
-      };
+      const cand = { dayKey, entries: [first, second], cost: c, transit, sameTheater: same };
       if (!best || cand.cost < best.cost) best = cand;
     }
 
@@ -281,19 +334,11 @@ JS = r"""
   }
 
   function partitions(ids){
-    // partitions into groups of size 1 or 2 (max 2 movies/day rule)
     const res = [];
     function helper(remaining, acc){
-      if (!remaining.length){
-        res.push(acc.map(g => g.slice()));
-        return;
-      }
+      if (!remaining.length){ res.push(acc.map(g => g.slice())); return; }
       const [first, ...rest] = remaining;
-
-      // single
       helper(rest, acc.concat([[first]]));
-
-      // pair with each later id
       for (let i = 0; i < rest.length; i++){
         const second = rest[i];
         const next = rest.slice(0,i).concat(rest.slice(i+1));
@@ -320,30 +365,25 @@ JS = r"""
       }
     }
     cands.sort((x,y)=>x.cost - y.cost);
-    return cands.slice(0, 10); // keep it snappy
+    return cands.slice(0, 10);
   }
 
   function pickBestPlan(selectedIds){
-    // dayKeys present among these movies
     const daySet = new Set();
     for (const id of selectedIds){
       for (const s of (byMovie.get(id) || [])) daySet.add(s.dateKey);
     }
     const dayKeys = Array.from(daySet).sort();
 
-    // generate partitions (1 or 2 movies/day)
     const parts = partitions(selectedIds);
-
     let best = null;
 
     for (const groups of parts){
       const groupCands = groups.map(g => candidatesForGroup(g, dayKeys));
       if (groupCands.some(arr => !arr.length)) continue;
 
-      // assign distinct days to each group
       function assign(i, usedDays, picked, totalCost){
         if (i === groups.length){
-          // prefer fewer days slightly (without breaking rules)
           const costWithDayCount = totalCost + (groups.length * 50);
           if (!best || costWithDayCount < best.cost){
             best = { cost: costWithDayCount, picked: picked.slice() };
@@ -364,17 +404,12 @@ JS = r"""
     }
 
     if (!best) return null;
-
-    // Sort days chronologically
     best.picked.sort((a,b)=>a.dayKey.localeCompare(b.dayKey));
     return best.picked;
   }
 
   function renderPlan(selectedIds, plan){
-    const titles = selectedIds.map(id => {
-      const first = (byMovie.get(id) || [])[0];
-      return first ? `${id} — ${first.movie}` : String(id);
-    });
+    const titles = selectedIds.map(id => `${id} — ${movieIndex.get(id) || "Unknown title"}`);
 
     let html = `<div class="movie-planner-card">
       <h3>Selected movies</h3>
@@ -388,11 +423,10 @@ JS = r"""
 
       html += `<div class="movie-planner-card">
         <h3>${day.dayKey} — ${theaterLine}</h3>
-        <div class="movie-planner-muted">Max 2 movies/day. End time = start + runtime + 30 min. ${theaters.length>1 ? "Includes 35 min transit buffer between theaters." : ""}</div>
+        <div class="movie-planner-muted">End time = start + runtime + 30 min. ${theaters.length>1 ? "Includes 35 min transit buffer." : ""}</div>
         <ol>`;
 
-      for (let i=0; i<entries.length; i++){
-        const e = entries[i];
+      for (const e of entries){
         html += `<li>
           <b>${e.movie}</b> — ${e.format || "Standard"}<br>
           <span class="movie-planner-muted">${e.theater}</span><br>
@@ -418,12 +452,27 @@ JS = r"""
       return;
     }
 
-    // Ensure all ids exist
-    const missing = ids.filter(id => !byMovie.has(id));
+    // Unknown numbers should only mean "not in the table at all"
+    const missing = ids.filter(id => !movieIndex.has(id));
     if (missing.length){
       outEl.innerHTML = `<div class="movie-planner-card">
         <h3>Unknown movie numbers</h3>
         <div class="movie-planner-muted">Not found in the table: <b>${missing.join(", ")}</b></div>
+      </div>`;
+      return;
+    }
+
+    // Known movie IDs, but maybe we couldn't parse usable showtimes for scheduling.
+    const noUsable = ids.filter(id => !(byMovie.get(id) || []).length);
+    if (noUsable.length){
+      const lines = noUsable.map(id => {
+        const why = explainWhyNoUsableShowings(id);
+        return `<li><b>${id} — ${movieIndex.get(id)}</b><br><span class="movie-planner-muted">${why.join(", ")}</span></li>`;
+      }).join("");
+      outEl.innerHTML = `<div class="movie-planner-card">
+        <h3>Can’t plan some selections (missing/unclear data)</h3>
+        <div class="movie-planner-muted">These movies are in the table, but I couldn’t parse usable showtimes:</div>
+        <ul>${lines}</ul>
       </div>`;
       return;
     }
@@ -434,7 +483,7 @@ JS = r"""
         <h3>No feasible plan found</h3>
         <div class="movie-planner-muted">
           I couldn’t find showtimes that fit the constraints (max 2/day, same-theater preference, buffer & transit rules).
-          Try different movie numbers or check if the table includes runtime + start time + date for each showing.
+          Try different movie numbers or verify date/start/runtime are present for each showing.
         </div>
       </div>`;
       return;
@@ -444,6 +493,7 @@ JS = r"""
   });
 })();
 """
+
 
 def norm_header(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
@@ -607,9 +657,13 @@ def main() -> None:
 
     # Data blob for JS
     data_tag = soup.new_tag("script", id="showtimes-data", type="application/json")
+    movies = [{"movie_id": mid, "movie": title}
+          for title, mid in sorted(movie_id_by_title.items(), key=lambda x: x[1])]
+
     data_tag.string = json.dumps({
         "ignore_theater": IGNORE_THEATER_SUBSTR,
         "preferred_theaters": PREFERRED_THEATERS,
+        "movies": movies,
         "showtimes": showtimes,
     }, ensure_ascii=False)
 
