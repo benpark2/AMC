@@ -60,6 +60,49 @@ table, th, td, input, button, select, textarea {
   font-family: var(--jp-ui-font-family) !important;
 }
 
+/* ---------- Professional page chrome ---------- */
+body{
+  margin: 0 !important;
+  background: #f6f7fb !important;
+  color: #0f172a !important;
+  line-height: 1.55 !important;
+}
+
+/* Center the exported notebook content in a card */
+#notebook-container,
+.jp-Notebook,
+.jp-NotebookPanel-notebook,
+main{
+  max-width: 1100px;
+  margin: 24px auto !important;
+  padding: 22px 22px !important;
+  background: #ffffff !important;
+  border-radius: 18px !important;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08) !important;
+}
+
+/* Improve headings / spacing */
+h1, h2, h3{
+  letter-spacing: -0.02em !important;
+  margin-top: 0.9em !important;
+  margin-bottom: 0.4em !important;
+}
+p{ margin: 0 0 0.9em 0 !important; }
+hr{ border: 0 !important; border-top: 1px solid rgba(15,23,42,0.12) !important; margin: 18px 0 !important; }
+a{ text-decoration: none !important; }
+a:hover{ text-decoration: underline !important; }
+
+/* Make code blocks look less “raw” (still system-ui) */
+pre, code{
+  background: rgba(15,23,42,0.04) !important;
+  border-radius: 10px !important;
+  padding: 0.15em 0.35em !important;
+}
+pre{
+  padding: 12px 14px !important;
+  border: 1px solid rgba(15,23,42,0.10) !important;
+}
+
 /* --- existing planner + mobile CSS continues below --- */
 /* Planner + mobile fixes (injected by CI) */
 
