@@ -7509,6 +7509,36 @@ a.anchor-link {
   }
 </style>
 <!-- End of mermaid configuration --><style id="movie-planner-style">
+/* Global system-ui font override (injected by CI) */
+:root{
+  --jp-ui-font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+                       Arial, "Noto Sans", "Liberation Sans", sans-serif;
+  --jp-content-font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+                            Arial, "Noto Sans", "Liberation Sans", sans-serif;
+  --jp-code-font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+                         Arial, "Noto Sans", "Liberation Sans", sans-serif;
+}
+
+/* Most notebook text */
+html, body,
+.jp-Notebook, .jp-RenderedHTMLCommon, .jp-RenderedMarkdown, .jp-RenderedText,
+.jp-OutputArea-output, .jp-Cell, .jp-OutputArea, .jp-OutputPrompt, .jp-InputPrompt {
+  font-family: var(--jp-ui-font-family) !important;
+}
+
+/* Force code-ish things (often Consolas/monospace) to system-ui too */
+pre, code, kbd, samp, tt,
+.jp-RenderedText pre, .jp-RenderedText code,
+.jp-RenderedHTMLCommon pre, .jp-RenderedHTMLCommon code {
+  font-family: var(--jp-code-font-family) !important;
+}
+
+/* (Optional but helps if some elements set a different font explicitly) */
+table, th, td, input, button, select, textarea {
+  font-family: var(--jp-ui-font-family) !important;
+}
+
+/* --- existing planner + mobile CSS continues below --- */
 /* Planner + mobile fixes (injected by CI) */
 
 /* Force Watch Planner to use system-ui (regular + bold) */
@@ -7595,8 +7625,8 @@ img, svg, video, canvas { max-width: 100%; height: auto; }
 <div class="movie-planner-output" id="movie-planner-output"></div>
 </div>
 
-<main><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs jp-mod-noInput" id="cell-id=e2726f50">
-</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noInput" id="cell-id=b491454b">
+<main><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs jp-mod-noInput" id="cell-id=882486f6">
+</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noInput" id="cell-id=00cf0804">
 <div class="jp-Cell-outputWrapper">
 <div class="jp-Collapser jp-OutputCollapser jp-Cell-outputCollapser">
 </div>
@@ -7815,7 +7845,7 @@ table.dataframe th, table.dataframe td {
 <td><a href="https://www.rottentomatoes.com/m/david" rel="noopener noreferrer" target="_blank">David</a></td>
 <td>1h 55m</td>
 <td>NaN</td>
-<td>6.4</td>
+<td>6.3</td>
 <td>NaN</td>
 <td>AMC Bay Street 16<br/>• 2025-12-20: 10:20 am [Open Caption (On-screen Subtitles)], 1:20 pm [Laser at AMC], 4:20 pm [Laser at AMC], 7:20 pm [Laser at AMC], 10:15 pm [Laser at AMC]<br/>• 2025-12-21: 9:00 am [Laser at AMC], 10:20 am [Laser at AMC], 1:20 pm [Laser at AMC], 4:20 pm [Laser at AMC], 7:20 pm [Laser at AMC], 10:15 pm [Laser at AMC]<br/>AMC Orange 30<br/>• 2025-12-20: 8:35 am [Laser at AMC], 9:15 am [Spanish Language Dubbed with No Subti...], 10:15 am [Laser at AMC], 11:40 am [Laser at AMC], 1:15 pm [Open Caption (On-screen Subtitles)], 2:45 pm [Laser at AMC], 4:15 pm [Laser at AMC], 5:45 pm [Laser at AMC], 7:15 pm [Laser at AMC], 8:40 pm [Laser at AMC], 10:15 pm [Laser at AMC]<br/>• 2025-12-21: 8:35 am [Laser at AMC], 9:15 am [Spanish Language Dubbed with No Subti...], 10:15 am [Laser at AMC], 11:40 am [Laser at AMC], 1:15 pm [Laser at AMC], 2:45 pm [Laser at AMC], 4:15 pm [Laser at AMC], 5:45 pm [Laser at AMC], 7:15 pm [Laser at AMC], 8:45 pm [Laser at AMC], 10:15 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2025-12-20: 9:00 am [Laser at AMC], 9:45 am [Laser at AMC], 11:10 am [Laser at AMC], 12:50 pm [Laser at AMC], 3:10 pm [Laser at AMC], 4:00 pm [Laser at AMC], 6:20 pm [Laser at AMC], 7:30 pm [Laser at AMC], 9:00 pm [Laser at AMC]<br/>• 2025-12-21: 9:00 am [Laser at AMC], 9:45 am [Laser at AMC], 10:30 am [Laser at AMC], 12:50 pm [Laser at AMC], 1:40 pm [Laser at AMC], 4:00 pm [Laser at AMC], 4:50 pm [Laser at AMC], 6:20 pm [Laser at AMC], 7:30 pm [Laser at AMC], 9:25 pm [Laser at AMC]</td>
 </tr>
