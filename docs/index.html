@@ -7509,47 +7509,32 @@ a.anchor-link {
   }
 </style>
 <!-- End of mermaid configuration --><style id="movie-planner-style">
-/* --- Mobile + planner styles (injected by CI) --- */
+/* Planner + mobile fixes (injected by CI) */
 .movie-planner{
   max-width: 980px; margin: 16px auto; padding: 14px 16px;
   border: 1px solid rgba(0,0,0,.12); border-radius: 12px;
 }
 .movie-planner h2{ margin: 0 0 6px 0; font-size: 20px; }
 .movie-planner-sub{ margin: 0 0 10px 0; opacity: .85; }
-.movie-planner-controls{
-  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
-  margin: 10px 0 8px 0;
-}
+.movie-planner-controls{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:10px 0 8px 0; }
 .movie-planner-controls input{
-  flex: 1; min-width: 220px; padding: 10px 12px; border-radius: 10px;
-  border: 1px solid rgba(0,0,0,.2);
+  flex:1; min-width:220px; padding:10px 12px; border-radius:10px;
+  border:1px solid rgba(0,0,0,.2);
 }
 .movie-planner-controls button{
-  padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(0,0,0,.2);
-  cursor: pointer;
+  padding:10px 12px; border-radius:10px; border:1px solid rgba(0,0,0,.2); cursor:pointer;
 }
 .movie-planner-output{ margin-top: 10px; }
-.movie-planner-card{
-  border: 1px solid rgba(0,0,0,.12); border-radius: 12px; padding: 12px; margin: 10px 0;
-}
-.movie-planner-card h3{ margin: 0 0 6px 0; font-size: 16px; }
-.movie-planner-muted{ opacity: .8; }
+.movie-planner-card{ border:1px solid rgba(0,0,0,.12); border-radius:12px; padding:12px; margin:10px 0; }
+.movie-planner-card h3{ margin:0 0 6px 0; font-size:16px; }
+.movie-planner-muted{ opacity:.8; }
 
 img, svg, video, canvas { max-width: 100%; height: auto; }
-
-/* Make tables scroll on small screens instead of clipping */
-table.dataframe{ max-width: 100%; }
 @media (max-width: 900px){
   table, table.dataframe{
-    display: block;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    max-width: 100%;
+    display:block; overflow-x:auto; -webkit-overflow-scrolling:touch; max-width:100%;
   }
-  pre{
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-  }
+  pre{ overflow-x:auto; -webkit-overflow-scrolling:touch; }
 }
 </style><style>
 /* Mobile fixes (added by CI) */
@@ -7579,17 +7564,17 @@ img, svg, video, canvas { max-width: 100%; height: auto; }
 <div class="movie-planner" id="movie-planner">
 <h2>Watch Planner</h2>
 <p class="movie-planner-sub">
-    Enter <b>2–4</b> movie numbers (from the <b>#</b> column in the table), then click <b>Suggest plan</b>.
+    Enter <b>2–4</b> movie numbers (from the <b>#</b> column), then click <b>Suggest plan</b>.
   </p>
 <div class="movie-planner-controls">
-<input id="movie-planner-input" inputmode="numeric" placeholder="e.g., 2, 5, 9" type="text"/>
+<input id="movie-planner-input" inputmode="numeric" placeholder="e.g., 3, 4, 5" type="text"/>
 <button id="movie-planner-btn" type="button">Suggest plan</button>
 </div>
 <div class="movie-planner-output" id="movie-planner-output"></div>
 </div>
 
-<main><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs jp-mod-noInput" id="cell-id=3587a907">
-</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noInput" id="cell-id=ec508ae8">
+<main><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs jp-mod-noInput" id="cell-id=188d4455">
+</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noInput" id="cell-id=ccd10dc5">
 <div class="jp-Cell-outputWrapper">
 <div class="jp-Collapser jp-OutputCollapser jp-Cell-outputCollapser">
 </div>
@@ -7628,8 +7613,15 @@ table.dataframe th, table.dataframe td {
 <td>100.0</td>
 <td>AMC Orange 30<br/>• 2025-12-20: 8:30 am⛔ [Laser at AMC]</td>
 </tr>
-
 <tr><td>2</td>
+<td><a href="https://www.rottentomatoes.com/m/christina_aguilera_christmas_in_paris" rel="noopener noreferrer" target="_blank">Christina Aguilera: Christmas in Paris</a></td>
+<td>1h 25m</td>
+<td>97.0</td>
+<td>9.3</td>
+<td>NaN</td>
+<td>AMC Orange 30<br/>• 2025-12-21: 7:00 pm⛔ [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2025-12-21: 7:00 pm⛔ [Laser at AMC]</td>
+</tr>
+<tr><td>3</td>
 <td><a href="https://www.rottentomatoes.com/m/dhurandhar" rel="noopener noreferrer" target="_blank">Dhurandhar</a></td>
 <td>3h 34m</td>
 <td>96.0</td>
@@ -7637,8 +7629,15 @@ table.dataframe th, table.dataframe td {
 <td>54.0</td>
 <td>AMC Orange 30<br/>• 2025-12-20: 9:05 am [Hindi Spoken with English Subtitles], 10:00 am [Hindi Spoken with English Subtitles], 12:20 pm [Hindi Spoken with English Subtitles], 2:10 pm [Hindi Spoken with English Subtitles], 3:25 pm [Hindi Spoken with English Subtitles], 6:45 pm [Hindi Spoken with English Subtitles], 9:30 pm [Hindi Spoken with English Subtitles]<br/>• 2025-12-21: 9:05 am [Hindi Spoken with English Subtitles], 12:20 pm [Hindi Spoken with English Subtitles], 3:25 pm [Hindi Spoken with English Subtitles], 9:30 pm [Hindi Spoken with English Subtitles]</td>
 </tr>
-
-<tr><td>3</td>
+<tr><td>4</td>
+<td><a href="https://www.rottentomatoes.com/m/zootopia_2" rel="noopener noreferrer" target="_blank">Zootopia 2</a></td>
+<td>1h 48m</td>
+<td>96.0</td>
+<td>7.6</td>
+<td>91.0</td>
+<td>AMC Orange 30<br/>• 2025-12-20: 8:30 am [Laser at AMC], 11:15 am [Laser at AMC], 2:10 pm [Laser at AMC], 4:35 pm [Laser at AMC], 7:50 pm [Laser at AMC], 9:20 pm [RealD 3D], 10:20 pm [Laser at AMC]<br/>• 2025-12-21: 8:30 am [Laser at AMC], 11:15 am [Laser at AMC], 2:10 pm [Laser at AMC], 4:35 pm [Laser at AMC], 7:50 pm [Laser at AMC], 9:10 pm [RealD 3D], 10:10 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2025-12-20: 9:50 am [Laser at AMC], 12:55 pm [Laser at AMC], 4:10 pm [Laser at AMC], 7:00 pm [Laser at AMC], 9:35 pm [Laser at AMC]<br/>• 2025-12-21: 9:30 am [Laser at AMC], 12:15 pm [Laser at AMC], 3:10 pm [Laser at AMC], 7:35 pm [Laser at AMC], 9:35 pm [Laser at AMC]<br/>AMC Woodbridge 5<br/>• 2025-12-20: 10:30 am [Laser at AMC], 12:15 pm [Laser at AMC], 3:45 pm [Laser at AMC], 7:30 pm [Laser at AMC], 10:15 pm [Laser at AMC]<br/>• 2025-12-21: 10:30 am [Laser at AMC], 12:15 pm [Laser at AMC], 3:45 pm [Laser at AMC], 7:30 pm [Laser at AMC], 10:15 pm [Laser at AMC]</td>
+</tr>
+<tr><td>5</td>
 <td><a href="https://www.rottentomatoes.com/m/merrily_we_roll_along" rel="noopener noreferrer" target="_blank">Merrily We Roll Along</a></td>
 <td>2h 25m</td>
 <td>95.0</td>
@@ -7646,7 +7645,7 @@ table.dataframe th, table.dataframe td {
 <td>94.0</td>
 <td>AMC Orange 30<br/>• 2025-12-20: 8:40 am⛔ [Laser at AMC]<br/>• 2025-12-21: 8:45 am⛔ [Laser at AMC]</td>
 </tr>
-<tr><td>4</td>
+<tr><td>6</td>
 <td><a href="https://www.rottentomatoes.com/m/predator_badlands" rel="noopener noreferrer" target="_blank">Predator: Badlands</a></td>
 <td>1h 47m</td>
 <td>95.0</td>
@@ -7654,7 +7653,7 @@ table.dataframe th, table.dataframe td {
 <td>86.0</td>
 <td>AMC Orange 30<br/>• 2025-12-20: 8:40 am [Laser at AMC], 7:40 pm [Laser at AMC]<br/>• 2025-12-21: 8:40 am [Laser at AMC], 7:40 pm [Laser at AMC]</td>
 </tr>
-<tr><td>5</td>
+<tr><td>7</td>
 <td><a href="https://www.rottentomatoes.com/m/sentimental_value" rel="noopener noreferrer" target="_blank">Sentimental Value</a></td>
 <td>2h 13m</td>
 <td>94.0</td>
@@ -7662,12 +7661,47 @@ table.dataframe th, table.dataframe td {
 <td>96.0</td>
 <td>AMC Orange 30<br/>• 2025-12-20: 11:20 pm [Norwegian Spoken with English Subtitles]<br/>• 2025-12-21: 11:20 pm [Norwegian Spoken with English Subtitles]</td>
 </tr>
-
-
-
-
-
-<tr><td>6</td>
+<tr><td>8</td>
+<td><a href="https://www.rottentomatoes.com/m/hamnet" rel="noopener noreferrer" target="_blank">Hamnet</a></td>
+<td>2h 5m</td>
+<td>93.0</td>
+<td>8.1</td>
+<td>86.0</td>
+<td>AMC Orange 30<br/>• 2025-12-20: 4:20 pm [Laser at AMC], 7:25 pm [Laser at AMC]<br/>• 2025-12-21: 4:20 pm [Laser at AMC], 7:25 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2025-12-20: 1:00 pm [Laser at AMC], 7:15 pm [Laser at AMC]<br/>• 2025-12-21: 12:55 pm [Laser at AMC]</td>
+</tr>
+<tr><td>9</td>
+<td><a href="https://www.rottentomatoes.com/m/wicked_for_good" rel="noopener noreferrer" target="_blank">Wicked: For Good</a></td>
+<td>2h 17m</td>
+<td>93.0</td>
+<td>6.9</td>
+<td>67.0</td>
+<td>AMC Orange 30<br/>• 2025-12-20: 8:50 am [Laser at AMC], 12:05 pm [Laser at AMC], 3:20 pm [Laser at AMC], 6:50 pm [Laser at AMC], 10:15 pm [Laser at AMC]<br/>• 2025-12-21: 8:50 am [Laser at AMC], 12:05 pm [Laser at AMC], 3:25 pm [Laser at AMC], 6:50 pm [Laser at AMC], 10:15 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2025-12-20: 12:55 pm [Laser at AMC], 4:20 pm [Laser at AMC], 7:05 pm [Laser at AMC], 10:35 pm [Laser at AMC]<br/>• 2025-12-21: 12:40 pm [Laser at AMC], 4:00 pm [Laser at AMC], 7:00 pm [Laser at AMC], 10:25 pm [Laser at AMC]<br/>AMC Woodbridge 5<br/>• 2025-12-20: 1:15 pm [Laser at AMC], 4:10 pm [Laser at AMC]<br/>• 2025-12-21: 1:15 pm [Laser at AMC], 4:10 pm [Laser at AMC]</td>
+</tr>
+<tr><td>10</td>
+<td><a href="https://www.rottentomatoes.com/m/avatar_fire_and_ash" rel="noopener noreferrer" target="_blank">Avatar: Fire and Ash</a></td>
+<td>3h 17m</td>
+<td>91.0</td>
+<td>7.6</td>
+<td>69.0</td>
+<td>AMC Orange 30<br/>• 2025-12-20: 8:30 am [RealD 3D], 9:00 am [IMAX with LASER 3D at AMC], 9:30 am [Laser at AMC], 10:00 am [Dolby Cinema at AMC], 10:30 am [RealD 3D], 11:00 am [RealD 3D], 11:30 am [Laser at AMC], 12:00 pm [Laser at AMC], 12:30 pm [RealD 3D], 1:00 pm [RealD 3D], 1:30 pm [IMAX with LASER 3D at AMC], 2:00 pm [English Spoken with Spanish Subtitles], 2:30 pm [Dolby Cinema 3D], 3:00 pm [Open Caption (On-screen Subtitles)], 3:30 pm [RealD 3D], 4:00 pm [Laser at AMC], 4:30 pm [Laser at AMC], 5:00 pm [RealD 3D], 5:30 pm [RealD 3D], 6:00 pm [IMAX with LASER 3D at AMC], 6:30 pm [Laser at AMC], 7:00 pm [Dolby Cinema 3D], 7:30 pm [RealD 3D], 8:00 pm [RealD 3D], 8:30 pm [Laser at AMC], 9:00 pm [Laser at AMC], 9:30 pm [RealD 3D], 10:00 pm [RealD 3D], 10:30 pm [IMAX with LASER 3D at AMC], 11:00 pm [RealD 3D], 11:15 pm [Dolby Cinema at AMC]<br/>• 2025-12-21: 8:30 am [RealD 3D], 9:00 am [IMAX with LASER 3D at AMC], 9:30 am [Laser at AMC], 10:00 am [Dolby Cinema at AMC], 10:30 am [RealD 3D], 11:00 am [RealD 3D], 11:30 am [Laser at AMC], 12:00 pm [Laser at AMC], 12:30 pm [RealD 3D], 1:00 pm [RealD 3D], 1:30 pm [IMAX with LASER 3D at AMC], 2:00 pm [English Spoken with Spanish Subtitles], 2:30 pm [Dolby Cinema 3D], 3:00 pm [Open Caption (On-screen Subtitles)], 3:30 pm [RealD 3D], 4:00 pm [Laser at AMC], 4:30 pm [Laser at AMC], 5:00 pm [RealD 3D], 5:30 pm [RealD 3D], 6:00 pm [IMAX with LASER 3D at AMC], 6:30 pm [Laser at AMC], 7:00 pm [Dolby Cinema 3D], 7:30 pm [RealD 3D], 8:00 pm [RealD 3D], 8:30 pm [Laser at AMC], 9:00 pm [Laser at AMC], 9:30 pm [RealD 3D], 10:00 pm [RealD 3D], 10:30 pm [IMAX with LASER 3D at AMC], 11:00 pm [RealD 3D], 11:15 pm [Dolby Cinema at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2025-12-20: 9:00 am [Dolby Cinema 3D], 10:00 am [IMAX with LASER 3D at AMC], 11:00 am [Laser at AMC], 12:45 pm [Open Caption (On-screen Subtitles)], 1:30 pm [Dolby Cinema 3D], 2:30 pm [IMAX with LASER 3D at AMC], 5:15 pm [Laser at AMC], 6:00 pm [Dolby Cinema 3D], 7:00 pm [IMAX with LASER 3D at AMC], 8:20 pm [Laser at AMC], 9:45 pm [RealD 3D], 10:30 pm [Dolby Cinema at AMC]<br/>• 2025-12-21: 9:00 am [Dolby Cinema 3D], 10:00 am [IMAX with LASER 3D at AMC], 11:10 am [Laser at AMC], 12:30 pm [Open Caption (On-screen Subtitles)], 1:30 pm [Dolby Cinema 3D], 2:30 pm [IMAX with LASER 3D at AMC], 5:15 pm [Laser at AMC], 6:00 pm [Dolby Cinema 3D], 7:00 pm [IMAX with LASER 3D at AMC], 8:00 pm [Laser at AMC], 9:45 pm [RealD 3D], 10:30 pm [Dolby Cinema at AMC]<br/>AMC Woodbridge 5<br/>• 2025-12-20: 11:30 am [RealD 3D], 3:00 pm [Laser at AMC], 6:30 pm [RealD 3D], 9:40 pm [RealD 3D]<br/>• 2025-12-21: 11:30 am [RealD 3D], 3:00 pm [Laser at AMC], 6:30 pm [RealD 3D], 9:40 pm [RealD 3D]</td>
+</tr>
+<tr><td>11</td>
+<td><a href="https://www.rottentomatoes.com/m/five_nights_at_freddys_2" rel="noopener noreferrer" target="_blank">Five Nights at Freddy's 2</a></td>
+<td>1h 44m</td>
+<td>86.0</td>
+<td>5.5</td>
+<td>15.0</td>
+<td>AMC Orange 30<br/>• 2025-12-20: 8:35 am [Laser at AMC], 9:50 am [Laser at AMC], 11:40 am [Laser at AMC], 12:50 pm [Laser at AMC], 2:40 pm [Laser at AMC], 3:45 pm [Laser at AMC], 5:40 pm [Laser at AMC], 6:40 pm [Laser at AMC], 7:25 pm [Laser at AMC], 9:35 pm [Laser at AMC], 11:25 pm [Laser at AMC]<br/>• 2025-12-21: 8:35 am [Laser at AMC], 11:40 am [Laser at AMC], 2:40 pm [Laser at AMC], 5:40 pm [Laser at AMC], 7:25 pm [Laser at AMC], 8:40 pm [Laser at AMC], 11:25 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2025-12-20: 10:05 am [Laser at AMC], 12:15 pm [Laser at AMC], 5:20 pm [Laser at AMC], 7:45 pm [Laser at AMC], 10:05 pm [Laser at AMC]<br/>• 2025-12-21: 12:25 pm [Laser at AMC], 4:45 pm [Laser at AMC], 7:55 pm [Laser at AMC], 10:30 pm [Laser at AMC]<br/>AMC Woodbridge 5<br/>• 2025-12-20: 7:45 pm [Laser at AMC], 10:30 pm [Laser at AMC]<br/>• 2025-12-21: 7:45 pm [Laser at AMC], 10:30 pm [Laser at AMC]</td>
+</tr>
+<tr><td>12</td>
+<td><a href="https://www.rottentomatoes.com/m/the_spongebob_movie_search_for_squarepants" rel="noopener noreferrer" target="_blank">The Spongebob Movie: Search for Squarepants</a></td>
+<td>1h 36m</td>
+<td>84.0</td>
+<td>6.0</td>
+<td>84.0</td>
+<td>AMC Orange 30<br/>• 2025-12-20: 8:30 am [Laser at AMC], 8:55 am [Laser at AMC], 9:45 am [RealD 3D], 10:35 am [RealD 3D], 11:20 am [Laser at AMC], 11:45 am [Laser at AMC], 12:35 pm [Laser at AMC], 1:30 pm [RealD 3D], 1:55 pm [Open Caption (On-screen Subtitles)], 2:30 pm [Spanish Language Dubbed with No Subti...], 3:25 pm [RealD 3D], 4:25 pm [RealD 3D], 4:50 pm [Laser at AMC], 5:25 pm [Spanish Language Dubbed with No Subti...], 6:15 pm [RealD 3D], 7:40 pm [Laser at AMC], 8:20 pm [English Spoken with Spanish Subtitles], 9:05 pm [Laser at AMC], 10:35 pm [Laser at AMC], 11:00 pm [Laser at AMC], 11:30 pm [Laser at AMC]<br/>• 2025-12-21: 8:30 am [Laser at AMC], 8:45 am [Laser at AMC], 9:45 am [RealD 3D], 10:10 am [Spanish Language Dubbed with No Subti...], 10:40 am [RealD 3D], 11:20 am [Laser at AMC], 11:45 am [Laser at AMC], 12:35 pm [RealD 3D], 1:00 pm [English Spoken with Spanish Subtitles], 1:30 pm [RealD 3D], 1:55 pm [Laser at AMC], 2:30 pm [Laser at AMC], 3:25 pm [RealD 3D], 4:00 pm [Spanish Language Dubbed with No Subti...], 4:25 pm [RealD 3D], 4:50 pm [Laser at AMC], 5:25 pm [Laser at AMC], 6:15 pm [RealD 3D], 7:40 pm [Laser at AMC], 8:20 pm [Laser at AMC], 9:05 pm [RealD 3D], 9:35 pm [Spanish Language Dubbed with No Subti...], 10:35 pm [Laser at AMC], 11:00 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2025-12-20: 9:15 am [Laser at AMC], 10:00 am [Laser at AMC], 10:45 am, 12:10 pm [Open Caption (On-screen Subtitles)], 1:35 pm, 2:20 pm [Laser at AMC], 3:20 pm [RealD 3D], 4:30 pm, 6:15 pm [Laser at AMC], 7:15 pm [Laser at AMC], 9:20 pm [RealD 3D]<br/>• 2025-12-21: 9:25 am [Laser at AMC], 10:45 am, 11:30 am [Laser at AMC], 1:35 pm, 2:20 pm [Laser at AMC], 3:30 pm [RealD 3D], 4:30 pm, 5:15 pm [Laser at AMC], 7:05 pm [Laser at AMC], 9:20 pm [RealD 3D]<br/>AMC Woodbridge 5<br/>• 2025-12-20: 10:15 am [Laser at AMC], 11:00 am [Laser at AMC], 1:40 pm [RealD 3D], 4:20 pm [Laser at AMC], 7:00 pm [Laser at AMC], 10:45 pm [RealD 3D]<br/>• 2025-12-21: 10:15 am [Laser at AMC], 11:00 am [Laser at AMC], 1:40 pm [RealD 3D], 4:20 pm [Laser at AMC], 7:00 pm [Laser at AMC], 10:45 pm [RealD 3D]</td>
+</tr>
+<tr><td>13</td>
 <td><a href="https://www.rottentomatoes.com/m/dust_bunny" rel="noopener noreferrer" target="_blank">Dust Bunny</a></td>
 <td>1h 46m</td>
 <td>82.0</td>
@@ -7675,8 +7709,15 @@ table.dataframe th, table.dataframe td {
 <td>84.0</td>
 <td>AMC Orange 30<br/>• 2025-12-20: 9:25 am [Laser at AMC]<br/>• 2025-12-21: 9:25 am [Laser at AMC]</td>
 </tr>
-
-<tr><td>7</td>
+<tr><td>14</td>
+<td><a href="https://www.rottentomatoes.com/m/jujutsu_kaisen_execution" rel="noopener noreferrer" target="_blank">JUJUTSU KAISEN: Execution</a></td>
+<td>1h 27m</td>
+<td>80.0</td>
+<td>6.5</td>
+<td>64.0</td>
+<td>AMC Orange 30<br/>• 2025-12-20: 8:50 am [Japanese Spoken with English Subtitles], 11:30 am [Japanese Spoken with English Subtitles], 2:05 pm [English Language Dubbed with No Subti...], 5:10 pm [Japanese Spoken with English Subtitles], 8:40 pm [English Language Dubbed with No Subti...], 10:50 pm [Japanese Spoken with English Subtitles]<br/>• 2025-12-21: 8:35 am [Japanese Spoken with English Subtitles], 8:50 am [Japanese Spoken with English Subtitles], 11:30 am [Japanese Spoken with English Subtitles], 2:05 pm [English Language Dubbed with No Subti...], 5:10 pm [Japanese Spoken with English Subtitles], 10:50 pm [Japanese Spoken with English Subtitles]<br/>AMC Tustin 14 @ The District<br/>• 2025-12-20: 10:30 pm [Japanese Spoken with English Subtitles]<br/>• 2025-12-21: 10:25 pm [Japanese Spoken with English Subtitles]</td>
+</tr>
+<tr><td>15</td>
 <td><a href="https://www.rottentomatoes.com/m/elf" rel="noopener noreferrer" target="_blank">Elf</a></td>
 <td>1h 37m</td>
 <td>79.0</td>
@@ -7684,7 +7725,7 @@ table.dataframe th, table.dataframe td {
 <td>85.0</td>
 <td>AMC Orange 30<br/>• 2025-12-20: 1:30 pm [Fan Faves]</td>
 </tr>
-<tr><td>8</td>
+<tr><td>16</td>
 <td><a href="https://www.rottentomatoes.com/m/not_without_hope" rel="noopener noreferrer" target="_blank">Not Without Hope</a></td>
 <td>2h 1m</td>
 <td>73.0</td>
@@ -7692,10 +7733,31 @@ table.dataframe th, table.dataframe td {
 <td>NaN</td>
 <td>AMC Orange 30<br/>• 2025-12-20: 10:40 pm [Laser at AMC]<br/>• 2025-12-21: 10:40 pm [Laser at AMC]</td>
 </tr>
-
-
-
-<tr><td>9</td>
+<tr><td>17</td>
+<td><a href="https://www.rottentomatoes.com/m/eternity" rel="noopener noreferrer" target="_blank">Eternity</a></td>
+<td>1h 54m</td>
+<td>62.0</td>
+<td>7.3</td>
+<td>NaN</td>
+<td>AMC Orange 30<br/>• 2025-12-20: 8:30 am [Laser at AMC], 11:20 am [Laser at AMC], 2:15 pm [Laser at AMC], 5:10 pm [Laser at AMC], 8:05 pm [Laser at AMC], 11:00 pm [Laser at AMC]<br/>• 2025-12-21: 8:30 am [Laser at AMC], 11:20 am [Laser at AMC], 2:15 pm [Laser at AMC], 5:10 pm [Laser at AMC], 8:05 pm [Laser at AMC], 11:00 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2025-12-20: 10:00 am [Laser at AMC], 4:05 pm [Laser at AMC], 10:35 pm [Laser at AMC]<br/>• 2025-12-21: 10:00 am [Laser at AMC], 4:00 pm [Laser at AMC], 7:25 pm [Laser at AMC], 10:40 pm [Laser at AMC]</td>
+</tr>
+<tr><td>18</td>
+<td><a href="https://www.rottentomatoes.com/m/the_housemaid" rel="noopener noreferrer" target="_blank">The Housemaid</a></td>
+<td>2h 11m</td>
+<td>54.0</td>
+<td>6.5</td>
+<td>69.0</td>
+<td>AMC Orange 30<br/>• 2025-12-20: 9:00 am [Laser at AMC], 10:00 am [Laser at AMC], 11:30 am [Laser at AMC], 12:10 pm [English Spoken with Spanish Subtitles], 1:30 pm [Laser at AMC], 2:55 pm [Laser at AMC], 4:55 pm [Open Caption (On-screen Subtitles)], 6:20 pm [Laser at AMC], 7:20 pm [English Spoken with Spanish Subtitles], 8:20 pm [Laser at AMC], 9:45 pm [Laser at AMC], 10:45 pm [English Spoken with Spanish Subtitles], 11:30 pm [Laser at AMC]<br/>• 2025-12-21: 9:00 am [Laser at AMC], 9:50 am [Laser at AMC], 10:05 am [Laser at AMC], 11:30 am [Laser at AMC], 12:10 pm [English Spoken with Spanish Subtitles], 1:20 pm [Laser at AMC], 1:30 pm [Laser at AMC], 4:55 pm [Laser at AMC], 5:00 pm [Laser at AMC], 6:20 pm [Laser at AMC], 7:20 pm [English Spoken with Spanish Subtitles], 8:20 pm [Laser at AMC], 8:20 pm [Laser at AMC], 9:45 pm [Laser at AMC], 10:45 pm [English Spoken with Spanish Subtitles], 11:30 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2025-12-20: 9:40 am [Laser at AMC], 1:00 pm [Laser at AMC], 2:55 pm [Laser at AMC], 4:15 pm [Laser at AMC], 6:15 pm [Laser at AMC], 7:20 pm, 10:00 pm [Laser at AMC], 10:45 pm<br/>• 2025-12-21: 9:40 am [Laser at AMC], 11:00 am [Laser at AMC], 1:00 pm [Laser at AMC], 3:30 pm [Open Caption (On-screen Subtitles)], 4:15 pm [Laser at AMC], 6:15 pm [Laser at AMC], 7:20 pm, 9:55 pm [Laser at AMC], 10:45 pm<br/>AMC Woodbridge 5<br/>• 2025-12-20: 1:00 pm [Laser at AMC], 4:35 pm [Laser at AMC], 7:15 pm [Laser at AMC], 10:30 pm [Laser at AMC]<br/>• 2025-12-21: 1:00 pm [Laser at AMC], 4:35 pm [Laser at AMC], 7:15 pm [Laser at AMC], 10:30 pm [Laser at AMC]</td>
+</tr>
+<tr><td>19</td>
+<td><a href="https://www.rottentomatoes.com/m/ella_mccay" rel="noopener noreferrer" target="_blank">Ella McCay</a></td>
+<td>1h 55m</td>
+<td>52.0</td>
+<td>5.3</td>
+<td>23.0</td>
+<td>AMC Orange 30<br/>• 2025-12-20: 4:45 pm [Laser at AMC]<br/>• 2025-12-21: 4:45 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2025-12-20: 1:05 pm [Laser at AMC]<br/>• 2025-12-21: 2:15 pm [Laser at AMC]</td>
+</tr>
+<tr><td>20</td>
 <td><a href="https://www.rottentomatoes.com/m/silent_night_deadly_night" rel="noopener noreferrer" target="_blank">Silent Night, Deadly Night</a></td>
 <td>1h 36m</td>
 <td>40.0</td>
@@ -7703,7 +7765,7 @@ table.dataframe th, table.dataframe td {
 <td>55.0</td>
 <td>AMC Orange 30<br/>• 2025-12-20: 8:30 am [Laser at AMC], 7:50 pm [Laser at AMC], 10:35 pm [Laser at AMC]<br/>• 2025-12-21: 7:50 pm [Laser at AMC], 10:35 pm [Laser at AMC]</td>
 </tr>
-<tr><td>10</td>
+<tr><td>21</td>
 <td>Dr Seuss' How The Grinch Stole Christmas (2000): 25th Anniversary</td>
 <td>26m</td>
 <td>NaN</td>
@@ -7711,8 +7773,15 @@ table.dataframe th, table.dataframe td {
 <td>NaN</td>
 <td>AMC Orange 30<br/>• 2025-12-20: 8:30 am [Fan Faves]<br/>• 2025-12-21: 8:30 am [Fan Faves]</td>
 </tr>
-
-<tr><td>11</td>
+<tr><td>22</td>
+<td><a href="https://www.rottentomatoes.com/m/the_secret_agent" rel="noopener noreferrer" target="_blank">The Secret Agent</a></td>
+<td>2h 41m</td>
+<td>NaN</td>
+<td>8.0</td>
+<td>NaN</td>
+<td>AMC Bay Street 16<br/>• 2025-12-20: 11:20 am [Portuguese Spoken with English Subtitles], 3:10 pm [Portuguese Spoken with English Subtitles], 6:50 pm [Portuguese Spoken with English Subtitles], 10:30 pm [Portuguese Spoken with English Subtitles]<br/>• 2025-12-21: 11:20 am [Portuguese Spoken with English Subtitles], 3:10 pm [Portuguese Spoken with English Subtitles], 6:50 pm [Portuguese Spoken with English Subtitles], 10:30 pm [Portuguese Spoken with English Subtitles]</td>
+</tr>
+<tr><td>23</td>
 <td>The Polar Express</td>
 <td>1h 40m</td>
 <td>NaN</td>
@@ -7720,8 +7789,15 @@ table.dataframe th, table.dataframe td {
 <td>NaN</td>
 <td>AMC Orange 30<br/>• 2025-12-21: 1:30 pm [Fan Faves]</td>
 </tr>
-
-<tr><td>12</td>
+<tr><td>24</td>
+<td><a href="https://www.rottentomatoes.com/m/david" rel="noopener noreferrer" target="_blank">David</a></td>
+<td>1h 55m</td>
+<td>NaN</td>
+<td>6.4</td>
+<td>NaN</td>
+<td>AMC Orange 30<br/>• 2025-12-20: 8:35 am [Laser at AMC], 9:15 am [Spanish Language Dubbed with No Subti...], 10:15 am [Laser at AMC], 11:40 am [Laser at AMC], 1:15 pm [Open Caption (On-screen Subtitles)], 2:45 pm [Laser at AMC], 4:15 pm [Laser at AMC], 5:45 pm [Laser at AMC], 7:15 pm [Laser at AMC], 8:40 pm [Laser at AMC], 10:15 pm [Laser at AMC]<br/>• 2025-12-21: 8:35 am [Laser at AMC], 9:15 am [Spanish Language Dubbed with No Subti...], 10:15 am [Laser at AMC], 11:40 am [Laser at AMC], 1:15 pm [Laser at AMC], 2:45 pm [Laser at AMC], 4:15 pm [Laser at AMC], 5:45 pm [Laser at AMC], 7:15 pm [Laser at AMC], 8:45 pm [Laser at AMC], 10:15 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2025-12-20: 9:00 am [Laser at AMC], 9:45 am [Laser at AMC], 11:10 am [Laser at AMC], 12:50 pm [Laser at AMC], 3:10 pm [Laser at AMC], 4:00 pm [Laser at AMC], 6:20 pm [Laser at AMC], 7:30 pm [Laser at AMC], 9:00 pm [Laser at AMC]<br/>• 2025-12-21: 9:00 am [Laser at AMC], 9:45 am [Laser at AMC], 10:30 am [Laser at AMC], 12:50 pm [Laser at AMC], 1:40 pm [Laser at AMC], 4:00 pm [Laser at AMC], 4:50 pm [Laser at AMC], 6:20 pm [Laser at AMC], 7:30 pm [Laser at AMC], 9:25 pm [Laser at AMC]</td>
+</tr>
+<tr><td>25</td>
 <td><a href="https://www.rottentomatoes.com/m/now_you_see_me_now_you_dont" rel="noopener noreferrer" target="_blank">Now You See Me: Now You Don't</a></td>
 <td>1h 53m</td>
 <td>NaN</td>
@@ -7729,7 +7805,7 @@ table.dataframe th, table.dataframe td {
 <td>NaN</td>
 <td>AMC Orange 30<br/>• 2025-12-20: 8:45 am [Laser at AMC], 11:40 am [Laser at AMC], 2:35 pm [Laser at AMC], 5:25 pm [Laser at AMC], 8:25 pm [Laser at AMC], 11:20 pm [Laser at AMC]<br/>• 2025-12-21: 8:45 am [Laser at AMC], 11:40 am [Laser at AMC], 2:35 pm [Laser at AMC], 5:25 pm [Laser at AMC], 8:25 pm [Laser at AMC], 11:20 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2025-12-20: 9:55 am [Laser at AMC], 4:10 pm [Laser at AMC], 10:25 pm [Laser at AMC]<br/>• 2025-12-21: 9:40 am [Laser at AMC], 10:45 pm [Laser at AMC]</td>
 </tr>
-<tr><td>13</td>
+<tr><td>26</td>
 <td><a href="https://www.rottentomatoes.com/m/bha_bha_ba" rel="noopener noreferrer" target="_blank">Bha. Bha. Ba.</a></td>
 <td>2h 45m</td>
 <td>NaN</td>
@@ -7737,7 +7813,14 @@ table.dataframe th, table.dataframe td {
 <td>NaN</td>
 <td>AMC Orange 30<br/>• 2025-12-20: 5:50 pm [Malayalam Spoken with English Subtitles], 10:30 pm [Malayalam Spoken with English Subtitles]<br/>• 2025-12-21: 10:30 pm [Malayalam Spoken with English Subtitles]</td>
 </tr>
-
+<tr><td>27</td>
+<td>Royal Ballet: The Nutcracker (2025)</td>
+<td>None</td>
+<td>NaN</td>
+<td>NaN</td>
+<td>NaN</td>
+<td>AMC Orange 30<br/>• 2025-12-21: 3:00 pm⛔ [Laser at AMC]</td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -7746,18 +7829,17 @@ table.dataframe th, table.dataframe td {
 </div>
 </div>
 </main>
-<script id="showtimes-data" type="application/json">{"ignore_theater": "AMC Bay Street 16", "preferred_theaters": ["AMC Tustin 14 @ The District", "AMC Woodbridge 5", "AMC Orange 30"], "movies": [{"movie_id": 1, "movie": "Kill Bill: The Whole Bloody Affair"}, {"movie_id": 2, "movie": "Dhurandhar"}, {"movie_id": 3, "movie": "Merrily We Roll Along"}, {"movie_id": 4, "movie": "Predator: Badlands"}, {"movie_id": 5, "movie": "Sentimental Value"}, {"movie_id": 6, "movie": "Dust Bunny"}, {"movie_id": 7, "movie": "Elf"}, {"movie_id": 8, "movie": "Not Without Hope"}, {"movie_id": 9, "movie": "Silent Night, Deadly Night"}, {"movie_id": 10, "movie": "Dr Seuss' How The Grinch Stole Christmas (2000): 25th Anniversary"}, {"movie_id": 11, "movie": "The Polar Express"}, {"movie_id": 12, "movie": "Now You See Me: Now You Don't"}, {"movie_id": 13, "movie": "Bha. Bha. Ba."}], "showtimes": [{"movie_id": 1, "movie": "Kill Bill: The Whole Bloody Affair", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "8:30 AM", "runtime_min": 275}, {"movie_id": 1, "movie": "Kill Bill: The Whole Bloody Affair", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "08:30", "runtime_min": 275}, {"movie_id": 2, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "9:05 AM", "runtime_min": 214}, {"movie_id": 2, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "10:00 AM", "runtime_min": 214}, {"movie_id": 2, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "12:20 PM", "runtime_min": 214}, {"movie_id": 2, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "2:10 PM", "runtime_min": 214}, {"movie_id": 2, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "3:25 PM", "runtime_min": 214}, {"movie_id": 2, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "6:45 PM", "runtime_min": 214}, {"movie_id": 2, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "9:30 PM", "runtime_min": 214}, {"movie_id": 2, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "09:05", "runtime_min": 214}, {"movie_id": 2, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "10:00", "runtime_min": 214}, {"movie_id": 2, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "12:20", "runtime_min": 214}, {"movie_id": 2, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "02:10", "runtime_min": 214}, {"movie_id": 2, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "03:25", "runtime_min": 214}, {"movie_id": 2, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "06:45", "runtime_min": 214}, {"movie_id": 2, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "09:30", "runtime_min": 214}, {"movie_id": 3, "movie": "Merrily We Roll Along", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "8:40 AM", "runtime_min": 145}, {"movie_id": 3, "movie": "Merrily We Roll Along", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "8:45 AM", "runtime_min": 145}, {"movie_id": 3, "movie": "Merrily We Roll Along", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "08:40", "runtime_min": 145}, {"movie_id": 3, "movie": "Merrily We Roll Along", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "08:45", "runtime_min": 145}, {"movie_id": 4, "movie": "Predator: Badlands", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "8:40 AM", "runtime_min": 107}, {"movie_id": 4, "movie": "Predator: Badlands", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "7:40 PM", "runtime_min": 107}, {"movie_id": 4, "movie": "Predator: Badlands", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "08:40", "runtime_min": 107}, {"movie_id": 4, "movie": "Predator: Badlands", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "07:40", "runtime_min": 107}, {"movie_id": 5, "movie": "Sentimental Value", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "11:20 PM", "runtime_min": 133}, {"movie_id": 5, "movie": "Sentimental Value", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "11:20", "runtime_min": 133}, {"movie_id": 6, "movie": "Dust Bunny", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "9:25 AM", "runtime_min": 106}, {"movie_id": 6, "movie": "Dust Bunny", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "09:25", "runtime_min": 106}, {"movie_id": 7, "movie": "Elf", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "1:30 PM", "runtime_min": 97}, {"movie_id": 7, "movie": "Elf", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "01:30", "runtime_min": 97}, {"movie_id": 8, "movie": "Not Without Hope", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "10:40 PM", "runtime_min": 121}, {"movie_id": 8, "movie": "Not Without Hope", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "10:40", "runtime_min": 121}, {"movie_id": 9, "movie": "Silent Night, Deadly Night", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "8:30 AM", "runtime_min": 96}, {"movie_id": 9, "movie": "Silent Night, Deadly Night", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "7:50 PM", "runtime_min": 96}, {"movie_id": 9, "movie": "Silent Night, Deadly Night", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "10:35 PM", "runtime_min": 96}, {"movie_id": 9, "movie": "Silent Night, Deadly Night", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "08:30", "runtime_min": 96}, {"movie_id": 9, "movie": "Silent Night, Deadly Night", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "07:50", "runtime_min": 96}, {"movie_id": 9, "movie": "Silent Night, Deadly Night", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "10:35", "runtime_min": 96}, {"movie_id": 10, "movie": "Dr Seuss' How The Grinch Stole Christmas (2000): 25th Anniversary", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "8:30 AM", "runtime_min": 26}, {"movie_id": 10, "movie": "Dr Seuss' How The Grinch Stole Christmas (2000): 25th Anniversary", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "08:30", "runtime_min": 26}, {"movie_id": 11, "movie": "The Polar Express", "theater": "AMC Orange 30", "format": "", "date": "2025-12-21", "start": "1:30 PM", "runtime_min": 100}, {"movie_id": 11, "movie": "The Polar Express", "theater": "AMC Orange 30", "format": "", "date": "2025-12-21", "start": "01:30", "runtime_min": 100}, {"movie_id": 12, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "8:45 AM", "runtime_min": 113}, {"movie_id": 12, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "11:40 AM", "runtime_min": 113}, {"movie_id": 12, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "2:35 PM", "runtime_min": 113}, {"movie_id": 12, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "5:25 PM", "runtime_min": 113}, {"movie_id": 12, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "8:25 PM", "runtime_min": 113}, {"movie_id": 12, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "11:20 PM", "runtime_min": 113}, {"movie_id": 12, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "9:55 AM", "runtime_min": 113}, {"movie_id": 12, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "4:10 PM", "runtime_min": 113}, {"movie_id": 12, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "10:25 PM", "runtime_min": 113}, {"movie_id": 12, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "9:40 AM", "runtime_min": 113}, {"movie_id": 12, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "10:45 PM", "runtime_min": 113}, {"movie_id": 12, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "08:45", "runtime_min": 113}, {"movie_id": 12, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "11:40", "runtime_min": 113}, {"movie_id": 12, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "02:35", "runtime_min": 113}, {"movie_id": 12, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "05:25", "runtime_min": 113}, {"movie_id": 12, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "08:25", "runtime_min": 113}, {"movie_id": 12, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "11:20", "runtime_min": 113}, {"movie_id": 12, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "09:55", "runtime_min": 113}, {"movie_id": 12, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "04:10", "runtime_min": 113}, {"movie_id": 12, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "10:25", "runtime_min": 113}, {"movie_id": 12, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "09:40", "runtime_min": 113}, {"movie_id": 12, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "10:45", "runtime_min": 113}, {"movie_id": 13, "movie": "Bha. Bha. Ba.", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "5:50 PM", "runtime_min": 165}, {"movie_id": 13, "movie": "Bha. Bha. Ba.", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "10:30 PM", "runtime_min": 165}, {"movie_id": 13, "movie": "Bha. Bha. Ba.", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "05:50", "runtime_min": 165}, {"movie_id": 13, "movie": "Bha. Bha. Ba.", "theater": "AMC Orange 30", "format": "", "date": "2025-12-20", "start": "10:30", "runtime_min": 165}]}</script><script id="movie-planner-js">
+<script id="showtimes-data" type="application/json">{"ignore_theater": "AMC Bay Street 16", "preferred_theaters": ["AMC Tustin 14 @ The District", "AMC Woodbridge 5", "AMC Orange 30"], "movies": [{"movie_id": 1, "movie": "Kill Bill: The Whole Bloody Affair"}, {"movie_id": 2, "movie": "Christina Aguilera: Christmas in Paris"}, {"movie_id": 3, "movie": "Dhurandhar"}, {"movie_id": 4, "movie": "Zootopia 2"}, {"movie_id": 5, "movie": "Merrily We Roll Along"}, {"movie_id": 6, "movie": "Predator: Badlands"}, {"movie_id": 7, "movie": "Sentimental Value"}, {"movie_id": 8, "movie": "Hamnet"}, {"movie_id": 9, "movie": "Wicked: For Good"}, {"movie_id": 10, "movie": "Avatar: Fire and Ash"}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2"}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants"}, {"movie_id": 13, "movie": "Dust Bunny"}, {"movie_id": 14, "movie": "JUJUTSU KAISEN: Execution"}, {"movie_id": 15, "movie": "Elf"}, {"movie_id": 16, "movie": "Not Without Hope"}, {"movie_id": 17, "movie": "Eternity"}, {"movie_id": 18, "movie": "The Housemaid"}, {"movie_id": 19, "movie": "Ella McCay"}, {"movie_id": 20, "movie": "Silent Night, Deadly Night"}, {"movie_id": 21, "movie": "Dr Seuss' How The Grinch Stole Christmas (2000): 25th Anniversary"}, {"movie_id": 22, "movie": "The Secret Agent"}, {"movie_id": 23, "movie": "The Polar Express"}, {"movie_id": 24, "movie": "David"}, {"movie_id": 25, "movie": "Now You See Me: Now You Don't"}, {"movie_id": 26, "movie": "Bha. Bha. Ba."}, {"movie_id": 27, "movie": "Royal Ballet: The Nutcracker (2025)"}], "showtimes": [{"movie_id": 1, "movie": "Kill Bill: The Whole Bloody Affair", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "8:30 am", "runtime_min": 275}, {"movie_id": 2, "movie": "Christina Aguilera: Christmas in Paris", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "7:00 pm", "runtime_min": 85}, {"movie_id": 2, "movie": "Christina Aguilera: Christmas in Paris", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "7:00 pm", "runtime_min": 85}, {"movie_id": 3, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "Hindi Spoken with English Subtitles", "date": "2025-12-20", "start": "9:05 am", "runtime_min": 214}, {"movie_id": 3, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "Hindi Spoken with English Subtitles", "date": "2025-12-20", "start": "10:00 am", "runtime_min": 214}, {"movie_id": 3, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "Hindi Spoken with English Subtitles", "date": "2025-12-20", "start": "12:20 pm", "runtime_min": 214}, {"movie_id": 3, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "Hindi Spoken with English Subtitles", "date": "2025-12-20", "start": "2:10 pm", "runtime_min": 214}, {"movie_id": 3, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "Hindi Spoken with English Subtitles", "date": "2025-12-20", "start": "3:25 pm", "runtime_min": 214}, {"movie_id": 3, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "Hindi Spoken with English Subtitles", "date": "2025-12-20", "start": "6:45 pm", "runtime_min": 214}, {"movie_id": 3, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "Hindi Spoken with English Subtitles", "date": "2025-12-20", "start": "9:30 pm", "runtime_min": 214}, {"movie_id": 3, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "Hindi Spoken with English Subtitles", "date": "2025-12-21", "start": "9:05 am", "runtime_min": 214}, {"movie_id": 3, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "Hindi Spoken with English Subtitles", "date": "2025-12-21", "start": "12:20 pm", "runtime_min": 214}, {"movie_id": 3, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "Hindi Spoken with English Subtitles", "date": "2025-12-21", "start": "3:25 pm", "runtime_min": 214}, {"movie_id": 3, "movie": "Dhurandhar", "theater": "AMC Orange 30", "format": "Hindi Spoken with English Subtitles", "date": "2025-12-21", "start": "9:30 pm", "runtime_min": 214}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "8:30 am", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "11:15 am", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "2:10 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "4:35 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "7:50 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-20", "start": "9:20 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "10:20 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "8:30 am", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "11:15 am", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "2:10 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "4:35 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "7:50 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-21", "start": "9:10 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "10:10 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "9:50 am", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "12:55 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "4:10 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "7:00 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "9:35 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "9:30 am", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "12:15 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "3:10 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "7:35 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "9:35 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-20", "start": "10:30 am", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-20", "start": "12:15 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-20", "start": "3:45 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-20", "start": "7:30 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-20", "start": "10:15 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-21", "start": "10:30 am", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-21", "start": "12:15 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-21", "start": "3:45 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-21", "start": "7:30 pm", "runtime_min": 108}, {"movie_id": 4, "movie": "Zootopia 2", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-21", "start": "10:15 pm", "runtime_min": 108}, {"movie_id": 5, "movie": "Merrily We Roll Along", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "8:40 am", "runtime_min": 145}, {"movie_id": 5, "movie": "Merrily We Roll Along", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "8:45 am", "runtime_min": 145}, {"movie_id": 6, "movie": "Predator: Badlands", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "8:40 am", "runtime_min": 107}, {"movie_id": 6, "movie": "Predator: Badlands", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "7:40 pm", "runtime_min": 107}, {"movie_id": 6, "movie": "Predator: Badlands", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "8:40 am", "runtime_min": 107}, {"movie_id": 6, "movie": "Predator: Badlands", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "7:40 pm", "runtime_min": 107}, {"movie_id": 7, "movie": "Sentimental Value", "theater": "AMC Orange 30", "format": "Norwegian Spoken with English Subtitles", "date": "2025-12-20", "start": "11:20 pm", "runtime_min": 133}, {"movie_id": 7, "movie": "Sentimental Value", "theater": "AMC Orange 30", "format": "Norwegian Spoken with English Subtitles", "date": "2025-12-21", "start": "11:20 pm", "runtime_min": 133}, {"movie_id": 8, "movie": "Hamnet", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "4:20 pm", "runtime_min": 125}, {"movie_id": 8, "movie": "Hamnet", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "7:25 pm", "runtime_min": 125}, {"movie_id": 8, "movie": "Hamnet", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "4:20 pm", "runtime_min": 125}, {"movie_id": 8, "movie": "Hamnet", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "7:25 pm", "runtime_min": 125}, {"movie_id": 8, "movie": "Hamnet", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "1:00 pm", "runtime_min": 125}, {"movie_id": 8, "movie": "Hamnet", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "7:15 pm", "runtime_min": 125}, {"movie_id": 8, "movie": "Hamnet", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "12:55 pm", "runtime_min": 125}, {"movie_id": 9, "movie": "Wicked: For Good", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "8:50 am", "runtime_min": 137}, {"movie_id": 9, "movie": "Wicked: For Good", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "12:05 pm", "runtime_min": 137}, {"movie_id": 9, "movie": "Wicked: For Good", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "3:20 pm", "runtime_min": 137}, {"movie_id": 9, "movie": "Wicked: For Good", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "6:50 pm", "runtime_min": 137}, {"movie_id": 9, "movie": "Wicked: For Good", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "10:15 pm", "runtime_min": 137}, {"movie_id": 9, "movie": "Wicked: For Good", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "8:50 am", "runtime_min": 137}, {"movie_id": 9, "movie": "Wicked: For Good", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "12:05 pm", "runtime_min": 137}, {"movie_id": 9, "movie": "Wicked: For Good", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "3:25 pm", "runtime_min": 137}, {"movie_id": 9, "movie": "Wicked: For Good", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "6:50 pm", "runtime_min": 137}, {"movie_id": 9, "movie": "Wicked: For Good", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "10:15 pm", "runtime_min": 137}, {"movie_id": 9, "movie": "Wicked: For Good", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "12:55 pm", "runtime_min": 137}, {"movie_id": 9, "movie": "Wicked: For Good", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "4:20 pm", "runtime_min": 137}, {"movie_id": 9, "movie": "Wicked: For Good", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "7:05 pm", "runtime_min": 137}, {"movie_id": 9, "movie": "Wicked: For Good", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "10:35 pm", "runtime_min": 137}, {"movie_id": 9, "movie": "Wicked: For Good", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "12:40 pm", "runtime_min": 137}, {"movie_id": 9, "movie": "Wicked: For Good", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "4:00 pm", "runtime_min": 137}, {"movie_id": 9, "movie": "Wicked: For Good", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "7:00 pm", "runtime_min": 137}, {"movie_id": 9, "movie": "Wicked: For Good", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "10:25 pm", "runtime_min": 137}, {"movie_id": 9, "movie": "Wicked: For Good", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-20", "start": "1:15 pm", "runtime_min": 137}, {"movie_id": 9, "movie": "Wicked: For Good", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-20", "start": "4:10 pm", "runtime_min": 137}, {"movie_id": 9, "movie": "Wicked: For Good", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-21", "start": "1:15 pm", "runtime_min": 137}, {"movie_id": 9, "movie": "Wicked: For Good", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-21", "start": "4:10 pm", "runtime_min": 137}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-20", "start": "8:30 am", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "IMAX with LASER 3D at AMC", "date": "2025-12-20", "start": "9:00 am", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "9:30 am", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Dolby Cinema at AMC", "date": "2025-12-20", "start": "10:00 am", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-20", "start": "10:30 am", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-20", "start": "11:00 am", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "11:30 am", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "12:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-20", "start": "12:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-20", "start": "1:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "IMAX with LASER 3D at AMC", "date": "2025-12-20", "start": "1:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "English Spoken with Spanish Subtitles", "date": "2025-12-20", "start": "2:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Dolby Cinema 3D", "date": "2025-12-20", "start": "2:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Open Caption (On-screen Subtitles)", "date": "2025-12-20", "start": "3:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-20", "start": "3:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "4:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "4:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-20", "start": "5:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-20", "start": "5:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "IMAX with LASER 3D at AMC", "date": "2025-12-20", "start": "6:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "6:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Dolby Cinema 3D", "date": "2025-12-20", "start": "7:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-20", "start": "7:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-20", "start": "8:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "8:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "9:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-20", "start": "9:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-20", "start": "10:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "IMAX with LASER 3D at AMC", "date": "2025-12-20", "start": "10:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-20", "start": "11:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Dolby Cinema at AMC", "date": "2025-12-20", "start": "11:15 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-21", "start": "8:30 am", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "IMAX with LASER 3D at AMC", "date": "2025-12-21", "start": "9:00 am", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "9:30 am", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Dolby Cinema at AMC", "date": "2025-12-21", "start": "10:00 am", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-21", "start": "10:30 am", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-21", "start": "11:00 am", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "11:30 am", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "12:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-21", "start": "12:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-21", "start": "1:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "IMAX with LASER 3D at AMC", "date": "2025-12-21", "start": "1:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "English Spoken with Spanish Subtitles", "date": "2025-12-21", "start": "2:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Dolby Cinema 3D", "date": "2025-12-21", "start": "2:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Open Caption (On-screen Subtitles)", "date": "2025-12-21", "start": "3:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-21", "start": "3:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "4:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "4:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-21", "start": "5:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-21", "start": "5:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "IMAX with LASER 3D at AMC", "date": "2025-12-21", "start": "6:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "6:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Dolby Cinema 3D", "date": "2025-12-21", "start": "7:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-21", "start": "7:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-21", "start": "8:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "8:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "9:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-21", "start": "9:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-21", "start": "10:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "IMAX with LASER 3D at AMC", "date": "2025-12-21", "start": "10:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-21", "start": "11:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Orange 30", "format": "Dolby Cinema at AMC", "date": "2025-12-21", "start": "11:15 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "Dolby Cinema 3D", "date": "2025-12-20", "start": "9:00 am", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "IMAX with LASER 3D at AMC", "date": "2025-12-20", "start": "10:00 am", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "11:00 am", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "Open Caption (On-screen Subtitles)", "date": "2025-12-20", "start": "12:45 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "Dolby Cinema 3D", "date": "2025-12-20", "start": "1:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "IMAX with LASER 3D at AMC", "date": "2025-12-20", "start": "2:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "5:15 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "Dolby Cinema 3D", "date": "2025-12-20", "start": "6:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "IMAX with LASER 3D at AMC", "date": "2025-12-20", "start": "7:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "8:20 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "RealD 3D", "date": "2025-12-20", "start": "9:45 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "Dolby Cinema at AMC", "date": "2025-12-20", "start": "10:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "Dolby Cinema 3D", "date": "2025-12-21", "start": "9:00 am", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "IMAX with LASER 3D at AMC", "date": "2025-12-21", "start": "10:00 am", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "11:10 am", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "Open Caption (On-screen Subtitles)", "date": "2025-12-21", "start": "12:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "Dolby Cinema 3D", "date": "2025-12-21", "start": "1:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "IMAX with LASER 3D at AMC", "date": "2025-12-21", "start": "2:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "5:15 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "Dolby Cinema 3D", "date": "2025-12-21", "start": "6:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "IMAX with LASER 3D at AMC", "date": "2025-12-21", "start": "7:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "8:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "RealD 3D", "date": "2025-12-21", "start": "9:45 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Tustin 14 @ The District", "format": "Dolby Cinema at AMC", "date": "2025-12-21", "start": "10:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Woodbridge 5", "format": "RealD 3D", "date": "2025-12-20", "start": "11:30 am", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-20", "start": "3:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Woodbridge 5", "format": "RealD 3D", "date": "2025-12-20", "start": "6:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Woodbridge 5", "format": "RealD 3D", "date": "2025-12-20", "start": "9:40 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Woodbridge 5", "format": "RealD 3D", "date": "2025-12-21", "start": "11:30 am", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-21", "start": "3:00 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Woodbridge 5", "format": "RealD 3D", "date": "2025-12-21", "start": "6:30 pm", "runtime_min": 197}, {"movie_id": 10, "movie": "Avatar: Fire and Ash", "theater": "AMC Woodbridge 5", "format": "RealD 3D", "date": "2025-12-21", "start": "9:40 pm", "runtime_min": 197}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "8:35 am", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "9:50 am", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "11:40 am", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "12:50 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "2:40 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "3:45 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "5:40 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "6:40 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "7:25 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "9:35 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "11:25 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "8:35 am", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "11:40 am", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "2:40 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "5:40 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "7:25 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "8:40 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "11:25 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "10:05 am", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "12:15 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "5:20 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "7:45 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "10:05 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "12:25 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "4:45 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "7:55 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "10:30 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-20", "start": "7:45 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-20", "start": "10:30 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-21", "start": "7:45 pm", "runtime_min": 104}, {"movie_id": 11, "movie": "Five Nights at Freddy's 2", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-21", "start": "10:30 pm", "runtime_min": 104}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "8:30 am", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "8:55 am", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-20", "start": "9:45 am", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-20", "start": "10:35 am", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "11:20 am", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "11:45 am", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "12:35 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-20", "start": "1:30 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Open Caption (On-screen Subtitles)", "date": "2025-12-20", "start": "1:55 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Spanish Language Dubbed with No Subti...", "date": "2025-12-20", "start": "2:30 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-20", "start": "3:25 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-20", "start": "4:25 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "4:50 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Spanish Language Dubbed with No Subti...", "date": "2025-12-20", "start": "5:25 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-20", "start": "6:15 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "7:40 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "English Spoken with Spanish Subtitles", "date": "2025-12-20", "start": "8:20 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "9:05 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "10:35 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "11:00 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "11:30 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "8:30 am", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "8:45 am", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-21", "start": "9:45 am", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Spanish Language Dubbed with No Subti...", "date": "2025-12-21", "start": "10:10 am", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-21", "start": "10:40 am", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "11:20 am", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "11:45 am", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-21", "start": "12:35 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "English Spoken with Spanish Subtitles", "date": "2025-12-21", "start": "1:00 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-21", "start": "1:30 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "1:55 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "2:30 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-21", "start": "3:25 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Spanish Language Dubbed with No Subti...", "date": "2025-12-21", "start": "4:00 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-21", "start": "4:25 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "4:50 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "5:25 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-21", "start": "6:15 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "7:40 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "8:20 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "RealD 3D", "date": "2025-12-21", "start": "9:05 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Spanish Language Dubbed with No Subti...", "date": "2025-12-21", "start": "9:35 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "10:35 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "11:00 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "9:15 am", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "10:00 am", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "10:45 am", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Tustin 14 @ The District", "format": "Open Caption (On-screen Subtitles)", "date": "2025-12-20", "start": "12:10 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "1:35 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "2:20 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Tustin 14 @ The District", "format": "RealD 3D", "date": "2025-12-20", "start": "3:20 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "4:30 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "6:15 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "7:15 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Tustin 14 @ The District", "format": "RealD 3D", "date": "2025-12-20", "start": "9:20 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "9:25 am", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-21", "start": "10:45 am", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "11:30 am", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-21", "start": "1:35 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "2:20 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Tustin 14 @ The District", "format": "RealD 3D", "date": "2025-12-21", "start": "3:30 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-21", "start": "4:30 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "5:15 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "7:05 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Tustin 14 @ The District", "format": "RealD 3D", "date": "2025-12-21", "start": "9:20 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-20", "start": "10:15 am", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-20", "start": "11:00 am", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Woodbridge 5", "format": "RealD 3D", "date": "2025-12-20", "start": "1:40 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-20", "start": "4:20 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-20", "start": "7:00 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Woodbridge 5", "format": "RealD 3D", "date": "2025-12-20", "start": "10:45 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-21", "start": "10:15 am", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-21", "start": "11:00 am", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Woodbridge 5", "format": "RealD 3D", "date": "2025-12-21", "start": "1:40 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-21", "start": "4:20 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-21", "start": "7:00 pm", "runtime_min": 96}, {"movie_id": 12, "movie": "The Spongebob Movie: Search for Squarepants", "theater": "AMC Woodbridge 5", "format": "RealD 3D", "date": "2025-12-21", "start": "10:45 pm", "runtime_min": 96}, {"movie_id": 13, "movie": "Dust Bunny", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "9:25 am", "runtime_min": 106}, {"movie_id": 13, "movie": "Dust Bunny", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "9:25 am", "runtime_min": 106}, {"movie_id": 14, "movie": "JUJUTSU KAISEN: Execution", "theater": "AMC Orange 30", "format": "Japanese Spoken with English Subtitles", "date": "2025-12-20", "start": "8:50 am", "runtime_min": 87}, {"movie_id": 14, "movie": "JUJUTSU KAISEN: Execution", "theater": "AMC Orange 30", "format": "Japanese Spoken with English Subtitles", "date": "2025-12-20", "start": "11:30 am", "runtime_min": 87}, {"movie_id": 14, "movie": "JUJUTSU KAISEN: Execution", "theater": "AMC Orange 30", "format": "English Language Dubbed with No Subti...", "date": "2025-12-20", "start": "2:05 pm", "runtime_min": 87}, {"movie_id": 14, "movie": "JUJUTSU KAISEN: Execution", "theater": "AMC Orange 30", "format": "Japanese Spoken with English Subtitles", "date": "2025-12-20", "start": "5:10 pm", "runtime_min": 87}, {"movie_id": 14, "movie": "JUJUTSU KAISEN: Execution", "theater": "AMC Orange 30", "format": "English Language Dubbed with No Subti...", "date": "2025-12-20", "start": "8:40 pm", "runtime_min": 87}, {"movie_id": 14, "movie": "JUJUTSU KAISEN: Execution", "theater": "AMC Orange 30", "format": "Japanese Spoken with English Subtitles", "date": "2025-12-20", "start": "10:50 pm", "runtime_min": 87}, {"movie_id": 14, "movie": "JUJUTSU KAISEN: Execution", "theater": "AMC Orange 30", "format": "Japanese Spoken with English Subtitles", "date": "2025-12-21", "start": "8:35 am", "runtime_min": 87}, {"movie_id": 14, "movie": "JUJUTSU KAISEN: Execution", "theater": "AMC Orange 30", "format": "Japanese Spoken with English Subtitles", "date": "2025-12-21", "start": "8:50 am", "runtime_min": 87}, {"movie_id": 14, "movie": "JUJUTSU KAISEN: Execution", "theater": "AMC Orange 30", "format": "Japanese Spoken with English Subtitles", "date": "2025-12-21", "start": "11:30 am", "runtime_min": 87}, {"movie_id": 14, "movie": "JUJUTSU KAISEN: Execution", "theater": "AMC Orange 30", "format": "English Language Dubbed with No Subti...", "date": "2025-12-21", "start": "2:05 pm", "runtime_min": 87}, {"movie_id": 14, "movie": "JUJUTSU KAISEN: Execution", "theater": "AMC Orange 30", "format": "Japanese Spoken with English Subtitles", "date": "2025-12-21", "start": "5:10 pm", "runtime_min": 87}, {"movie_id": 14, "movie": "JUJUTSU KAISEN: Execution", "theater": "AMC Orange 30", "format": "Japanese Spoken with English Subtitles", "date": "2025-12-21", "start": "10:50 pm", "runtime_min": 87}, {"movie_id": 14, "movie": "JUJUTSU KAISEN: Execution", "theater": "AMC Tustin 14 @ The District", "format": "Japanese Spoken with English Subtitles", "date": "2025-12-20", "start": "10:30 pm", "runtime_min": 87}, {"movie_id": 14, "movie": "JUJUTSU KAISEN: Execution", "theater": "AMC Tustin 14 @ The District", "format": "Japanese Spoken with English Subtitles", "date": "2025-12-21", "start": "10:25 pm", "runtime_min": 87}, {"movie_id": 15, "movie": "Elf", "theater": "AMC Orange 30", "format": "Fan Faves", "date": "2025-12-20", "start": "1:30 pm", "runtime_min": 97}, {"movie_id": 16, "movie": "Not Without Hope", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "10:40 pm", "runtime_min": 121}, {"movie_id": 16, "movie": "Not Without Hope", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "10:40 pm", "runtime_min": 121}, {"movie_id": 17, "movie": "Eternity", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "8:30 am", "runtime_min": 114}, {"movie_id": 17, "movie": "Eternity", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "11:20 am", "runtime_min": 114}, {"movie_id": 17, "movie": "Eternity", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "2:15 pm", "runtime_min": 114}, {"movie_id": 17, "movie": "Eternity", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "5:10 pm", "runtime_min": 114}, {"movie_id": 17, "movie": "Eternity", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "8:05 pm", "runtime_min": 114}, {"movie_id": 17, "movie": "Eternity", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "11:00 pm", "runtime_min": 114}, {"movie_id": 17, "movie": "Eternity", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "8:30 am", "runtime_min": 114}, {"movie_id": 17, "movie": "Eternity", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "11:20 am", "runtime_min": 114}, {"movie_id": 17, "movie": "Eternity", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "2:15 pm", "runtime_min": 114}, {"movie_id": 17, "movie": "Eternity", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "5:10 pm", "runtime_min": 114}, {"movie_id": 17, "movie": "Eternity", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "8:05 pm", "runtime_min": 114}, {"movie_id": 17, "movie": "Eternity", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "11:00 pm", "runtime_min": 114}, {"movie_id": 17, "movie": "Eternity", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "10:00 am", "runtime_min": 114}, {"movie_id": 17, "movie": "Eternity", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "4:05 pm", "runtime_min": 114}, {"movie_id": 17, "movie": "Eternity", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "10:35 pm", "runtime_min": 114}, {"movie_id": 17, "movie": "Eternity", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "10:00 am", "runtime_min": 114}, {"movie_id": 17, "movie": "Eternity", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "4:00 pm", "runtime_min": 114}, {"movie_id": 17, "movie": "Eternity", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "7:25 pm", "runtime_min": 114}, {"movie_id": 17, "movie": "Eternity", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "10:40 pm", "runtime_min": 114}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "9:00 am", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "10:00 am", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "11:30 am", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "English Spoken with Spanish Subtitles", "date": "2025-12-20", "start": "12:10 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "1:30 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "2:55 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "Open Caption (On-screen Subtitles)", "date": "2025-12-20", "start": "4:55 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "6:20 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "English Spoken with Spanish Subtitles", "date": "2025-12-20", "start": "7:20 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "8:20 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "9:45 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "English Spoken with Spanish Subtitles", "date": "2025-12-20", "start": "10:45 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "11:30 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "9:00 am", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "9:50 am", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "10:05 am", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "11:30 am", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "English Spoken with Spanish Subtitles", "date": "2025-12-21", "start": "12:10 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "1:20 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "1:30 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "4:55 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "5:00 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "6:20 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "English Spoken with Spanish Subtitles", "date": "2025-12-21", "start": "7:20 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "8:20 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "8:20 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "9:45 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "English Spoken with Spanish Subtitles", "date": "2025-12-21", "start": "10:45 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "11:30 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "9:40 am", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "1:00 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "2:55 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "4:15 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "6:15 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "7:20 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "10:00 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-20", "start": "10:45 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "9:40 am", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "11:00 am", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "1:00 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Tustin 14 @ The District", "format": "Open Caption (On-screen Subtitles)", "date": "2025-12-21", "start": "3:30 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "4:15 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "6:15 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-21", "start": "7:20 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "9:55 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Tustin 14 @ The District", "format": "", "date": "2025-12-21", "start": "10:45 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-20", "start": "1:00 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-20", "start": "4:35 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-20", "start": "7:15 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-20", "start": "10:30 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-21", "start": "1:00 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-21", "start": "4:35 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-21", "start": "7:15 pm", "runtime_min": 131}, {"movie_id": 18, "movie": "The Housemaid", "theater": "AMC Woodbridge 5", "format": "Laser at AMC", "date": "2025-12-21", "start": "10:30 pm", "runtime_min": 131}, {"movie_id": 19, "movie": "Ella McCay", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "4:45 pm", "runtime_min": 115}, {"movie_id": 19, "movie": "Ella McCay", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "4:45 pm", "runtime_min": 115}, {"movie_id": 19, "movie": "Ella McCay", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "1:05 pm", "runtime_min": 115}, {"movie_id": 19, "movie": "Ella McCay", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "2:15 pm", "runtime_min": 115}, {"movie_id": 20, "movie": "Silent Night, Deadly Night", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "8:30 am", "runtime_min": 96}, {"movie_id": 20, "movie": "Silent Night, Deadly Night", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "7:50 pm", "runtime_min": 96}, {"movie_id": 20, "movie": "Silent Night, Deadly Night", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "10:35 pm", "runtime_min": 96}, {"movie_id": 20, "movie": "Silent Night, Deadly Night", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "7:50 pm", "runtime_min": 96}, {"movie_id": 20, "movie": "Silent Night, Deadly Night", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "10:35 pm", "runtime_min": 96}, {"movie_id": 21, "movie": "Dr Seuss' How The Grinch Stole Christmas (2000): 25th Anniversary", "theater": "AMC Orange 30", "format": "Fan Faves", "date": "2025-12-20", "start": "8:30 am", "runtime_min": null}, {"movie_id": 21, "movie": "Dr Seuss' How The Grinch Stole Christmas (2000): 25th Anniversary", "theater": "AMC Orange 30", "format": "Fan Faves", "date": "2025-12-21", "start": "8:30 am", "runtime_min": null}, {"movie_id": 23, "movie": "The Polar Express", "theater": "AMC Orange 30", "format": "Fan Faves", "date": "2025-12-21", "start": "1:30 pm", "runtime_min": 100}, {"movie_id": 24, "movie": "David", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "8:35 am", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Orange 30", "format": "Spanish Language Dubbed with No Subti...", "date": "2025-12-20", "start": "9:15 am", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "10:15 am", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "11:40 am", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Orange 30", "format": "Open Caption (On-screen Subtitles)", "date": "2025-12-20", "start": "1:15 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "2:45 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "4:15 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "5:45 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "7:15 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "8:40 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "10:15 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "8:35 am", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Orange 30", "format": "Spanish Language Dubbed with No Subti...", "date": "2025-12-21", "start": "9:15 am", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "10:15 am", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "11:40 am", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "1:15 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "2:45 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "4:15 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "5:45 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "7:15 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "8:45 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "10:15 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "9:00 am", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "9:45 am", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "11:10 am", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "12:50 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "3:10 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "4:00 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "6:20 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "7:30 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "9:00 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "9:00 am", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "9:45 am", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "10:30 am", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "12:50 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "1:40 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "4:00 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "4:50 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "6:20 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "7:30 pm", "runtime_min": 115}, {"movie_id": 24, "movie": "David", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "9:25 pm", "runtime_min": 115}, {"movie_id": 25, "movie": "Now You See Me: Now You Don't", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "8:45 am", "runtime_min": 113}, {"movie_id": 25, "movie": "Now You See Me: Now You Don't", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "11:40 am", "runtime_min": 113}, {"movie_id": 25, "movie": "Now You See Me: Now You Don't", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "2:35 pm", "runtime_min": 113}, {"movie_id": 25, "movie": "Now You See Me: Now You Don't", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "5:25 pm", "runtime_min": 113}, {"movie_id": 25, "movie": "Now You See Me: Now You Don't", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "8:25 pm", "runtime_min": 113}, {"movie_id": 25, "movie": "Now You See Me: Now You Don't", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-20", "start": "11:20 pm", "runtime_min": 113}, {"movie_id": 25, "movie": "Now You See Me: Now You Don't", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "8:45 am", "runtime_min": 113}, {"movie_id": 25, "movie": "Now You See Me: Now You Don't", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "11:40 am", "runtime_min": 113}, {"movie_id": 25, "movie": "Now You See Me: Now You Don't", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "2:35 pm", "runtime_min": 113}, {"movie_id": 25, "movie": "Now You See Me: Now You Don't", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "5:25 pm", "runtime_min": 113}, {"movie_id": 25, "movie": "Now You See Me: Now You Don't", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "8:25 pm", "runtime_min": 113}, {"movie_id": 25, "movie": "Now You See Me: Now You Don't", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "11:20 pm", "runtime_min": 113}, {"movie_id": 25, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "9:55 am", "runtime_min": 113}, {"movie_id": 25, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "4:10 pm", "runtime_min": 113}, {"movie_id": 25, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-20", "start": "10:25 pm", "runtime_min": 113}, {"movie_id": 25, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "9:40 am", "runtime_min": 113}, {"movie_id": 25, "movie": "Now You See Me: Now You Don't", "theater": "AMC Tustin 14 @ The District", "format": "Laser at AMC", "date": "2025-12-21", "start": "10:45 pm", "runtime_min": 113}, {"movie_id": 26, "movie": "Bha. Bha. Ba.", "theater": "AMC Orange 30", "format": "Malayalam Spoken with English Subtitles", "date": "2025-12-20", "start": "5:50 pm", "runtime_min": 165}, {"movie_id": 26, "movie": "Bha. Bha. Ba.", "theater": "AMC Orange 30", "format": "Malayalam Spoken with English Subtitles", "date": "2025-12-20", "start": "10:30 pm", "runtime_min": 165}, {"movie_id": 26, "movie": "Bha. Bha. Ba.", "theater": "AMC Orange 30", "format": "Malayalam Spoken with English Subtitles", "date": "2025-12-21", "start": "10:30 pm", "runtime_min": 165}, {"movie_id": 27, "movie": "Royal Ballet: The Nutcracker (2025)", "theater": "AMC Orange 30", "format": "Laser at AMC", "date": "2025-12-21", "start": "3:00 pm", "runtime_min": null}]}</script><script id="movie-planner-js">
 (() => {
   const dataEl = document.getElementById('showtimes-data');
   const inputEl = document.getElementById('movie-planner-input');
   const btnEl = document.getElementById('movie-planner-btn');
   const outEl = document.getElementById('movie-planner-output');
-
   if (!dataEl || !inputEl || !btnEl || !outEl) return;
 
   const payload = JSON.parse(dataEl.textContent || "{}");
   const raw = Array.isArray(payload.showtimes) ? payload.showtimes : [];
-  const IGNORE = (payload.ignore_theater || "AMC Bay Street 16").toLowerCase();
+  const IGNORE = String(payload.ignore_theater || "AMC Bay Street 16").toLowerCase();
 
   function theaterRank(theater) {
     const t = (theater || "").toLowerCase();
@@ -7776,107 +7858,72 @@ table.dataframe th, table.dataframe td {
   }
 
   function pad2(n){ return String(n).padStart(2,"0"); }
-  function toISODateFromDateObj(d){
-    return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
-  }
+  function toISO(d){ return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; }
 
-  function parseDateKeyFromString(s){
+  function parseDateKey(s){
     if (!s) return null;
     const str = String(s).trim();
-    if (!str) return null;
-
     let m = str.match(/(\d{4}-\d{2}-\d{2})/);
     if (m) return m[1];
-
     m = str.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/);
     if (m){
-      const mm = pad2(parseInt(m[1],10));
-      const dd = pad2(parseInt(m[2],10));
+      const mm = pad2(parseInt(m[1],10)), dd = pad2(parseInt(m[2],10));
       let yy = m[3] ? parseInt(m[3],10) : (new Date()).getFullYear();
       if (yy < 100) yy = 2000 + yy;
       return `${yy}-${mm}-${dd}`;
     }
-
     const d = new Date(str);
-    if (!isNaN(d.getTime())) return toISODateFromDateObj(d);
-
-    return str;
+    if (!isNaN(d.getTime())) return toISO(d);
+    return null;
   }
 
   function parseTimeToMinutes(s){
     if (!s) return null;
-    let str = String(s).replace(/\u00a0/g, " ").replace(/\u202f/g, " ");
+    const str = String(s).replace(/\u00a0/g," ").replace(/\u202f/g," ").trim();
 
-    // Support a/p shorthand: "7p", "7:10p"
-    const apShort = Array.from(str.matchAll(/(\d{1,2})(?::(\d{2}))?\s*([ap])\b/gi));
-    if (apShort.length){
-      const m = apShort[apShort.length - 1];
-      let h = parseInt(m[1],10);
-      let min = m[2] ? parseInt(m[2],10) : 0;
-      const ap = m[3].toLowerCase();
-      if (h === 12) h = 0;
-      if (ap === "p") h += 12;
-      if (h < 0 || h > 23 || min < 0 || min > 59) return null;
-      return h*60 + min;
-    }
-
+    // 10:40 am / 7 pm
     const ampm = Array.from(str.matchAll(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/gi));
     if (ampm.length){
-      const m = ampm[ampm.length - 1];
+      const m = ampm[ampm.length-1];
       let h = parseInt(m[1],10);
       let min = m[2] ? parseInt(m[2],10) : 0;
       const ap = m[3].toLowerCase();
       if (h === 12) h = 0;
       if (ap === "pm") h += 12;
-      if (h < 0 || h > 23 || min < 0 || min > 59) return null;
       return h*60 + min;
     }
-
-    const hm = Array.from(str.matchAll(/\b([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?\b/g));
+    // 24h
+    const hm = Array.from(str.matchAll(/\b([01]?\d|2[0-3]):([0-5]\d)\b/g));
     if (hm.length){
-      const m = hm[hm.length - 1];
-      const h = parseInt(m[1],10);
-      const min = parseInt(m[2],10);
-      return h*60 + min;
+      const m = hm[hm.length-1];
+      return parseInt(m[1],10)*60 + parseInt(m[2],10);
     }
-
     return null;
   }
 
   function parseRuntimeMin(v){
     if (v === null || v === undefined) return null;
     if (typeof v === "number" && isFinite(v) && v > 0) return Math.round(v);
-
     const s = String(v).trim().toLowerCase();
     if (!s) return null;
-
     let m = s.match(/(\d+)\s*:\s*(\d{2})/);
     if (m) return parseInt(m[1],10)*60 + parseInt(m[2],10);
-
     const h = s.match(/(\d+)\s*(h|hr|hrs|hour|hours)\b/);
     const mm = s.match(/(\d+)\s*(m|min|mins|minute|minutes)\b/);
     if (h) return parseInt(h[1],10)*60 + (mm ? parseInt(mm[1],10) : 0);
-
-    m = s.match(/(\d+)\s*(min|mins|minute|minutes)\b/);
-    if (m) return parseInt(m[1],10);
-
     m = s.match(/\b(\d{2,3})\b/);
-    if (m) return parseInt(m[1],10);
-
-    return null;
+    return m ? parseInt(m[1],10) : null;
   }
 
-  function minutesToLabel(totalMinutes){
-    let m = totalMinutes % (24*60);
-    if (m < 0) m += 24*60;
-    let h = Math.floor(m/60);
-    let min = m % 60;
+  function minutesToLabel(total){
+    let m = total % (24*60); if (m < 0) m += 24*60;
+    let h = Math.floor(m/60), min = m % 60;
     const ampm = h >= 12 ? "PM" : "AM";
-    h = h % 12;
-    if (h === 0) h = 12;
+    h = h % 12; if (h === 0) h = 12;
     return `${h}:${String(min).padStart(2,"0")} ${ampm}`;
   }
 
+  // Movie index (authoritative)
   const movieIndex = new Map();
   const movies = Array.isArray(payload.movies) ? payload.movies : [];
   for (const m of movies){
@@ -7884,43 +7931,22 @@ table.dataframe th, table.dataframe td {
     const name = String(m.movie || "").trim();
     if (id && name && !movieIndex.has(id)) movieIndex.set(id, name);
   }
-  if (movieIndex.size === 0){
-    for (const r of raw){
-      const id = Number(r.movie_id);
-      const name = String(r.movie || "").trim();
-      if (id && name && !movieIndex.has(id)) movieIndex.set(id, name);
-    }
-  }
 
-  const rawByMovie = new Map();
-  for (const r of raw){
-    const id = Number(r.movie_id);
-    if (!id) continue;
-    if (!rawByMovie.has(id)) rawByMovie.set(id, []);
-    rawByMovie.get(id).push(r);
-  }
-
+  // Normalize usable showings (Bay Street filtered already in Python, but keep guard)
   const showings = raw
-    .filter(r => !String(r.theater || "").toLowerCase().includes(IGNORE))
+    .filter(r => !String(r.theater||"").toLowerCase().includes(IGNORE))
     .map(r => {
       const movie_id = Number(r.movie_id);
-      const movie = String(r.movie || "").trim();
-      const theater = String(r.theater || "").trim();
-      const format = String(r.format || "").trim();
-
-      const dateKey = parseDateKeyFromString(r.date) || parseDateKeyFromString(r.start);
+      const movie = String(r.movie||"").trim();
+      const theater = String(r.theater||"").trim();
+      const format = String(r.format||"").trim();
+      const dateKey = parseDateKey(r.date);
       const startMin = parseTimeToMinutes(r.start);
       const runtimeMin = parseRuntimeMin(r.runtime_min);
-
       if (!movie_id || !movie || !theater || !dateKey || startMin === null || runtimeMin === null) return null;
-
-      const endMin = startMin + runtimeMin + 30;
-      return {
-        movie_id, movie, theater, format,
-        dateKey, startMin, endMin, runtimeMin,
-        tRank: theaterRank(theater),
-        fRank: (formatRank(format)),
-      };
+      const endMin = startMin + runtimeMin + 30; // runtime + 30 min buffer
+      return { movie_id, movie, theater, format, dateKey, startMin, endMin, runtimeMin,
+               tRank: theaterRank(theater), fRank: formatRank(format) };
     })
     .filter(Boolean);
 
@@ -7931,39 +7957,17 @@ table.dataframe th, table.dataframe td {
   }
 
   function parseSelectedIds(){
-    const parts = inputEl.value
-      .split(/[^0-9]+/)
-      .map(x => x.trim())
-      .filter(Boolean)
-      .map(x => Number(x))
-      .filter(n => Number.isFinite(n) && n > 0);
+    const parts = inputEl.value.split(/[^0-9]+/).map(x=>x.trim()).filter(Boolean).map(Number).filter(n=>n>0 && isFinite(n));
     return Array.from(new Set(parts));
   }
 
-  function explainWhyNoUsableShowings(id){
-    const rows = (rawByMovie.get(id) || []).filter(r => !String(r.theater||"").toLowerCase().includes(IGNORE));
-    const probs = new Set();
-    if (!rows.length) probs.add("no rows (or all ignored theater)");
-    for (const r of rows){
-      const theater = String(r.theater || "").trim();
-      const dateKey = parseDateKeyFromString(r.date) || parseDateKeyFromString(r.start);
-      const startMin = parseTimeToMinutes(r.start);
-      const runtimeMin = parseRuntimeMin(r.runtime_min);
-      if (!theater) probs.add("missing theater");
-      if (!dateKey) probs.add("missing/unparseable date");
-      if (startMin === null) probs.add("missing/unparseable start time");
-      if (runtimeMin === null) probs.add("missing/unparseable runtime");
-    }
-    return Array.from(probs);
-  }
-
   function bestSingle(movieId, dayKey){
-    const options = (byMovie.get(movieId) || []).filter(x => x.dateKey === dayKey);
-    if (!options.length) return null;
+    const opts = (byMovie.get(movieId) || []).filter(x => x.dateKey === dayKey);
+    if (!opts.length) return null;
     let best = null;
-    for (const s of options){
-      const c = (s.tRank * 1000) + (s.fRank * 100) + (s.startMin / 1000);
-      if (!best || c < best.cost) best = { dayKey, entries: [s], cost: c };
+    for (const s of opts){
+      const c = (s.tRank*1000) + (s.fRank*100) + (s.startMin/1000);
+      if (!best || c < best.cost) best = { dayKey, entries:[s], cost:c };
     }
     return best;
   }
@@ -7977,7 +7981,6 @@ table.dataframe th, table.dataframe td {
     const TRANSIT_MIN = 35;
 
     let best = null;
-
     function consider(first, second){
       const same = first.theater === second.theater;
       const transit = same ? 0 : TRANSIT_MIN;
@@ -7985,32 +7988,26 @@ table.dataframe th, table.dataframe td {
       const gap = second.startMin - earliestSecond;
       if (gap < 0) return;
 
-      const c =
-        (same ? 0 : DIFF_THEATER_PENALTY) +
-        ((first.tRank + second.tRank) * 1000) +
-        ((first.fRank + second.fRank) * 100) +
-        gap;
+      const c = (same ? 0 : DIFF_THEATER_PENALTY)
+              + ((first.tRank + second.tRank) * 1000)
+              + ((first.fRank + second.fRank) * 100)
+              + gap;
 
-      const cand = { dayKey, entries: [first, second], cost: c };
+      const cand = { dayKey, entries:[first, second], cost:c };
       if (!best || cand.cost < best.cost) best = cand;
     }
 
-    for (const a of A){
-      for (const b of B){
-        consider(a, b);
-        consider(b, a);
-      }
-    }
+    for (const a of A) for (const b of B){ consider(a,b); consider(b,a); }
     return best;
   }
 
   function partitions(ids){
     const res = [];
-    function helper(remaining, acc){
-      if (!remaining.length){ res.push(acc.map(g => g.slice())); return; }
-      const [first, ...rest] = remaining;
+    function helper(rem, acc){
+      if (!rem.length){ res.push(acc.map(g=>g.slice())); return; }
+      const [first, ...rest] = rem;
       helper(rest, acc.concat([[first]]));
-      for (let i = 0; i < rest.length; i++){
+      for (let i=0;i<rest.length;i++){
         const second = rest[i];
         const next = rest.slice(0,i).concat(rest.slice(i+1));
         helper(next, acc.concat([[first, second]]));
@@ -8023,54 +8020,42 @@ table.dataframe th, table.dataframe td {
   function candidatesForGroup(group, dayKeys){
     const cands = [];
     if (group.length === 1){
-      const id = group[0];
-      for (const d of dayKeys){
-        const s = bestSingle(id, d);
-        if (s) cands.push(s);
-      }
+      for (const d of dayKeys){ const s = bestSingle(group[0], d); if (s) cands.push(s); }
     } else {
-      const [a,b] = group;
-      for (const d of dayKeys){
-        const p = bestPair(a, b, d);
-        if (p) cands.push(p);
-      }
+      for (const d of dayKeys){ const p = bestPair(group[0], group[1], d); if (p) cands.push(p); }
     }
     cands.sort((x,y)=>x.cost - y.cost);
     return cands.slice(0, 10);
   }
 
-  function pickBestPlan(selectedIds){
+  function pickBestPlan(ids){
     const daySet = new Set();
-    for (const id of selectedIds){
-      for (const s of (byMovie.get(id) || [])) daySet.add(s.dateKey);
-    }
+    for (const id of ids) for (const s of (byMovie.get(id) || [])) daySet.add(s.dateKey);
     const dayKeys = Array.from(daySet).sort();
 
-    const parts = partitions(selectedIds);
+    const parts = partitions(ids);
     let best = null;
 
     for (const groups of parts){
       const groupCands = groups.map(g => candidatesForGroup(g, dayKeys));
-      if (groupCands.some(arr => !arr.length)) continue;
+      if (groupCands.some(a => !a.length)) continue;
 
-      function assign(i, usedDays, picked, totalCost){
+      function assign(i, used, picked, cost){
         if (i === groups.length){
-          const costWithDayCount = totalCost + (groups.length * 50);
-          if (!best || costWithDayCount < best.cost){
-            best = { cost: costWithDayCount, picked: picked.slice() };
-          }
+          // prefer fewer days slightly
+          const finalCost = cost + (groups.length * 50);
+          if (!best || finalCost < best.cost) best = { cost: finalCost, picked: picked.slice() };
           return;
         }
         for (const cand of groupCands[i]){
-          if (usedDays.has(cand.dayKey)) continue;
-          usedDays.add(cand.dayKey);
+          if (used.has(cand.dayKey)) continue;
+          used.add(cand.dayKey);
           picked.push(cand);
-          assign(i+1, usedDays, picked, totalCost + cand.cost);
+          assign(i+1, used, picked, cost + cand.cost);
           picked.pop();
-          usedDays.delete(cand.dayKey);
+          used.delete(cand.dayKey);
         }
       }
-
       assign(0, new Set(), [], 0);
     }
 
@@ -8079,17 +8064,13 @@ table.dataframe th, table.dataframe td {
     return best.picked;
   }
 
-  function renderPlan(selectedIds, plan){
-    const titles = selectedIds.map(id => `${id} — ${movieIndex.get(id) || "Unknown title"}`);
-
-    let html = `<div class="movie-planner-card">
-      <h3>Selected movies</h3>
-      <div class="movie-planner-muted">${titles.join("<br>")}</div>
-    </div>`;
+  function renderPlan(ids, plan){
+    const titles = ids.map(id => `${id} — ${movieIndex.get(id) || "Unknown title"}`);
+    let html = `<div class="movie-planner-card"><h3>Selected movies</h3><div class="movie-planner-muted">${titles.join("<br>")}</div></div>`;
 
     for (const day of plan){
       const entries = day.entries.slice().sort((a,b)=>a.startMin - b.startMin);
-      const theaters = Array.from(new Set(entries.map(e => e.theater)));
+      const theaters = Array.from(new Set(entries.map(e=>e.theater)));
       const theaterLine = theaters.length === 1 ? theaters[0] : theaters.join(" → ");
 
       html += `<div class="movie-planner-card">
@@ -8105,7 +8086,6 @@ table.dataframe th, table.dataframe td {
           <span class="movie-planner-muted">(runtime ${e.runtimeMin}m + 30m buffer)</span>
         </li>`;
       }
-
       html += `</ol></div>`;
     }
 
@@ -8114,49 +8094,26 @@ table.dataframe th, table.dataframe td {
 
   btnEl.addEventListener('click', () => {
     const ids = parseSelectedIds();
-
     if (ids.length < 2 || ids.length > 4){
-      outEl.innerHTML = `<div class="movie-planner-card">
-        <h3>Enter 2–4 movie numbers</h3>
-        <div class="movie-planner-muted">Example: <code>2, 5, 9</code></div>
-      </div>`;
+      outEl.innerHTML = `<div class="movie-planner-card"><h3>Enter 2–4 movie numbers</h3><div class="movie-planner-muted">Example: <code>3, 4, 5</code></div></div>`;
       return;
     }
-
     const missing = ids.filter(id => !movieIndex.has(id));
     if (missing.length){
-      outEl.innerHTML = `<div class="movie-planner-card">
-        <h3>Unknown movie numbers</h3>
-        <div class="movie-planner-muted">Not found in the table: <b>${missing.join(", ")}</b></div>
-      </div>`;
+      outEl.innerHTML = `<div class="movie-planner-card"><h3>Unknown movie numbers</h3><div class="movie-planner-muted">Not found in the table: <b>${missing.join(", ")}</b></div></div>`;
       return;
     }
-
     const noUsable = ids.filter(id => !(byMovie.get(id) || []).length);
     if (noUsable.length){
-      const lines = noUsable.map(id => {
-        const why = explainWhyNoUsableShowings(id);
-        return `<li><b>${id} — ${movieIndex.get(id)}</b><br><span class="movie-planner-muted">${why.join(", ")}</span></li>`;
-      }).join("");
-      outEl.innerHTML = `<div class="movie-planner-card">
-        <h3>Can’t plan some selections (missing/unclear data)</h3>
-        <div class="movie-planner-muted">These movies are in the table, but I couldn’t parse usable showtimes:</div>
-        <ul>${lines}</ul>
-      </div>`;
+      outEl.innerHTML = `<div class="movie-planner-card"><h3>No usable showtimes for:</h3><div class="movie-planner-muted">${noUsable.map(id => `${id} — ${movieIndex.get(id)}`).join("<br>")}</div></div>`;
       return;
     }
 
     const plan = pickBestPlan(ids);
     if (!plan){
-      outEl.innerHTML = `<div class="movie-planner-card">
-        <h3>No feasible plan found</h3>
-        <div class="movie-planner-muted">
-          I couldn’t find showtimes that fit the constraints. Try different movie numbers or verify date/start/runtime are present.
-        </div>
-      </div>`;
+      outEl.innerHTML = `<div class="movie-planner-card"><h3>No feasible plan found</h3><div class="movie-planner-muted">Try different numbers or dates.</div></div>`;
       return;
     }
-
     renderPlan(ids, plan);
   });
 })();
