@@ -6,6 +6,10 @@ import re
 import sys
 from pathlib import Path
 from bs4 import BeautifulSoup
+from urllib.request import Request, urlopen
+from urllib.parse import quote, urlencode
+from urllib.error import HTTPError, URLError
+
 
 HTML_PATH = Path("docs/index.html")
 
@@ -155,6 +159,25 @@ pre{
   border: 1px solid var(--grid-soft) !important;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
+}
+
+/* Posters in Movie column */
+.movie-cell-title{
+  font-weight: 800;
+}
+.movie-poster-wrap{
+  margin-top: 8px;
+}
+.movie-poster{
+  width: 84px;
+  max-width: 100%;
+  border-radius: 12px;
+  border: 1px solid var(--grid) !important;
+  box-shadow: 0 10px 22px rgba(15,23,42,0.12);
+  display: block;
+}
+@media (max-width: 900px){
+  .movie-poster{ width: 72px; }
 }
 
 /* ========== Table styling (rounded border matches inner gridlines) ========== */
@@ -767,7 +790,34 @@ def apply_final_table_schema(soup: BeautifulSoup, table) -> None:
         num_td = soup.new_tag("td")
         num_td.string = movie_id
 
-        movie_td = _clone_cell_as_td(soup, get_cell(idx_movie))
+        #older code. Replacing with movie with poster: movie_td = _clone_cell_as_td(soup, get_cell(idx_movie))
+        mid_int = None
+        try:
+            mid_int = int(movie_id)
+        except Exception:
+            mid_int = None
+
+        title = movie_by_id.get(mid_int, "") if mid_int is not None else ""
+        if not title:
+            # fallback to whatever was already in the movie column
+            title = (get_cell(idx_movie).get_text(" ", strip=True) if get_cell(idx_movie) else "").strip()
+
+        movie_td = soup.new_tag("td")
+
+        title_div = soup.new_tag("div", **{"class": "movie-cell-title"})
+        title_div.string = title or "Unknown"
+        movie_td.append(title_div)
+
+        poster_url = poster_by_id.get(mid_int) if mid_int is not None else None
+        if poster_url:
+            wrap = soup.new_tag("div", **{"class": "movie-poster-wrap"})
+            img = soup.new_tag("img", src=poster_url)
+            img.attrs["class"] = "movie-poster"
+            img.attrs["loading"] = "lazy"
+            img.attrs["alt"] = f"{title} poster"
+            wrap.append(img)
+            movie_td.append(wrap)
+
 
         # RT_C/A: use existing RT_C/A if present, otherwise compute from rt_critic/rt_audience
         if get_cell(idx_rtca):
@@ -791,6 +841,58 @@ def apply_final_table_schema(soup: BeautifulSoup, table) -> None:
         tr.append(imdb_td)
         tr.append(show_td)
         tr.append(runtime_td)
+
+def _fetch_json(url: str, timeout: int = 15) -> dict | None:
+    try:
+        req = Request(url, headers={"User-Agent": "movie-report-bot/1.0"})
+        with urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, ValueError):
+        return None
+
+def wikipedia_thumbnail_url(title: str) -> str | None:
+    """
+    Best-effort poster/thumbnail via Wikipedia.
+    1) Try page summary directly for title and common film suffixes
+    2) Fall back to MediaWiki search to pick the best page, then summary
+    """
+    def summary_thumb(page_title: str) -> str | None:
+        t = quote(page_title.replace(" ", "_"))
+        data = _fetch_json(f"https://en.wikipedia.org/api/rest_v1/page/summary/{t}")
+        if not data:
+            return None
+        thumb = (data.get("thumbnail") or {}).get("source")
+        return thumb
+
+    candidates = [
+        title,
+        f"{title} (film)",
+        f"{title} (2025 film)",
+        f"{title} (2024 film)",
+        f"{title} (2023 film)",
+    ]
+    for c in candidates:
+        thumb = summary_thumb(c)
+        if thumb:
+            return thumb
+
+    # Search fallback (helps with titles that don’t match the exact page name)
+    params = urlencode({
+        "action": "query",
+        "list": "search",
+        "srsearch": f"{title} film",
+        "format": "json",
+        "srlimit": 1,
+    })
+    data = _fetch_json(f"https://en.wikipedia.org/w/api.php?{params}")
+    try:
+        hits = data["query"]["search"]
+        if hits:
+            return summary_thumb(hits[0]["title"])
+    except Exception:
+        pass
+
+    return None
 
 def main() -> None:
     from datetime import datetime, timezone
@@ -906,6 +1008,13 @@ def main() -> None:
         old = soup.find(id=el_id)
         if old:
             old.decompose()
+
+    # Fetch poster thumbs once per movie (best-effort, cached)
+    poster_by_id: dict[int, str] = {}
+    for mid, title in movie_by_id.items():
+        poster = wikipedia_thumbnail_url(title)
+        if poster:
+            poster_by_id[mid] = poster
 
     # Wrap table so we can give it rounded corners + a clean border
     parent = table.parent
