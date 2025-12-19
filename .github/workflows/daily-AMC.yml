@@ -29,6 +29,9 @@ jobs:
           papermill notebooks/AMC_Scraper_5.ipynb build/report.executed.ipynb
           jupyter nbconvert --to html build/report.executed.ipynb --template lab --output index.html --output-dir docs --embed-images --no-input --HTMLExporter.exclude_output_prompt=True
 
+          # Add the post process script that allows calculations
+          python scripts/postprocess_report.py
+          
           # Always create/update a stamp file so there’s always something to commit
           date -u +"%Y-%m-%dT%H:%M:%SZ" > docs/last_run_utc.txt
 
@@ -81,6 +84,7 @@ jobs:
               html = html.replace("</head>", insert + "</head>", 1)
               p.write_text(html, encoding="utf-8")
           PY
+
 
 
       - name: Commit and push updated report
