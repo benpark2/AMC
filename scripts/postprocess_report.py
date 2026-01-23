@@ -175,6 +175,15 @@ pre{
   border: 1px solid var(--grid) !important;
   box-shadow: 0 10px 22px rgba(15,23,42,0.12);
   display: block;
+  /* Added styles */
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+/* Hover effect to show it's clickable */
+.movie-poster:hover {
+  transform: scale(1.05);
+  box-shadow: 0 14px 30px rgba(15,23,42,0.25);
+  border-color: rgba(37,99,235,0.4) !important;
 }
 @media (max-width: 900px){
   .movie-poster{ width: 72px; }
@@ -746,6 +755,11 @@ def _clone_cell_as_td(soup: BeautifulSoup, cell) -> "bs4.element.Tag":
         td.append(child)
     return td
 
+def get_trailer_url(title: str) -> str:
+    """Generates a YouTube search link for the movie trailer."""
+    query = quote(f"{title} official trailer")
+    return f"https://www.youtube.com/results?search_query={query}"
+
 def apply_final_table_schema(soup: BeautifulSoup, table, movie_by_id: dict[int, str], poster_by_id: dict[int, str]) -> None:
     thead = table.find("thead")
     tbody = table.find("tbody")
@@ -798,7 +812,24 @@ def apply_final_table_schema(soup: BeautifulSoup, table, movie_by_id: dict[int, 
             mid_int = None
 
         title = movie_by_id.get(mid_int, "") if mid_int is not None else ""
+
         poster_url = poster_by_id.get(mid_int) if mid_int is not None else None
+        if poster_url:
+            wrap = soup.new_tag("div", **{"class": "movie-poster-wrap"})
+            
+            # Create the anchor tag linking to YouTube
+            trailer_link = soup.new_tag("a", href=get_trailer_url(title), target="_blank", rel="noopener noreferrer")
+            trailer_link.attrs["title"] = f"Watch trailer for {title}"
+            
+            img = soup.new_tag("img", src=poster_url)
+            img.attrs["class"] = "movie-poster"
+            img.attrs["loading"] = "lazy"
+            img.attrs["alt"] = f"{title} poster"
+            
+            # Wrap: div -> a -> img
+            trailer_link.append(img)
+            wrap.append(trailer_link)
+            movie_td.append(wrap)
 
         if not title:
             # fallback to whatever was already in the movie column
