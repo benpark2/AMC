@@ -773,7 +773,7 @@ def apply_final_table_schema(soup: BeautifulSoup, table, movie_by_id: dict[int, 
     header_cells = header_row.find_all(["th", "td"], recursive=False)
     headers = [c.get_text(" ", strip=True) for c in header_cells]
 
-    # Locate columns (support both "before" and "after" names)
+    # Locate columns
     idx_hash = next((i for i, h in enumerate(headers) if h.strip() == "#"), None)
     idx_movie = _find_col_idx(headers, ["movie_title", "movie"])
     idx_rtca = _find_col_idx(headers, ["rt_c/a", "rt_c_a", "rt_c a", "rt_c/a "])
@@ -783,76 +783,64 @@ def apply_final_table_schema(soup: BeautifulSoup, table, movie_by_id: dict[int, 
     idx_showtimes = _find_col_idx(headers, ["showtimes", "showtime"])
     idx_runtime = _find_col_idx(headers, ["runtime"])
 
-    # Rewrite header to final schema
+    # Rewrite header
     header_row.clear()
     for title in ["#", "Movie", "RT_C/A", "IMDB", "Showtimes", "Runtime"]:
         th = soup.new_tag("th")
         th.string = title
         header_row.append(th)
 
-    # Rewrite each body row to match final schema
+    # Process Rows
     for tr in tbody.find_all("tr", recursive=False):
         cells = tr.find_all(["th", "td"], recursive=False)
 
         def get_cell(i: int | None):
             return cells[i] if i is not None and 0 <= i < len(cells) else None
 
-        # # column: prefer data-movie-id (set earlier), else existing # cell
-        movie_id = (tr.get("data-movie-id") or
-                    (get_cell(idx_hash).get_text(" ", strip=True) if get_cell(idx_hash) else "")).strip()
-
+        # 1. Handle Movie ID (#)
+        movie_id_str = (tr.get("data-movie-id") or 
+                        (get_cell(idx_hash).get_text(" ", strip=True) if get_cell(idx_hash) else "")).strip()
         num_td = soup.new_tag("td")
-        num_td.string = movie_id
+        num_td.string = movie_id_str
 
-        #older code. Replacing with movie with poster: movie_td = _clone_cell_as_td(soup, get_cell(idx_movie))
+        # 2. Handle Movie Title & Poster
+        movie_td = soup.new_tag("td") # INITIALIZED HERE: Always exists for this row
+        
         mid_int = None
         try:
-            mid_int = int(movie_id)
-        except Exception:
+            mid_int = int(movie_id_str)
+        except:
             mid_int = None
 
         title = movie_by_id.get(mid_int, "") if mid_int is not None else ""
+        if not title:
+            title = (get_cell(idx_movie).get_text(" ", strip=True) if get_cell(idx_movie) else "Unknown")
 
+        # Create Title Label
+        title_div = soup.new_tag("div", **{"class": "movie-cell-title"})
+        title_div.string = title
+        movie_td.append(title_div)
+
+        # Create Poster with Trailer Link
         poster_url = poster_by_id.get(mid_int) if mid_int is not None else None
         if poster_url:
             wrap = soup.new_tag("div", **{"class": "movie-poster-wrap"})
             
-            # Create the anchor tag linking to YouTube
-            trailer_link = soup.new_tag("a", href=get_trailer_url(title), target="_blank", rel="noopener noreferrer")
-            trailer_link.attrs["title"] = f"Watch trailer for {title}"
+            # Link to YouTube Trailer
+            query = quote(f"{title} official trailer")
+            trailer_url = f"https://www.youtube.com/results?search_query={query}"
+            trailer_link = soup.new_tag("a", href=trailer_url, target="_blank", rel="noopener noreferrer")
             
             img = soup.new_tag("img", src=poster_url)
             img.attrs["class"] = "movie-poster"
             img.attrs["loading"] = "lazy"
             img.attrs["alt"] = f"{title} poster"
             
-            # Wrap: div -> a -> img
             trailer_link.append(img)
             wrap.append(trailer_link)
             movie_td.append(wrap)
 
-        if not title:
-            # fallback to whatever was already in the movie column
-            title = (get_cell(idx_movie).get_text(" ", strip=True) if get_cell(idx_movie) else "").strip()
-
-        movie_td = soup.new_tag("td")
-
-        title_div = soup.new_tag("div", **{"class": "movie-cell-title"})
-        title_div.string = title or "Unknown"
-        movie_td.append(title_div)
-
-        poster_url = poster_by_id.get(mid_int) if mid_int is not None else None
-        if poster_url:
-            wrap = soup.new_tag("div", **{"class": "movie-poster-wrap"})
-            img = soup.new_tag("img", src=poster_url)
-            img.attrs["class"] = "movie-poster"
-            img.attrs["loading"] = "lazy"
-            img.attrs["alt"] = f"{title} poster"
-            wrap.append(img)
-            movie_td.append(wrap)
-
-
-        # RT_C/A: use existing RT_C/A if present, otherwise compute from rt_critic/rt_audience
+        # 3. Handle Other Columns
         if get_cell(idx_rtca):
             rtca_txt = get_cell(idx_rtca).get_text(" ", strip=True)
         else:
@@ -867,6 +855,7 @@ def apply_final_table_schema(soup: BeautifulSoup, table, movie_by_id: dict[int, 
         show_td = _clone_cell_as_td(soup, get_cell(idx_showtimes))
         runtime_td = _clone_cell_as_td(soup, get_cell(idx_runtime))
 
+        # Rebuild row
         tr.clear()
         tr.append(num_td)
         tr.append(movie_td)
