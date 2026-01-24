@@ -251,13 +251,14 @@ pre{
   width: 54px !important;
   white-space: nowrap !important;
 }
+/* Centered columns: #1 (#), #3 (RT_C/A), and #5 (Runtime) */
 .table-wrap th:nth-child(3), .table-wrap td:nth-child(3),
-.table-wrap th:nth-child(4), .table-wrap td:nth-child(4),
-.table-wrap th:nth-child(6), .table-wrap td:nth-child(6){
+.table-wrap th:nth-child(5), .table-wrap td:nth-child(5){
   text-align: center !important;
   white-space: nowrap !important;
 }
-.table-wrap td:nth-child(5){
+/* Column #4 is now Showtimes */
+.table-wrap td:nth-child(4){
   font-size: 14px !important;
   line-height: 1.35 !important;
 }
@@ -785,7 +786,7 @@ def apply_final_table_schema(soup: BeautifulSoup, table, movie_by_id: dict[int, 
 
     # Rewrite header
     header_row.clear()
-    for title in ["#", "Movie", "RT_C/A", "IMDB", "Showtimes", "Runtime"]:
+    for title in ["#", "Movie", "RT_C/A", "Showtimes", "Runtime"]:
         th = soup.new_tag("th")
         th.string = title
         header_row.append(th)
@@ -860,7 +861,7 @@ def apply_final_table_schema(soup: BeautifulSoup, table, movie_by_id: dict[int, 
         tr.append(num_td)
         tr.append(movie_td)
         tr.append(rtca_td)
-        tr.append(imdb_td)
+        #tr.append(imdb_td)
         tr.append(show_td)
         tr.append(runtime_td)
 
