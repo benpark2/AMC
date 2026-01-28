@@ -824,7 +824,9 @@ def apply_final_table_schema(soup: BeautifulSoup, table, movie_by_id: dict[int, 
 
         # Create Poster with Trailer Link
         poster_url = poster_by_id.get(mid_int) if mid_int is not None else None
-        if poster_url:
+        final_poster_url = poster_url if poster_url else "https://4ddig.tenorshare.com/images/photo-recovery/images-not-found.webp"
+        
+        if final_poster_url:
             wrap = soup.new_tag("div", **{"class": "movie-poster-wrap"})
             
             # Link to YouTube Trailer
@@ -832,7 +834,7 @@ def apply_final_table_schema(soup: BeautifulSoup, table, movie_by_id: dict[int, 
             trailer_url = f"https://www.youtube.com/results?search_query={query}"
             trailer_link = soup.new_tag("a", href=trailer_url, target="_blank", rel="noopener noreferrer")
             
-            img = soup.new_tag("img", src=poster_url)
+            img = soup.new_tag("img", src=final_poster_url)
             img.attrs["class"] = "movie-poster"
             img.attrs["loading"] = "lazy"
             img.attrs["alt"] = f"{title} poster"
