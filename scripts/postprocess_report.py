@@ -652,7 +652,7 @@ def runtime_to_minutes(text: str | None) -> int | None:
 
 def score_show_blob(text: str) -> int:
     low = (text or "").lower()
-    return low.count("amc ") * 10 + low.count("2025-") * 5 + text.count("•") * 3
+    return low.count("amc ") * 10 + low.count("2026-") * 5 + text.count("•") * 3
 
 def parse_showtimes_blob(blob: str) -> list[dict]:
     """
@@ -892,9 +892,9 @@ def wikipedia_thumbnail_url(title: str) -> str | None:
     candidates = [
         title,
         f"{title} (film)",
+        f"{title} (2026 film)",
         f"{title} (2025 film)",
         f"{title} (2024 film)",
-        f"{title} (2023 film)",
     ]
     for c in candidates:
         thumb = summary_thumb(c)
