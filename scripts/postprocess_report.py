@@ -881,6 +881,12 @@ def wikipedia_thumbnail_url(title: str) -> str | None:
     1) Try page summary directly for title and common film suffixes
     2) Fall back to MediaWiki search to pick the best page, then summary
     """
+
+    # 1. Clean the title: Remove trailing space + anything in parentheses
+    # Pattern explanation: \s* matches whitespace, \(.*?\) matches () and content inside
+    clean_title = re.sub(r'\s*\(.*?\)', '', title).strip()
+
+    
     def summary_thumb(page_title: str) -> str | None:
         t = quote(page_title.replace(" ", "_"))
         data = _fetch_json(f"https://en.wikipedia.org/api/rest_v1/page/summary/{t}")
@@ -890,11 +896,11 @@ def wikipedia_thumbnail_url(title: str) -> str | None:
         return thumb
 
     candidates = [
-        f"{title} (2026 film)",
-        f"{title} (2025 film)",
-        f"{title} (2024 film)",
-        f"{title} (film)",
-        title,
+        f"{clean_title} (2026 film)",
+        f"{clean_title} (2025 film)",
+        f"{clean_title} (2024 film)",
+        f"{clean_title} (film)",
+        clean_title,
     ]
     for c in candidates:
         thumb = summary_thumb(c)
@@ -905,7 +911,7 @@ def wikipedia_thumbnail_url(title: str) -> str | None:
     params = urlencode({
         "action": "query",
         "list": "search",
-        "srsearch": f"{title} film",
+        "srsearch": f"{clean_title} film",
         "format": "json",
         "srlimit": 1,
     })
