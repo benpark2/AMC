@@ -890,11 +890,11 @@ def wikipedia_thumbnail_url(title: str) -> str | None:
         return thumb
 
     candidates = [
-        title,
-        f"{title} (film)",
         f"{title} (2026 film)",
         f"{title} (2025 film)",
         f"{title} (2024 film)",
+        f"{title} (film)",
+        title,
     ]
     for c in candidates:
         thumb = summary_thumb(c)
@@ -1032,6 +1032,7 @@ def main() -> None:
         th.string = "#"
         header_row.insert(0, th)
 
+    # Fetch poster thumbs once per movie (best-effort, cached)
     poster_by_id: dict[int, str] = {}
     for mid, title in movie_by_id.items():
         poster = wikipedia_thumbnail_url(title)
@@ -1050,12 +1051,14 @@ def main() -> None:
         if old:
             old.decompose()
 
+    """ repetitive
     # Fetch poster thumbs once per movie (best-effort, cached)
     poster_by_id: dict[int, str] = {}
     for mid, title in movie_by_id.items():
         poster = wikipedia_thumbnail_url(title)
         if poster:
             poster_by_id[mid] = poster
+            """
 
     # Wrap table so we can give it rounded corners + a clean border
     parent = table.parent
