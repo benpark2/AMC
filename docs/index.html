@@ -7332,7 +7332,12 @@ a.anchor-link {
     if (!diagrams.length) {
       return;
     }
-    const mermaid = (await import("https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.7.0/mermaid.esm.min.mjs")).default;
+    const mermaid = (await import("https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.10.0/mermaid.esm.min.mjs")).default;
+    const elkUrl = "https://cdnjs.cloudflare.com/ajax/libs/mermaid-layout-elk/0.1.9/mermaid-layout-elk.esm.min.mjs";
+    if(elkUrl) {
+      const elkLayouts = (await import(elkUrl)).default;
+      mermaid.registerLayoutLoaders(elkLayouts);
+    }
     const parser = new DOMParser();
 
     mermaid.initialize({
@@ -7429,7 +7434,8 @@ a.anchor-link {
      * Post-process to ensure mermaid diagrams contain only valid SVG and XHTML.
      */
     function cleanMermaidSvg(svg) {
-      return svg.replace(RE_VOID_ELEMENT, replaceVoidElement);
+      svg = svg.replace(RE_VOID_ELEMENT, replaceVoidElement);
+      return `${SVG_XML_HEADER}${svg}`;
     }
 
 
@@ -7455,6 +7461,285 @@ a.anchor-link {
       }
       return `<${tag} ${rest}>`;
     }
+
+
+  /**
+   * Named HTML entities with their decimal equivalent codes.
+   *
+   * @see https://www.w3.org/TR/WD-html40-970708/sgml/entities.html
+   * */
+  const HTML_ENTITIES = `<!ENTITY Aacute "&#193;">
+<!ENTITY aacute "&#225;">
+<!ENTITY Acirc "&#194;">
+<!ENTITY acirc "&#226;">
+<!ENTITY acute "&#180;">
+<!ENTITY AElig "&#198;">
+<!ENTITY aelig "&#230;">
+<!ENTITY Agrave "&#192;">
+<!ENTITY agrave "&#224;">
+<!ENTITY alefsym "&#8501;">
+<!ENTITY Alpha "&#913;">
+<!ENTITY alpha "&#945;">
+<!ENTITY amp "&#38;">
+<!ENTITY and "&#8869;">
+<!ENTITY ang "&#8736;">
+<!ENTITY Aring "&#197;">
+<!ENTITY aring "&#229;">
+<!ENTITY asymp "&#8776;">
+<!ENTITY Atilde "&#195;">
+<!ENTITY atilde "&#227;">
+<!ENTITY Auml "&#196;">
+<!ENTITY auml "&#228;">
+<!ENTITY bdquo "&#8222;">
+<!ENTITY Beta "&#914;">
+<!ENTITY beta "&#946;">
+<!ENTITY brvbar "&#166;">
+<!ENTITY bull "&#8226;">
+<!ENTITY cap "&#8745;">
+<!ENTITY Ccedil "&#199;">
+<!ENTITY ccedil "&#231;">
+<!ENTITY cedil "&#184;">
+<!ENTITY cent "&#162;">
+<!ENTITY Chi "&#935;">
+<!ENTITY chi "&#967;">
+<!ENTITY circ "&#710;">
+<!ENTITY clubs "&#9827;">
+<!ENTITY cong "&#8773;">
+<!ENTITY copy "&#169;">
+<!ENTITY crarr "&#8629;">
+<!ENTITY cup "&#8746;">
+<!ENTITY curren "&#164;">
+<!ENTITY dagger "&#8224;">
+<!ENTITY Dagger "&#8225;">
+<!ENTITY darr "&#8595;">
+<!ENTITY dArr "&#8659;">
+<!ENTITY deg "&#176;">
+<!ENTITY Delta "&#916;">
+<!ENTITY delta "&#948;">
+<!ENTITY diams "&#9830;">
+<!ENTITY divide "&#247;">
+<!ENTITY Eacute "&#201;">
+<!ENTITY eacute "&#233;">
+<!ENTITY Ecirc "&#202;">
+<!ENTITY ecirc "&#234;">
+<!ENTITY Egrave "&#200;">
+<!ENTITY egrave "&#232;">
+<!ENTITY empty "&#8709;">
+<!ENTITY emsp "&#8195;">
+<!ENTITY ensp "&#8194;">
+<!ENTITY epsilon "&#949;">
+<!ENTITY Epsilon "&#917;">
+<!ENTITY equiv "&#8801;">
+<!ENTITY Eta "&#919;">
+<!ENTITY eta "&#951;">
+<!ENTITY ETH "&#208;">
+<!ENTITY eth "&#240;">
+<!ENTITY Euml "&#203;">
+<!ENTITY euml "&#235;">
+<!ENTITY exist "&#8707;">
+<!ENTITY fnof "&#402;">
+<!ENTITY forall "&#8704;">
+<!ENTITY frac12 "&#189;">
+<!ENTITY frac14 "&#188;">
+<!ENTITY frac34 "&#190;">
+<!ENTITY frasl "&#8260;">
+<!ENTITY Gamma "&#915;">
+<!ENTITY gamma "&#947;">
+<!ENTITY ge "&#8805;">
+<!ENTITY gt "&#62;">
+<!ENTITY harr "&#8596;">
+<!ENTITY hArr "&#8660;">
+<!ENTITY hearts "&#9829;">
+<!ENTITY hellip "&#8230;">
+<!ENTITY Iacute "&#205;">
+<!ENTITY iacute "&#237;">
+<!ENTITY Icirc "&#206;">
+<!ENTITY icirc "&#238;">
+<!ENTITY iexcl "&#161;">
+<!ENTITY Igrave "&#204;">
+<!ENTITY igrave "&#236;">
+<!ENTITY image "&#8465;">
+<!ENTITY infin "&#8734;">
+<!ENTITY int "&#8747;">
+<!ENTITY Iota "&#921;">
+<!ENTITY iota "&#953;">
+<!ENTITY iquest "&#191;">
+<!ENTITY isin "&#8712;">
+<!ENTITY Iuml "&#207;">
+<!ENTITY iuml "&#239;">
+<!ENTITY Kappa "&#922;">
+<!ENTITY kappa "&#954;">
+<!ENTITY Lambda "&#923;">
+<!ENTITY lambda "&#955;">
+<!ENTITY lang "&#9001;">
+<!ENTITY laquo "&#171;">
+<!ENTITY larr "&#8592;">
+<!ENTITY lArr "&#8656;">
+<!ENTITY lceil "&#8968;">
+<!ENTITY ldquo "&#8220;">
+<!ENTITY le "&#8804;">
+<!ENTITY lfloor "&#8970;">
+<!ENTITY lowast "&#8727;">
+<!ENTITY loz "&#9674;">
+<!ENTITY lrm "&#8206;">
+<!ENTITY lsaquo "&#8249;">
+<!ENTITY lsquo "&#8216;">
+<!ENTITY lt "&#60;">
+<!ENTITY macr "&#175;">
+<!ENTITY mdash "&#8212;">
+<!ENTITY micro "&#181;">
+<!ENTITY middot "&#183;">
+<!ENTITY minus "&#8722;">
+<!ENTITY Mu "&#924;">
+<!ENTITY mu "&#956;">
+<!ENTITY nabla "&#8711;">
+<!ENTITY nbsp "&#160;">
+<!ENTITY ndash "&#8211;">
+<!ENTITY ne "&#8800;">
+<!ENTITY ni "&#8715;">
+<!ENTITY not "&#172;">
+<!ENTITY notin "&#8713;">
+<!ENTITY nsub "&#8836;">
+<!ENTITY Ntilde "&#209;">
+<!ENTITY ntilde "&#241;">
+<!ENTITY Nu "&#925;">
+<!ENTITY nu "&#957;">
+<!ENTITY Oacute "&#211;">
+<!ENTITY oacute "&#243;">
+<!ENTITY Ocirc "&#212;">
+<!ENTITY ocirc "&#244;">
+<!ENTITY OElig "&#338;">
+<!ENTITY oelig "&#339;">
+<!ENTITY Ograve "&#210;">
+<!ENTITY ograve "&#242;">
+<!ENTITY oline "&#8254;">
+<!ENTITY Omega "&#937;">
+<!ENTITY omega "&#969;">
+<!ENTITY Omicron "&#927;">
+<!ENTITY omicron "&#959;">
+<!ENTITY oplus "&#8853;">
+<!ENTITY or "&#8870;">
+<!ENTITY ordf "&#170;">
+<!ENTITY ordm "&#186;">
+<!ENTITY Oslash "&#216;">
+<!ENTITY oslash "&#248;">
+<!ENTITY Otilde "&#213;">
+<!ENTITY otilde "&#245;">
+<!ENTITY otimes "&#8855;">
+<!ENTITY Ouml "&#214;">
+<!ENTITY ouml "&#246;">
+<!ENTITY para "&#182;">
+<!ENTITY part "&#8706;">
+<!ENTITY permil "&#8240;">
+<!ENTITY perp "&#8869;">
+<!ENTITY Phi "&#934;">
+<!ENTITY phi "&#966;">
+<!ENTITY Pi "&#928;">
+<!ENTITY pi "&#960;">
+<!ENTITY piv "&#982;">
+<!ENTITY plusmn "&#177;">
+<!ENTITY pound "&#163;">
+<!ENTITY prime "&#8242;">
+<!ENTITY Prime "&#8243;">
+<!ENTITY prod "&#8719;">
+<!ENTITY prop "&#8733;">
+<!ENTITY Psi "&#936;">
+<!ENTITY psi "&#968;">
+<!ENTITY quot "&#34;">
+<!ENTITY radic "&#8730;">
+<!ENTITY rang "&#9002;">
+<!ENTITY raquo "&#187;">
+<!ENTITY rarr "&#8594;">
+<!ENTITY rArr "&#8658;">
+<!ENTITY rceil "&#8969;">
+<!ENTITY rdquo "&#8221;">
+<!ENTITY real "&#8476;">
+<!ENTITY reg "&#174;">
+<!ENTITY rfloor "&#8971;">
+<!ENTITY Rho "&#929;">
+<!ENTITY rho "&#961;">
+<!ENTITY rlm "&#8207;">
+<!ENTITY rsaquo "&#8250;">
+<!ENTITY rsquo "&#8217;">
+<!ENTITY sbquo "&#8218;">
+<!ENTITY Scaron "&#352;">
+<!ENTITY scaron "&#353;">
+<!ENTITY sdot "&#8901;">
+<!ENTITY sect "&#167;">
+<!ENTITY shy "&#173;">
+<!ENTITY Sigma "&#931;">
+<!ENTITY sigma "&#963;">
+<!ENTITY sigmaf "&#962;">
+<!ENTITY sim "&#8764;">
+<!ENTITY spades "&#9824;">
+<!ENTITY sub "&#8834;">
+<!ENTITY sube "&#8838;">
+<!ENTITY sum "&#8721;">
+<!ENTITY sup "&#8835;">
+<!ENTITY sup1 "&#185;">
+<!ENTITY sup2 "&#178;">
+<!ENTITY sup3 "&#179;">
+<!ENTITY supe "&#8839;">
+<!ENTITY szlig "&#223;">
+<!ENTITY Tau "&#932;">
+<!ENTITY tau "&#964;">
+<!ENTITY there4 "&#8756;">
+<!ENTITY Theta "&#920;">
+<!ENTITY theta "&#952;">
+<!ENTITY thetasym "&#977;">
+<!ENTITY thinsp "&#8201;">
+<!ENTITY THORN "&#222;">
+<!ENTITY thorn "&#254;">
+<!ENTITY tilde "&#732;">
+<!ENTITY times "&#215;">
+<!ENTITY trade "&#8482;">
+<!ENTITY Uacute "&#218;">
+<!ENTITY uacute "&#250;">
+<!ENTITY uarr "&#8593;">
+<!ENTITY uArr "&#8657;">
+<!ENTITY Ucirc "&#219;">
+<!ENTITY ucirc "&#251;">
+<!ENTITY Ugrave "&#217;">
+<!ENTITY ugrave "&#249;">
+<!ENTITY uml "&#168;">
+<!ENTITY upsih "&#978;">
+<!ENTITY Upsilon "&#933;">
+<!ENTITY upsilon "&#965;">
+<!ENTITY Uuml "&#220;">
+<!ENTITY uuml "&#252;">
+<!ENTITY weierp "&#8472;">
+<!ENTITY Xi "&#926;">
+<!ENTITY xi "&#958;">
+<!ENTITY Yacute "&#221;">
+<!ENTITY yacute "&#253;">
+<!ENTITY yen "&#165;">
+<!ENTITY Yuml "&#376;">
+<!ENTITY yuml "&#255;">
+<!ENTITY Zeta "&#918;">
+<!ENTITY zeta "&#950;">
+<!ENTITY zwj "&#8205;">
+<!ENTITY zwnj "&#8204;">`.replace(/\n/g, ' ');
+
+  /**
+   * A reasonably strict xml declaration.
+   */
+  const XML_DECL = '<?xml version="1.0" standalone="no"?>';
+
+  /**
+   * The beginning of the XML doctype declaration.
+   */
+  const DOCTYPE_START = `<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd" [`;
+
+  /**
+   * The end of the XML docype declaration.
+   */
+  const DOCTYPE_END = ']>';
+
+  /**
+   * A full header for an SVG XML document.
+   */
+  const SVG_XML_HEADER = `${XML_DECL}
+    ${DOCTYPE_START}${HTML_ENTITIES}${DOCTYPE_END}`;
 
     void Promise.all([...diagrams].map(renderOneMarmaid));
   });
@@ -7831,7 +8116,7 @@ img, svg, video, canvas { max-width: 100%; height: auto; }
 
 </head>
 <body class="jp-Notebook" data-jp-theme-light="true" data-jp-theme-name="JupyterLab Light">
-<main><div class="report-generated" id="report-generated">Report generated: 2026-01-29 08:35 AM PST / 2026-01-29 16:35 UTC</div>
+<main><div class="report-generated" id="report-generated">Report generated: 2026-01-29 10:48 AM PST / 2026-01-29 18:48 UTC</div>
 <div class="movie-planner" id="movie-planner">
 <h2>Watch Planner</h2>
 <p class="movie-planner-sub">
@@ -7843,8 +8128,8 @@ img, svg, video, canvas { max-width: 100%; height: auto; }
 </div>
 <div class="movie-planner-output" id="movie-planner-output"></div>
 </div>
-<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs jp-mod-noInput" id="cell-id=f4d677ab">
-</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noInput" id="cell-id=8764def7">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs jp-mod-noInput" id="cell-id=fca8a2af">
+</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noInput" id="cell-id=6ac10709">
 <div class="jp-Cell-outputWrapper">
 <div class="jp-Collapser jp-OutputCollapser jp-Cell-outputCollapser">
 </div>
@@ -7876,40 +8161,40 @@ table.dataframe th, table.dataframe td {
 <tr data-movie-id="6"><td>6</td><td><div class="movie-cell-title">Arco</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Arco%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Arco poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/a/ae/Arco_poster.jpg"/></a></div></td><td>91/91</td><td>AMC Orange 30<br/>• 2026-01-31: 10:10 am [Laser at AMC], 12:40 pm [Laser at AMC], 3:15 pm [Laser at AMC], 5:50 pm [Laser at AMC], 8:25 pm [Laser at AMC], 11:00 pm [Laser at AMC]<br/>• 2026-02-01: 12:00 pm [Laser at AMC], 12:40 pm [Laser at AMC], 3:15 pm [Laser at AMC], 5:50 pm [Laser at AMC], 8:25 pm [Laser at AMC], 11:00 pm [Laser at AMC]</td><td>1h 29m</td></tr>
 <tr data-movie-id="7"><td>7</td><td><div class="movie-cell-title">Send Help</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Send%20Help%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Send Help poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/0/0f/Send_Help_poster.jpg"/></a></div></td><td>91/91</td><td>AMC Orange 30<br/>• 2026-01-31: 9:45 am [Laser at AMC], 12:00 pm [Dolby Cinema at AMC], 1:00 pm [Laser at AMC], 3:10 pm [Dolby Cinema at AMC], 4:10 pm [Laser at AMC], 6:30 pm [Dolby Cinema at AMC], 7:15 pm [Laser at AMC], 10:20 pm [Laser at AMC]<br/>• 2026-02-01: 12:00 pm [Dolby Cinema at AMC], 1:00 pm [Laser at AMC], 3:10 pm [Dolby Cinema at AMC], 4:10 pm [Laser at AMC], 6:30 pm [Dolby Cinema at AMC], 7:15 pm [Laser at AMC], 10:20 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2026-01-31: 11:00 am [Dolby Cinema at AMC], 12:15 pm [Laser at AMC], 2:00 pm [Dolby Cinema at AMC], 3:15 pm [Laser at AMC], 5:00 pm [Dolby Cinema at AMC], 6:15 pm [Laser at AMC], 8:00 pm [Dolby Cinema at AMC], 9:15 pm [Laser at AMC], 11:00 pm [Laser at AMC]<br/>• 2026-02-01: 12:15 pm [Laser at AMC], 1:15 pm [Dolby Cinema at AMC], 3:15 pm [Laser at AMC], 4:15 pm [Dolby Cinema at AMC], 6:15 pm [Laser at AMC], 7:15 pm [Dolby Cinema at AMC], 9:15 pm [Laser at AMC]<br/>AMC Woodbridge 5<br/>• 2026-01-31: 1:10 pm [Laser at AMC], 4:20 pm [Laser at AMC], 7:30 pm [Laser at AMC], 10:20 pm [Laser at AMC]<br/>• 2026-02-01: 1:10 pm [Laser at AMC], 4:10 pm [Laser at AMC], 7:00 pm [Laser at AMC], 9:50 pm [Laser at AMC]</td><td>1h 53m</td></tr>
 <tr data-movie-id="8"><td>8</td><td><div class="movie-cell-title">Avatar: Fire and Ash</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Avatar%3A%20Fire%20and%20Ash%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Avatar: Fire and Ash poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/9/95/Avatar_Fire_and_Ash_poster.jpeg"/></a></div></td><td>66/90</td><td>AMC Orange 30<br/>• 2026-01-31: 9:30 am [IMAX at AMC], 11:45 am [Laser at AMC], 4:15 pm [Laser at AMC], 8:45 pm [Laser at AMC], 9:45 pm [Laser at AMC]<br/>• 2026-02-01: 12:15 pm [Laser at AMC], 4:45 pm [Laser at AMC], 9:10 pm [Laser at AMC], 9:45 pm [IMAX at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2026-01-31: 12:40 pm, 5:05 pm, 9:30 pm<br/>• 2026-02-01: 12:35 pm, 4:55 pm, 9:15 pm</td><td>3h 15m</td></tr>
-<tr data-movie-id="9"><td>9</td><td><div class="movie-cell-title">Primate</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Primate%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Primate poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/commons/thumb/f/f5/Lemur_catta_001.jpg/330px-Lemur_catta_001.jpg"/></a></div></td><td>NaN/89</td><td>AMC Orange 30<br/>• 2026-01-31: 1:45 pm [Laser at AMC], 4:30 pm [Laser at AMC], 7:15 pm [Laser at AMC], 10:00 pm [Laser at AMC]<br/>• 2026-02-01: 4:00 pm [Laser at AMC], 6:45 pm [Laser at AMC], 9:30 pm [Laser at AMC]<br/>AMC Woodbridge 5<br/>• 2026-01-31: 1:00 pm [Laser at AMC], 6:40 pm [Laser at AMC]<br/>• 2026-02-01: 1:00 pm [Laser at AMC], 7:30 pm [Laser at AMC]</td><td>1h 29m</td></tr>
+<tr data-movie-id="9"><td>9</td><td><div class="movie-cell-title">Primate</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Primate%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Primate poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/0/0e/Primate_poster.jpg"/></a></div></td><td>NaN/89</td><td>AMC Orange 30<br/>• 2026-01-31: 1:45 pm [Laser at AMC], 4:30 pm [Laser at AMC], 7:15 pm [Laser at AMC], 10:00 pm [Laser at AMC]<br/>• 2026-02-01: 4:00 pm [Laser at AMC], 6:45 pm [Laser at AMC], 9:30 pm [Laser at AMC]<br/>AMC Woodbridge 5<br/>• 2026-01-31: 1:00 pm [Laser at AMC], 6:40 pm [Laser at AMC]<br/>• 2026-02-01: 1:00 pm [Laser at AMC], 7:30 pm [Laser at AMC]</td><td>1h 29m</td></tr>
 <tr data-movie-id="10"><td>10</td><td><div class="movie-cell-title">28 Years Later: The Bone Temple</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=28%20Years%20Later%3A%20The%20Bone%20Temple%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="28 Years Later: The Bone Temple poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/b/b8/28_Years_Later%2C_The_Bone_Temple_poster.jpg"/></a></div></td><td>92/88</td><td>AMC Orange 30<br/>• 2026-01-31: 9:30 am [Laser at AMC], 12:40 pm [Laser at AMC], 3:45 pm [Laser at AMC], 6:50 pm [Laser at AMC], 10:00 pm [Laser at AMC]<br/>• 2026-02-01: 12:45 pm [Laser at AMC], 4:20 pm [Laser at AMC], 7:25 pm [Laser at AMC], 10:30 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2026-01-31: 12:30 pm [Laser at AMC], 4:30 pm [Laser at AMC], 7:30 pm [Laser at AMC], 10:50 pm [Laser at AMC]<br/>• 2026-02-01: 12:00 pm [Laser at AMC], 4:35 pm [Laser at AMC], 7:30 pm [Laser at AMC], 10:30 pm [Laser at AMC]</td><td>1h 50m</td></tr>
 <tr data-movie-id="11"><td>11</td><td><div class="movie-cell-title">The Lego Movie</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=The%20Lego%20Movie%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="The Lego Movie poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/1/10/The_Lego_Movie_poster.jpg"/></a></div></td><td>96/87</td><td>AMC Orange 30<br/>• 2026-01-31: 10:45 am [Laser at AMC], 1:30 pm [Laser at AMC], 4:15 pm [Laser at AMC]<br/>• 2026-02-01: 12:00 pm [Laser at AMC], 2:45 pm [Laser at AMC]</td><td>1h 41m</td></tr>
 <tr data-movie-id="12"><td>12</td><td><div class="movie-cell-title">One Battle After Another</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=One%20Battle%20After%20Another%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="One Battle After Another poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/5/5d/One_Battle_After_Another.jpg"/></a></div></td><td>94/85</td><td>AMC Orange 30<br/>• 2026-01-31: 2:00 pm [Laser at AMC], 6:00 pm [Laser at AMC], 10:00 pm [Laser at AMC]<br/>• 2026-02-01: 6:00 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2026-01-31: 10:00 pm [IMAX at AMC]<br/>• 2026-02-01: 9:45 pm [IMAX at AMC]</td><td>2h 42m</td></tr>
-<tr data-movie-id="13"><td>13</td><td><div class="movie-cell-title">Bugonia</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Bugonia%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Bugonia poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/commons/thumb/c/c8/Aristee.png/330px-Aristee.png"/></a></div></td><td>88/84</td><td>AMC Orange 30<br/>• 2026-01-31: 10:45 am [Laser at AMC]<br/>• 2026-02-01: 2:45 pm [Laser at AMC]</td><td>1h 58m</td></tr>
+<tr data-movie-id="13"><td>13</td><td><div class="movie-cell-title">Bugonia</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Bugonia%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Bugonia poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/2/27/Bugonia_film_poster.jpg"/></a></div></td><td>88/84</td><td>AMC Orange 30<br/>• 2026-01-31: 10:45 am [Laser at AMC]<br/>• 2026-02-01: 2:45 pm [Laser at AMC]</td><td>1h 58m</td></tr>
 <tr data-movie-id="14"><td>14</td><td><div class="movie-cell-title">The Testament of Ann Lee</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=The%20Testament%20of%20Ann%20Lee%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="The Testament of Ann Lee poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/d/d3/The_Testament_of_Ann_Lee_%282025_film%29_poster.jpg"/></a></div></td><td>88/83</td><td>AMC Orange 30<br/>• 2026-01-31: 9:30 am [Laser at AMC]<br/>• 2026-02-01: 12:35 pm [Laser at AMC]</td><td>2h 17m</td></tr>
 <tr data-movie-id="15"><td>15</td><td><div class="movie-cell-title">Marty Supreme</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Marty%20Supreme%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Marty Supreme poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/b/ba/Marty_Supreme_poster.jpg"/></a></div></td><td>93/82</td><td>AMC Orange 30<br/>• 2026-01-31: 10:30 am [Laser at AMC], 2:15 pm [IMAX at AMC], 6:00 pm [IMAX at AMC], 10:30 pm [Laser at AMC]<br/>• 2026-02-01: 12:20 pm [Laser at AMC], 2:15 pm [IMAX at AMC], 6:00 pm [IMAX at AMC], 10:30 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2026-01-31: 12:35 pm [Laser at AMC], 3:10 pm [Laser at AMC], 6:20 pm [IMAX at AMC], 9:50 pm [Laser at AMC]<br/>• 2026-02-01: 12:45 pm [Laser at AMC], 2:55 pm [Laser at AMC], 6:00 pm [IMAX at AMC], 9:35 pm [Laser at AMC]</td><td>2h 30m</td></tr>
 <tr data-movie-id="16"><td>16</td><td><div class="movie-cell-title">Border 2</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Border%202%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Border 2 poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/2/26/Border_2_Poster.jpg"/></a></div></td><td>73/81</td><td>AMC Orange 30<br/>• 2026-01-31: 10:40 am [Laser at AMC], 5:25 pm [Laser at AMC], 9:00 pm [Laser at AMC]<br/>• 2026-02-01: 1:15 pm [Laser at AMC], 6:20 pm [Laser at AMC], 8:45 pm [Laser at AMC]</td><td>3h 19m</td></tr>
-<tr data-movie-id="17"><td>17</td><td><div class="movie-cell-title">Clika</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Clika%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Clika poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/4/43/Mercy_2026_poster.jpeg"/></a></div></td><td>NaN/78</td><td>AMC Orange 30<br/>• 2026-01-31: 2:10 pm [Laser at AMC], 3:00 pm [Laser at AMC], 7:35 pm [Laser at AMC], 10:15 pm [Laser at AMC]<br/>• 2026-02-01: 1:30 pm [Laser at AMC], 4:00 pm [Laser at AMC], 6:00 pm [Laser at AMC], 10:40 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2026-01-31: 11:05 am [Laser at AMC], 3:15 pm [Laser at AMC], 5:45 pm [Laser at AMC], 8:20 pm [Laser at AMC], 10:50 pm [Laser at AMC]<br/>• 2026-02-01: 11:00 am [Laser at AMC], 2:10 pm [Laser at AMC], 4:45 pm [Laser at AMC], 7:20 pm [Laser at AMC], 10:25 pm [Laser at AMC]</td><td>1h 22m</td></tr>
+<tr data-movie-id="17"><td>17</td><td><div class="movie-cell-title">Clika</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Clika%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Clika poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/4/43/Mercy_2026_poster.jpeg"/></a></div></td><td>10/78</td><td>AMC Orange 30<br/>• 2026-01-31: 2:10 pm [Laser at AMC], 3:00 pm [Laser at AMC], 7:35 pm [Laser at AMC], 10:15 pm [Laser at AMC]<br/>• 2026-02-01: 1:30 pm [Laser at AMC], 4:00 pm [Laser at AMC], 6:00 pm [Laser at AMC], 10:40 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2026-01-31: 11:05 am [Laser at AMC], 3:15 pm [Laser at AMC], 5:45 pm [Laser at AMC], 8:20 pm [Laser at AMC], 10:50 pm [Laser at AMC]<br/>• 2026-02-01: 11:00 am [Laser at AMC], 2:10 pm [Laser at AMC], 4:45 pm [Laser at AMC], 7:20 pm [Laser at AMC], 10:25 pm [Laser at AMC]</td><td>1h 22m</td></tr>
 <tr data-movie-id="18"><td>18</td><td><div class="movie-cell-title">The Spongebob Movie: Search for Squarepants</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=The%20Spongebob%20Movie%3A%20Search%20for%20Squarepants%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="The Spongebob Movie: Search for Squarepants poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/1/19/The_SpongeBob_Movie_Search_for_SquarePants_Poster.jpg"/></a></div></td><td>81/68</td><td>AMC Orange 30<br/>• 2026-01-31: 9:45 am [Laser at AMC], 12:25 pm [Laser at AMC], 3:15 pm [Laser at AMC]<br/>• 2026-02-01: 1:30 pm [Laser at AMC], 4:15 pm [Laser at AMC], 7:00 pm [Laser at AMC], 9:45 pm [Laser at AMC]</td><td>1h 36m</td></tr>
 <tr data-movie-id="19"><td>19</td><td><div class="movie-cell-title">Greenland 2: Migration</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Greenland%202%3A%20Migration%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Greenland 2: Migration poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/6/68/Greenland_-_Migration.jpg"/></a></div></td><td>51/66</td><td>AMC Orange 30<br/>• 2026-01-31: 10:15 am [Laser at AMC]<br/>• 2026-02-01: 12:10 pm [Laser at AMC], 2:50 pm [Laser at AMC]</td><td>1h 38m</td></tr>
 <tr data-movie-id="20"><td>20</td><td><div class="movie-cell-title">Worldbreaker</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Worldbreaker%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Worldbreaker poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/b/b1/World_Breaker_poster.jpg"/></a></div></td><td>58/58</td><td>AMC Orange 30<br/>• 2026-01-31: 4:50 pm [Laser at AMC]<br/>• 2026-02-01: 5:30 pm [Laser at AMC]</td><td>1h 35m</td></tr>
 <tr data-movie-id="21"><td>21</td><td><div class="movie-cell-title">The Housemaid</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=The%20Housemaid%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="The Housemaid poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/b/ba/The_Housemaid_%282025_film_poster%29.jpeg"/></a></div></td><td>69/54</td><td>AMC Orange 30<br/>• 2026-01-31: 12:00 pm [Laser at AMC], 3:25 pm [Laser at AMC], 6:50 pm [Laser at AMC], 10:20 pm [Laser at AMC]<br/>• 2026-02-01: 3:10 pm [Laser at AMC], 6:45 pm [Laser at AMC], 10:00 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2026-01-31: 4:15 pm [Laser at AMC], 10:35 pm [Laser at AMC]<br/>• 2026-02-01: 6:05 pm [Laser at AMC], 10:15 pm [Laser at AMC]<br/>AMC Woodbridge 5<br/>• 2026-01-31: 1:30 pm [Laser at AMC], 3:45 pm [Laser at AMC], 7:00 pm [Laser at AMC], 10:10 pm [Laser at AMC]<br/>• 2026-02-01: 1:00 pm [Laser at AMC], 4:20 pm [Laser at AMC], 6:45 pm [Laser at AMC], 10:00 pm [Laser at AMC]</td><td>2h 11m</td></tr>
-<tr data-movie-id="22"><td>22</td><td><div class="movie-cell-title">Shelter</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Shelter%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Shelter poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/commons/thumb/a/a3/Ilha_Barreta_03.JPG/330px-Ilha_Barreta_03.JPG"/></a></div></td><td>4/45</td><td>AMC Orange 30<br/>• 2026-01-31: 10:10 am [Laser at AMC], 1:15 pm [Laser at AMC], 4:30 pm [Laser at AMC], 7:30 pm [Laser at AMC], 9:30 pm [Dolby Cinema at AMC]<br/>• 2026-02-01: 1:00 pm [Laser at AMC], 4:15 pm [Laser at AMC], 7:30 pm [Laser at AMC], 9:35 pm [Dolby Cinema at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2026-01-31: 11:10 am [Laser at AMC], 2:10 pm [Laser at AMC], 5:10 pm [Laser at AMC], 8:10 pm [Laser at AMC], 10:10 pm [Laser at AMC], 11:00 pm [Dolby Cinema at AMC]<br/>• 2026-02-01: 12:55 pm [Laser at AMC], 4:00 pm [Laser at AMC], 6:30 pm [Laser at AMC], 7:35 pm [Laser at AMC], 9:30 pm [Laser at AMC], 10:15 pm [Dolby Cinema at AMC]</td><td>1h 47m</td></tr>
-<tr data-movie-id="23"><td>23</td><td><div class="movie-cell-title">Return to Silent Hill</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Return%20to%20Silent%20Hill%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Return to Silent Hill poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/e/e7/Return_to_Silent_Hill_poster.jpg"/></a></div></td><td>20/30</td><td>AMC Orange 30<br/>• 2026-01-31: 10:30 am [Laser at AMC], 1:45 pm [Laser at AMC], 4:50 pm [Laser at AMC], 8:00 pm [Laser at AMC], 11:00 pm [Laser at AMC]<br/>• 2026-02-01: 4:05 pm [Laser at AMC], 7:10 pm [Laser at AMC], 10:15 pm [Laser at AMC]</td><td>1h 46m</td></tr>
-<tr data-movie-id="24"><td>24</td><td><div class="movie-cell-title">Anaconda</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Anaconda%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Anaconda poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/commons/thumb/b/b2/Eunectes_murinus2.jpg/330px-Eunectes_murinus2.jpg"/></a></div></td><td>41/24</td><td>AMC Orange 30<br/>• 2026-01-31: 8:00 pm [Laser at AMC], 10:45 pm [Laser at AMC]<br/>• 2026-02-01: 8:05 pm [Laser at AMC], 10:45 pm [Laser at AMC]</td><td>1h 39m</td></tr>
-<tr data-movie-id="25"><td>25</td><td><div class="movie-cell-title">Mercy</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Mercy%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Mercy poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/commons/thumb/d/df/1605_Francken_sieben_Werke_der_Barmherzigkeit_anagoria.JPG/330px-1605_Francken_sieben_Werke_der_Barmherzigkeit_anagoria.JPG"/></a></div></td><td>NaN/17</td><td>AMC Orange 30<br/>• 2026-01-31: 10:30 am [Laser at AMC], 1:30 pm [Laser at AMC], 4:45 pm [Laser at AMC], 8:00 pm [Laser at AMC], 10:00 pm [IMAX at AMC], 10:45 pm [Laser at AMC]<br/>• 2026-02-01: 12:00 pm [Laser at AMC], 2:45 pm [Laser at AMC], 5:30 pm [Laser at AMC], 8:15 pm [Laser at AMC], 11:00 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2026-01-31: 11:00 am [Laser at AMC], 12:30 pm [IMAX at AMC], 1:50 pm [Laser at AMC], 3:25 pm [IMAX at AMC], 4:30 pm [Laser at AMC], 7:25 pm [Laser at AMC], 10:20 pm [Laser at AMC]<br/>• 2026-02-01: 11:00 am [Laser at AMC], 12:00 pm [IMAX at AMC], 1:55 pm [Laser at AMC], 2:55 pm [IMAX at AMC], 4:40 pm [Laser at AMC], 7:00 pm [Laser at AMC], 10:30 pm [Laser at AMC]<br/>AMC Woodbridge 5<br/>• 2026-01-31: 1:40 pm [Laser at AMC], 4:45 pm [Laser at AMC], 7:15 pm [Laser at AMC], 10:00 pm [Laser at AMC]<br/>• 2026-02-01: 1:30 pm [Laser at AMC], 4:00 pm [Laser at AMC], 7:15 pm [Laser at AMC], 10:00 pm [Laser at AMC]</td><td>1h 40m</td></tr>
+<tr data-movie-id="22"><td>22</td><td><div class="movie-cell-title">Shelter</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Shelter%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Shelter poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/e/eb/Shelter_2026_poster.jpeg"/></a></div></td><td>4/45</td><td>AMC Orange 30<br/>• 2026-01-31: 10:10 am [Laser at AMC], 1:15 pm [Laser at AMC], 4:30 pm [Laser at AMC], 7:30 pm [Laser at AMC], 9:30 pm [Dolby Cinema at AMC]<br/>• 2026-02-01: 1:00 pm [Laser at AMC], 4:15 pm [Laser at AMC], 7:30 pm [Laser at AMC], 9:35 pm [Dolby Cinema at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2026-01-31: 11:10 am [Laser at AMC], 2:10 pm [Laser at AMC], 5:10 pm [Laser at AMC], 8:10 pm [Laser at AMC], 10:10 pm [Laser at AMC], 11:00 pm [Dolby Cinema at AMC]<br/>• 2026-02-01: 12:55 pm [Laser at AMC], 4:00 pm [Laser at AMC], 6:30 pm [Laser at AMC], 7:35 pm [Laser at AMC], 9:30 pm [Laser at AMC], 10:15 pm [Dolby Cinema at AMC]</td><td>1h 47m</td></tr>
+<tr data-movie-id="23"><td>23</td><td><div class="movie-cell-title">Return to Silent Hill</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Return%20to%20Silent%20Hill%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Return to Silent Hill poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/e/e7/Return_to_Silent_Hill_poster.jpg"/></a></div></td><td>19/30</td><td>AMC Orange 30<br/>• 2026-01-31: 10:30 am [Laser at AMC], 1:45 pm [Laser at AMC], 4:50 pm [Laser at AMC], 8:00 pm [Laser at AMC], 11:00 pm [Laser at AMC]<br/>• 2026-02-01: 4:05 pm [Laser at AMC], 7:10 pm [Laser at AMC], 10:15 pm [Laser at AMC]</td><td>1h 46m</td></tr>
+<tr data-movie-id="24"><td>24</td><td><div class="movie-cell-title">Anaconda</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Anaconda%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Anaconda poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/e/e9/Anaconda_%282025_film%29_poster.jpg"/></a></div></td><td>41/24</td><td>AMC Orange 30<br/>• 2026-01-31: 8:00 pm [Laser at AMC], 10:45 pm [Laser at AMC]<br/>• 2026-02-01: 8:05 pm [Laser at AMC], 10:45 pm [Laser at AMC]</td><td>1h 39m</td></tr>
+<tr data-movie-id="25"><td>25</td><td><div class="movie-cell-title">Mercy</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Mercy%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Mercy poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/4/43/Mercy_2026_poster.jpeg"/></a></div></td><td>NaN/17</td><td>AMC Orange 30<br/>• 2026-01-31: 10:30 am [Laser at AMC], 1:30 pm [Laser at AMC], 4:45 pm [Laser at AMC], 8:00 pm [Laser at AMC], 10:00 pm [IMAX at AMC], 10:45 pm [Laser at AMC]<br/>• 2026-02-01: 12:00 pm [Laser at AMC], 2:45 pm [Laser at AMC], 5:30 pm [Laser at AMC], 8:15 pm [Laser at AMC], 11:00 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2026-01-31: 11:00 am [Laser at AMC], 12:30 pm [IMAX at AMC], 1:50 pm [Laser at AMC], 3:25 pm [IMAX at AMC], 4:30 pm [Laser at AMC], 7:25 pm [Laser at AMC], 10:20 pm [Laser at AMC]<br/>• 2026-02-01: 11:00 am [Laser at AMC], 12:00 pm [IMAX at AMC], 1:55 pm [Laser at AMC], 2:55 pm [IMAX at AMC], 4:40 pm [Laser at AMC], 7:00 pm [Laser at AMC], 10:30 pm [Laser at AMC]<br/>AMC Woodbridge 5<br/>• 2026-01-31: 1:40 pm [Laser at AMC], 4:45 pm [Laser at AMC], 7:15 pm [Laser at AMC], 10:00 pm [Laser at AMC]<br/>• 2026-02-01: 1:30 pm [Laser at AMC], 4:00 pm [Laser at AMC], 7:15 pm [Laser at AMC], 10:00 pm [Laser at AMC]</td><td>1h 40m</td></tr>
 <tr data-movie-id="26"><td>26</td><td><div class="movie-cell-title">A Private Life</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=A%20Private%20Life%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="A Private Life poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/f/f5/A_Private_Life_poster.jpg"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-01-31: 9:35 am [Laser at AMC], 12:25 pm [Laser at AMC], 3:20 pm [Laser at AMC], 6:15 pm [Laser at AMC]<br/>• 2026-02-01: 12:25 pm [Laser at AMC], 3:20 pm [Laser at AMC], 6:15 pm [Laser at AMC]</td><td>1h 43m</td></tr>
 <tr data-movie-id="27"><td>27</td><td><div class="movie-cell-title">Back to the Past</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Back%20to%20the%20Past%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Back to the Past poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/d/db/BacktothePast.jpeg"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-01-31: 9:40 am [Laser at AMC], 10:30 am [Laser at AMC], 12:45 pm [Laser at AMC], 1:45 pm [Laser at AMC], 3:50 pm [Laser at AMC], 4:45 pm [Laser at AMC], 6:55 pm [Laser at AMC], 7:45 pm [Laser at AMC], 10:00 pm [Laser at AMC], 10:45 pm [Laser at AMC]<br/>• 2026-02-01: 12:30 pm [Laser at AMC], 1:45 pm [Laser at AMC], 3:35 pm [Laser at AMC], 4:45 pm [Laser at AMC], 6:45 pm [Laser at AMC], 7:45 pm [Laser at AMC], 10:00 pm [Laser at AMC], 10:45 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2026-01-31: 4:35 pm [Laser at AMC], 6:50 pm [Laser at AMC], 7:55 pm [Laser at AMC]<br/>• 2026-02-01: 7:30 pm [Laser at AMC], 10:20 pm [Laser at AMC]</td><td>1h 47m</td></tr>
 <tr data-movie-id="28"><td>28</td><td><div class="movie-cell-title">Busted Water Pipes</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Busted%20Water%20Pipes%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Busted Water Pipes poster" class="movie-poster" loading="lazy" src="https://4ddig.tenorshare.com/images/photo-recovery/images-not-found.webp"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-01-31: 12:15 pm [Laser at AMC], 6:15 pm [Laser at AMC]<br/>• 2026-02-01: 2:45 pm [Laser at AMC], 8:15 pm [Laser at AMC]</td><td>1h 43m</td></tr>
-<tr data-movie-id="29"><td>29</td><td><div class="movie-cell-title">David</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=David%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="David poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/commons/thumb/9/94/King_David%2C_the_King_of_Israel.jpg/330px-King_David%2C_the_King_of_Israel.jpg"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-01-31: 11:15 am [Laser at AMC]<br/>• 2026-02-01: 1:30 pm [Laser at AMC]</td><td>2h 0m</td></tr>
+<tr data-movie-id="29"><td>29</td><td><div class="movie-cell-title">David</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=David%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="David poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/8/82/David_%282025_film%29_poster.jpeg"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-01-31: 11:15 am [Laser at AMC]<br/>• 2026-02-01: 1:30 pm [Laser at AMC]</td><td>2h 0m</td></tr>
 <tr data-movie-id="30"><td>30</td><td><div class="movie-cell-title">Fish, Fists and Ambergris | Truy Tim Long Dien Huong</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Fish%2C%20Fists%20and%20Ambergris%20%7C%20Truy%20Tim%20Long%20Dien%20Huong%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Fish, Fists and Ambergris | Truy Tim Long Dien Huong poster" class="movie-poster" loading="lazy" src="https://4ddig.tenorshare.com/images/photo-recovery/images-not-found.webp"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-01-31: 9:30 am [Laser at AMC], 3:10 pm [Laser at AMC]<br/>• 2026-02-01: 12:00 pm [Laser at AMC], 5:30 pm [Laser at AMC], 11:00 pm [Laser at AMC]</td><td>1h 43m</td></tr>
 <tr data-movie-id="31"><td>31</td><td><div class="movie-cell-title">Iron Lung</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Iron%20Lung%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Iron Lung poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/a/af/Iron_Lung_%28film%29_poster.jpg"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-01-31: 12:15 pm [Laser at AMC], 3:30 pm [Laser at AMC], 4:15 pm [Laser at AMC], 7:00 pm [Laser at AMC], 7:45 pm [Laser at AMC], 10:30 pm [Laser at AMC], 11:00 pm [Laser at AMC]<br/>• 2026-02-01: 12:15 pm [Laser at AMC], 1:15 pm [Laser at AMC], 3:30 pm [Laser at AMC], 4:30 pm [Laser at AMC], 7:00 pm [Laser at AMC], 8:00 pm [Laser at AMC], 10:30 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2026-01-31: 12:00 pm [Laser at AMC], 3:40 pm [Laser at AMC], 7:00 pm [Laser at AMC], 10:20 pm [Laser at AMC]<br/>• 2026-02-01: 12:20 pm [Laser at AMC], 3:40 pm [Laser at AMC], 7:00 pm [Laser at AMC], 10:20 pm [Laser at AMC]</td><td>2h 7m</td></tr>
-<tr data-movie-id="32"><td>32</td><td><div class="movie-cell-title">Lord of the Rings: Return of the King (2026 Event)</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Lord%20of%20the%20Rings%3A%20Return%20of%20the%20King%20%282026%20Event%29%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Lord of the Rings: Return of the King (2026 Event) poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/4/48/Lord_Rings_Return_King.jpg"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-02-01: 8:30 pm⛔ [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2026-02-01: 12:30 pm⛔ [Laser at AMC]</td><td>4h 13m</td></tr>
+<tr data-movie-id="32"><td>32</td><td><div class="movie-cell-title">Lord of the Rings: Return of the King (2026 Event)</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Lord%20of%20the%20Rings%3A%20Return%20of%20the%20King%20%282026%20Event%29%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Lord of the Rings: Return of the King (2026 Event) poster" class="movie-poster" loading="lazy" src="https://4ddig.tenorshare.com/images/photo-recovery/images-not-found.webp"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-02-01: 8:30 pm⛔ [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2026-02-01: 12:30 pm⛔ [Laser at AMC]</td><td>4h 13m</td></tr>
 <tr data-movie-id="33"><td>33</td><td><div class="movie-cell-title">Lord of the Rings: The Two Towers (2026 Event)</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Lord%20of%20the%20Rings%3A%20The%20Two%20Towers%20%282026%20Event%29%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Lord of the Rings: The Two Towers (2026 Event) poster" class="movie-poster" loading="lazy" src="https://4ddig.tenorshare.com/images/photo-recovery/images-not-found.webp"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-01-31: 8:30 pm⛔ [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2026-01-31: 12:00 pm⛔ [Laser at AMC]</td><td>3h 44m</td></tr>
-<tr data-movie-id="34"><td>34</td><td><div class="movie-cell-title">Mardaani 3</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Mardaani%203%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Mardaani 3 poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/e/e5/Mardaani_3_Film_poster.jpg"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-01-31: 7:00 pm [Laser at AMC], 10:30 pm [Laser at AMC]<br/>• 2026-02-01: 5:30 pm [Laser at AMC], 8:50 pm [Laser at AMC]</td><td>2h 17m</td></tr>
-<tr data-movie-id="35"><td>35</td><td><div class="movie-cell-title">Melania</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Melania%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Melania poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/commons/thumb/a/a5/Sfanta_Melania.jpg/330px-Sfanta_Melania.jpg"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-01-31: 9:45 am [Laser at AMC], 12:30 pm [Laser at AMC], 3:15 pm [Laser at AMC], 6:00 pm [Laser at AMC], 8:45 pm [Laser at AMC]<br/>• 2026-02-01: 12:30 pm [Laser at AMC], 3:15 pm [Laser at AMC], 6:00 pm [Laser at AMC], 8:45 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2026-01-31: 11:00 am [Laser at AMC], 1:35 pm [Laser at AMC], 5:00 pm [Laser at AMC], 7:20 pm [Laser at AMC], 10:25 pm [Laser at AMC]<br/>• 2026-02-01: 11:05 am [Laser at AMC], 1:45 pm [Laser at AMC], 4:45 pm [Laser at AMC], 7:10 pm [Laser at AMC], 10:00 pm [Laser at AMC]</td><td>1h 44m</td></tr>
-<tr data-movie-id="36"><td>36</td><td><div class="movie-cell-title">Moses the Black</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Moses%20the%20Black%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Moses the Black poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/commons/thumb/b/bc/San_Moises_el_Negro.jpg/330px-San_Moises_el_Negro.jpg"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-01-31: 9:30 am⛔ [Laser at AMC]<br/>• 2026-02-01: 12:35 pm⛔ [Laser at AMC]</td><td>1h 50m</td></tr>
+<tr data-movie-id="34"><td>34</td><td><div class="movie-cell-title">Mardaani 3</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Mardaani%203%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Mardaani 3 poster" class="movie-poster" loading="lazy" src="https://4ddig.tenorshare.com/images/photo-recovery/images-not-found.webp"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-01-31: 7:00 pm [Laser at AMC], 10:30 pm [Laser at AMC]<br/>• 2026-02-01: 5:30 pm [Laser at AMC], 8:50 pm [Laser at AMC]</td><td>2h 17m</td></tr>
+<tr data-movie-id="35"><td>35</td><td><div class="movie-cell-title">Melania</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Melania%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Melania poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/2/2b/Melania_poster.jpg"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-01-31: 9:45 am [Laser at AMC], 12:30 pm [Laser at AMC], 3:15 pm [Laser at AMC], 6:00 pm [Laser at AMC], 8:45 pm [Laser at AMC]<br/>• 2026-02-01: 12:30 pm [Laser at AMC], 3:15 pm [Laser at AMC], 6:00 pm [Laser at AMC], 8:45 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2026-01-31: 11:00 am [Laser at AMC], 1:35 pm [Laser at AMC], 5:00 pm [Laser at AMC], 7:20 pm [Laser at AMC], 10:25 pm [Laser at AMC]<br/>• 2026-02-01: 11:05 am [Laser at AMC], 1:45 pm [Laser at AMC], 4:45 pm [Laser at AMC], 7:10 pm [Laser at AMC], 10:00 pm [Laser at AMC]</td><td>1h 44m</td></tr>
+<tr data-movie-id="36"><td>36</td><td><div class="movie-cell-title">Moses the Black</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Moses%20the%20Black%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Moses the Black poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/a/af/Moses_the_Black_poster.jpg"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-01-31: 9:30 am⛔ [Laser at AMC]<br/>• 2026-02-01: 12:35 pm⛔ [Laser at AMC]</td><td>1h 50m</td></tr>
 <tr data-movie-id="37"><td>37</td><td><div class="movie-cell-title">Om Shanti Shanti Shantihi</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Om%20Shanti%20Shanti%20Shantihi%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Om Shanti Shanti Shantihi poster" class="movie-poster" loading="lazy" src="https://4ddig.tenorshare.com/images/photo-recovery/images-not-found.webp"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-01-31: 9:15 pm [Laser at AMC]<br/>• 2026-02-01: 9:15 pm [Laser at AMC]</td><td>2h 10m</td></tr>
 <tr data-movie-id="38"><td>38</td><td><div class="movie-cell-title">Paris Hilton Infinite Icon: A Visual Memoir</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Paris%20Hilton%20Infinite%20Icon%3A%20A%20Visual%20Memoir%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Paris Hilton Infinite Icon: A Visual Memoir poster" class="movie-poster" loading="lazy" src="https://4ddig.tenorshare.com/images/photo-recovery/images-not-found.webp"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-01-31: 1:00 pm [Laser at AMC], 4:00 pm [Laser at AMC], 7:05 pm [Laser at AMC], 10:05 pm [Laser at AMC]<br/>• 2026-02-01: 2:05 pm [Laser at AMC], 5:00 pm [Laser at AMC], 8:00 pm [Laser at AMC], 11:00 pm [Laser at AMC]<br/>AMC Tustin 14 @ The District<br/>• 2026-01-31: 1:15 pm [Laser at AMC], 7:30 pm [Laser at AMC]<br/>• 2026-02-01: 1:00 pm [Laser at AMC], 4:05 pm [Laser at AMC]</td><td>1h 58m</td></tr>
 <tr data-movie-id="39"><td>39</td><td><div class="movie-cell-title">Sinners</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Sinners%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Sinners poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/5/5f/Sinners_%282025_film%29_poster.jpg"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-01-31: 2:30 pm [Laser at AMC], 6:10 pm [Laser at AMC], 9:45 pm [Laser at AMC]<br/>• 2026-02-01: 4:10 pm [Laser at AMC], 7:45 pm [Laser at AMC], 10:15 pm [Laser at AMC]</td><td>2h 17m</td></tr>
-<tr data-movie-id="40"><td>40</td><td><div class="movie-cell-title">Tafiti - Across the Desert</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Tafiti%20-%20Across%20the%20Desert%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Tafiti - Across the Desert poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/commons/thumb/d/da/Animation_disc.svg/330px-Animation_disc.svg.png"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-01-31: 11:00 am [Laser at AMC]<br/>• 2026-02-01: 1:00 pm [Laser at AMC]</td><td>1h 21m</td></tr>
-<tr data-movie-id="41"><td>41</td><td><div class="movie-cell-title">The Secret Agent</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=The%20Secret%20Agent%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="The Secret Agent poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/commons/thumb/4/43/SecretAgent.jpg/330px-SecretAgent.jpg"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-01-31: 2:45 pm [Laser at AMC]<br/>• 2026-02-01: 8:15 pm [Laser at AMC]</td><td>2h 39m</td></tr>
-<tr data-movie-id="42"><td>42</td><td><div class="movie-cell-title">UFC 325: Volkanovski vs. Lopes 2</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=UFC%20325%3A%20Volkanovski%20vs.%20Lopes%202%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="UFC 325: Volkanovski vs. Lopes 2 poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/commons/thumb/9/92/UFC_Logo.svg/330px-UFC_Logo.svg.png"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-01-31: 6:00 pm⛔ [Laser at AMC]</td><td>4h 30m</td></tr>
+<tr data-movie-id="40"><td>40</td><td><div class="movie-cell-title">Tafiti - Across the Desert</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=Tafiti%20-%20Across%20the%20Desert%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="Tafiti - Across the Desert poster" class="movie-poster" loading="lazy" src="https://4ddig.tenorshare.com/images/photo-recovery/images-not-found.webp"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-01-31: 11:00 am [Laser at AMC]<br/>• 2026-02-01: 1:00 pm [Laser at AMC]</td><td>1h 21m</td></tr>
+<tr data-movie-id="41"><td>41</td><td><div class="movie-cell-title">The Secret Agent</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=The%20Secret%20Agent%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="The Secret Agent poster" class="movie-poster" loading="lazy" src="https://upload.wikimedia.org/wikipedia/en/5/57/The_Secret_Agent.png"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-01-31: 2:45 pm [Laser at AMC]<br/>• 2026-02-01: 8:15 pm [Laser at AMC]</td><td>2h 39m</td></tr>
+<tr data-movie-id="42"><td>42</td><td><div class="movie-cell-title">UFC 325: Volkanovski vs. Lopes 2</div><div class="movie-poster-wrap"><a href="https://www.youtube.com/results?search_query=UFC%20325%3A%20Volkanovski%20vs.%20Lopes%202%20official%20trailer" rel="noopener noreferrer" target="_blank"><img alt="UFC 325: Volkanovski vs. Lopes 2 poster" class="movie-poster" loading="lazy" src="https://4ddig.tenorshare.com/images/photo-recovery/images-not-found.webp"/></a></div></td><td>NaN/NaN</td><td>AMC Orange 30<br/>• 2026-01-31: 6:00 pm⛔ [Laser at AMC]</td><td>4h 30m</td></tr>
 </tbody>
 </table></div>
 </div>
