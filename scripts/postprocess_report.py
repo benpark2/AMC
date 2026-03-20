@@ -734,11 +734,11 @@ def _find_col_idx(headers: list[str], keys: list[str]) -> int | None:
 
 def _fmt_score(s: str) -> str:
     s = (s or "").strip()
-    if not s:
+    if not s or s.lower() in {"none", "nan", "null", "n/a"}:
         return ""
     m = re.search(r"-?\d+(?:\.\d+)?", s)
     if not m:
-        return s
+        return "" if s.lower() in {"none", "nan", "null", "n/a"} else s
     v = float(m.group(0))
     if abs(v - round(v)) < 1e-9:
         return str(int(round(v)))
