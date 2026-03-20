@@ -245,20 +245,22 @@ pre{
   z-index: 2 !important;
 }
 
-/* Column polish for schema: #, Movie, RT_C/A, IMDB, Showtimes, Runtime */
+/* Column polish for schema: #, Movie, RT_C/A, IMDb, LB, Showtimes, Runtime */
 .table-wrap th:nth-child(1), .table-wrap td:nth-child(1){
   text-align: center !important;
   width: 54px !important;
   white-space: nowrap !important;
 }
-/* Centered columns: #1 (#), #3 (RT_C/A), and #5 (Runtime) */
+/* Centered columns: #1 (#), #3 (RT_C/A), #4 (IMDb), #5 (LB), and #7 (Runtime) */
 .table-wrap th:nth-child(3), .table-wrap td:nth-child(3),
-.table-wrap th:nth-child(5), .table-wrap td:nth-child(5){
+.table-wrap th:nth-child(4), .table-wrap td:nth-child(4),
+.table-wrap th:nth-child(5), .table-wrap td:nth-child(5),
+.table-wrap th:nth-child(7), .table-wrap td:nth-child(7){
   text-align: center !important;
   white-space: nowrap !important;
 }
-/* Column #4 is now Showtimes */
-.table-wrap td:nth-child(4){
+/* Column #6 is Showtimes */
+.table-wrap td:nth-child(6){
   font-size: 14px !important;
   line-height: 1.35 !important;
 }
@@ -756,6 +758,19 @@ def _clone_cell_as_td(soup: BeautifulSoup, cell) -> "bs4.element.Tag":
         td.append(child)
     return td
 
+
+def _linked_score_td(soup: BeautifulSoup, text: str, url: str | None) -> "bs4.element.Tag":
+    td = soup.new_tag("td")
+    label = (text or "").strip()
+    href = (url or "").strip() if isinstance(url, str) else ""
+    if href.startswith("http") and label:
+        a = soup.new_tag("a", href=href, target="_blank", rel="noopener noreferrer")
+        a.string = label
+        td.append(a)
+    else:
+        td.string = label
+    return td
+
 def get_trailer_url(title: str) -> str:
     """Generates a YouTube search link for the movie trailer."""
     query = quote(f"{title} official trailer")
@@ -781,12 +796,16 @@ def apply_final_table_schema(soup: BeautifulSoup, table, movie_by_id: dict[int, 
     idx_rt_critic = _find_col_idx(headers, ["rt_critic", "rt critic"])
     idx_rt_audience = _find_col_idx(headers, ["rt_audience", "rt audience"])
     idx_imdb = _find_col_idx(headers, ["imdb_rating", "imdb"])
+    idx_lb = _find_col_idx(headers, ["lb_rating", "letterboxd_rating", "letterboxd", "lb"])
+    idx_rt_url = _find_col_idx(headers, ["rt_url"])
+    idx_imdb_url = _find_col_idx(headers, ["imdb_url"])
+    idx_lb_url = _find_col_idx(headers, ["lb_url", "letterboxd_url"])
     idx_showtimes = _find_col_idx(headers, ["showtimes", "showtime"])
     idx_runtime = _find_col_idx(headers, ["runtime"])
 
     # Rewrite header
     header_row.clear()
-    for title in ["#", "Movie", "RT_C/A", "Showtimes", "Runtime"]:
+    for title in ["#", "Movie", "RT_C/A", "IMDb", "LB", "Showtimes", "Runtime"]:
         th = soup.new_tag("th")
         th.string = title
         header_row.append(th)
@@ -798,63 +817,61 @@ def apply_final_table_schema(soup: BeautifulSoup, table, movie_by_id: dict[int, 
         def get_cell(i: int | None):
             return cells[i] if i is not None and 0 <= i < len(cells) else None
 
+        def get_text(i: int | None) -> str:
+            cell = get_cell(i)
+            return cell.get_text(" ", strip=True) if cell else ""
+
         # 1. Handle Movie ID (#)
-        movie_id_str = (tr.get("data-movie-id") or 
-                        (get_cell(idx_hash).get_text(" ", strip=True) if get_cell(idx_hash) else "")).strip()
+        movie_id_str = (tr.get("data-movie-id") or get_text(idx_hash)).strip()
         num_td = soup.new_tag("td")
         num_td.string = movie_id_str
 
         # 2. Handle Movie Title & Poster
-        movie_td = soup.new_tag("td") # INITIALIZED HERE: Always exists for this row
-        
+        movie_td = soup.new_tag("td")
+
         mid_int = None
         try:
             mid_int = int(movie_id_str)
-        except:
+        except Exception:
             mid_int = None
 
         title = movie_by_id.get(mid_int, "") if mid_int is not None else ""
         if not title:
-            title = (get_cell(idx_movie).get_text(" ", strip=True) if get_cell(idx_movie) else "Unknown")
+            title = get_text(idx_movie) or "Unknown"
 
-        # Create Title Label
         title_div = soup.new_tag("div", **{"class": "movie-cell-title"})
         title_div.string = title
         movie_td.append(title_div)
 
-        # Create Poster with Trailer Link
         poster_url = poster_by_id.get(mid_int) if mid_int is not None else None
         final_poster_url = poster_url if poster_url else "https://4ddig.tenorshare.com/images/photo-recovery/images-not-found.webp"
-        
+
         if final_poster_url:
             wrap = soup.new_tag("div", **{"class": "movie-poster-wrap"})
-            
-            # Link to YouTube Trailer
             query = quote(f"{title} official trailer")
             trailer_url = f"https://www.youtube.com/results?search_query={query}"
             trailer_link = soup.new_tag("a", href=trailer_url, target="_blank", rel="noopener noreferrer")
-            
+
             img = soup.new_tag("img", src=final_poster_url)
             img.attrs["class"] = "movie-poster"
             img.attrs["loading"] = "lazy"
             img.attrs["alt"] = f"{title} poster"
-            
+
             trailer_link.append(img)
             wrap.append(trailer_link)
             movie_td.append(wrap)
 
-        # 3. Handle Other Columns
+        # 3. Handle linked score columns
         if get_cell(idx_rtca):
-            rtca_txt = get_cell(idx_rtca).get_text(" ", strip=True)
+            rtca_txt = get_text(idx_rtca)
         else:
-            c = _fmt_score(get_cell(idx_rt_critic).get_text(" ", strip=True) if get_cell(idx_rt_critic) else "")
-            a = _fmt_score(get_cell(idx_rt_audience).get_text(" ", strip=True) if get_cell(idx_rt_audience) else "")
+            c = _fmt_score(get_text(idx_rt_critic))
+            a = _fmt_score(get_text(idx_rt_audience))
             rtca_txt = f"{c}/{a}".strip("/")
+        rtca_td = _linked_score_td(soup, rtca_txt, get_text(idx_rt_url) or None)
 
-        rtca_td = soup.new_tag("td")
-        rtca_td.string = rtca_txt
-
-        imdb_td = _clone_cell_as_td(soup, get_cell(idx_imdb))
+        imdb_td = _linked_score_td(soup, _fmt_score(get_text(idx_imdb)), get_text(idx_imdb_url) or None)
+        lb_td = _linked_score_td(soup, _fmt_score(get_text(idx_lb)), get_text(idx_lb_url) or None)
         show_td = _clone_cell_as_td(soup, get_cell(idx_showtimes))
         runtime_td = _clone_cell_as_td(soup, get_cell(idx_runtime))
 
@@ -863,7 +880,8 @@ def apply_final_table_schema(soup: BeautifulSoup, table, movie_by_id: dict[int, 
         tr.append(num_td)
         tr.append(movie_td)
         tr.append(rtca_td)
-        #tr.append(imdb_td)
+        tr.append(imdb_td)
+        tr.append(lb_td)
         tr.append(show_td)
         tr.append(runtime_td)
 
