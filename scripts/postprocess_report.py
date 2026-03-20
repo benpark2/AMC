@@ -13,6 +13,25 @@ from urllib.error import HTTPError, URLError
 
 HTML_PATH = Path("docs/index.html")
 
+NOISY_OUTPUT_PATTERNS = [
+    re.compile(r"Preparing IMDb dataset lookup for", re.I),
+]
+
+def remove_noisy_output(soup: BeautifulSoup) -> None:
+    for tag in list(soup.find_all(["pre", "p", "div", "span"])):
+        txt = tag.get_text(" ", strip=True)
+        if not txt:
+            continue
+        if not any(rx.search(txt) for rx in NOISY_OUTPUT_PATTERNS):
+            continue
+        container = tag
+        for parent in tag.parents:
+            classes = parent.get("class", []) if getattr(parent, "attrs", None) else []
+            if any(cls in {"jp-OutputArea-child", "jp-OutputArea-output", "jp-RenderedText", "output_area", "output_subarea"} for cls in classes):
+                container = parent
+                break
+        container.decompose()
+
 IGNORE_THEATER = "AMC Bay Street 16"
 PREFERRED_THEATERS = [
     "AMC Tustin 14 @ The District",
@@ -245,22 +264,21 @@ pre{
   z-index: 2 !important;
 }
 
-/* Column polish for schema: #, Movie, RT_C/A, IMDb, LB, Showtimes, Runtime */
+/* Column polish for schema: #, Movie, RT_C/A, IMDb, Showtimes, Runtime */
 .table-wrap th:nth-child(1), .table-wrap td:nth-child(1){
   text-align: center !important;
   width: 54px !important;
   white-space: nowrap !important;
 }
-/* Centered columns: #1 (#), #3 (RT_C/A), #4 (IMDb), #5 (LB), and #7 (Runtime) */
+/* Centered columns: #1 (#), #3 (RT_C/A), #4 (IMDb), and #6 (Runtime) */
 .table-wrap th:nth-child(3), .table-wrap td:nth-child(3),
 .table-wrap th:nth-child(4), .table-wrap td:nth-child(4),
-.table-wrap th:nth-child(5), .table-wrap td:nth-child(5),
-.table-wrap th:nth-child(7), .table-wrap td:nth-child(7){
+.table-wrap th:nth-child(6), .table-wrap td:nth-child(6){
   text-align: center !important;
   white-space: nowrap !important;
 }
-/* Column #6 is Showtimes */
-.table-wrap td:nth-child(6){
+/* Column #5 is Showtimes */
+.table-wrap td:nth-child(5){
   font-size: 14px !important;
   line-height: 1.35 !important;
 }
@@ -786,6 +804,8 @@ def apply_final_table_schema(soup: BeautifulSoup, table, movie_by_id: dict[int, 
     if not header_row:
         return
 
+    remove_noisy_output(soup)
+
     header_cells = header_row.find_all(["th", "td"], recursive=False)
     headers = [c.get_text(" ", strip=True) for c in header_cells]
 
@@ -796,16 +816,14 @@ def apply_final_table_schema(soup: BeautifulSoup, table, movie_by_id: dict[int, 
     idx_rt_critic = _find_col_idx(headers, ["rt_critic", "rt critic"])
     idx_rt_audience = _find_col_idx(headers, ["rt_audience", "rt audience"])
     idx_imdb = _find_col_idx(headers, ["imdb_rating", "imdb"])
-    idx_lb = _find_col_idx(headers, ["lb_rating", "letterboxd_rating", "letterboxd", "lb"])
     idx_rt_url = _find_col_idx(headers, ["rt_url"])
     idx_imdb_url = _find_col_idx(headers, ["imdb_url"])
-    idx_lb_url = _find_col_idx(headers, ["lb_url", "letterboxd_url"])
     idx_showtimes = _find_col_idx(headers, ["showtimes", "showtime"])
     idx_runtime = _find_col_idx(headers, ["runtime"])
 
     # Rewrite header
     header_row.clear()
-    for title in ["#", "Movie", "RT_C/A", "IMDb", "LB", "Showtimes", "Runtime"]:
+    for title in ["#", "Movie", "RT_C/A", "IMDb", "Showtimes", "Runtime"]:
         th = soup.new_tag("th")
         th.string = title
         header_row.append(th)
@@ -871,7 +889,6 @@ def apply_final_table_schema(soup: BeautifulSoup, table, movie_by_id: dict[int, 
         rtca_td = _linked_score_td(soup, rtca_txt, get_text(idx_rt_url) or None)
 
         imdb_td = _linked_score_td(soup, _fmt_score(get_text(idx_imdb)), get_text(idx_imdb_url) or None)
-        lb_td = _linked_score_td(soup, _fmt_score(get_text(idx_lb)), get_text(idx_lb_url) or None)
         show_td = _clone_cell_as_td(soup, get_cell(idx_showtimes))
         runtime_td = _clone_cell_as_td(soup, get_cell(idx_runtime))
 
@@ -881,7 +898,6 @@ def apply_final_table_schema(soup: BeautifulSoup, table, movie_by_id: dict[int, 
         tr.append(movie_td)
         tr.append(rtca_td)
         tr.append(imdb_td)
-        tr.append(lb_td)
         tr.append(show_td)
         tr.append(runtime_td)
 
@@ -951,6 +967,7 @@ def main() -> None:
         sys.exit(1)
 
     soup = BeautifulSoup(HTML_PATH.read_text(encoding="utf-8"), "html.parser")
+    remove_noisy_output(soup)
 
     # Set browser tab title
     desired_title = "Weekend Movies"
