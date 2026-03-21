@@ -264,22 +264,21 @@ pre{
   z-index: 2 !important;
 }
 
-/* Column polish for schema: #, Movie, RT_C/A, IMDb, Credits, Showtimes, Runtime */
+/* Column polish for schema: #, Movie, RT_C/A, IMDb, Showtimes, Runtime */
 .table-wrap th:nth-child(1), .table-wrap td:nth-child(1){
   text-align: center !important;
   width: 54px !important;
   white-space: nowrap !important;
 }
-/* Centered columns: #1 (#), #3 (RT_C/A), #4 (IMDb), #5 (Credits), and #7 (Runtime) */
+/* Centered columns: #1 (#), #3 (RT_C/A), #4 (IMDb), and #6 (Runtime) */
 .table-wrap th:nth-child(3), .table-wrap td:nth-child(3),
 .table-wrap th:nth-child(4), .table-wrap td:nth-child(4),
-.table-wrap th:nth-child(5), .table-wrap td:nth-child(5),
-.table-wrap th:nth-child(7), .table-wrap td:nth-child(7){
+.table-wrap th:nth-child(6), .table-wrap td:nth-child(6){
   text-align: center !important;
   white-space: nowrap !important;
 }
-/* Column #6 is Showtimes */
-.table-wrap td:nth-child(6){
+/* Column #5 is Showtimes */
+.table-wrap td:nth-child(5){
   font-size: 14px !important;
   line-height: 1.35 !important;
 }
@@ -819,14 +818,12 @@ def apply_final_table_schema(soup: BeautifulSoup, table, movie_by_id: dict[int, 
     idx_imdb = _find_col_idx(headers, ["imdb_rating", "imdb"])
     idx_rt_url = _find_col_idx(headers, ["rt_url"])
     idx_imdb_url = _find_col_idx(headers, ["imdb_url"])
-    idx_credits = _find_col_idx(headers, ["credits_info", "credits", "aftercredits", "extras"])
-    idx_credits_url = _find_col_idx(headers, ["credits_url", "aftercredits_url", "extras_url"])
     idx_showtimes = _find_col_idx(headers, ["showtimes", "showtime"])
     idx_runtime = _find_col_idx(headers, ["runtime"])
 
     # Rewrite header
     header_row.clear()
-    for title in ["#", "Movie", "RT_C/A", "IMDb", "Credits", "Showtimes", "Runtime"]:
+    for title in ["#", "Movie", "RT_C/A", "IMDb", "Showtimes", "Runtime"]:
         th = soup.new_tag("th")
         th.string = title
         header_row.append(th)
@@ -892,7 +889,6 @@ def apply_final_table_schema(soup: BeautifulSoup, table, movie_by_id: dict[int, 
         rtca_td = _linked_score_td(soup, rtca_txt, get_text(idx_rt_url) or None)
 
         imdb_td = _linked_score_td(soup, _fmt_score(get_text(idx_imdb)), get_text(idx_imdb_url) or None)
-        credits_td = _linked_score_td(soup, get_text(idx_credits), get_text(idx_credits_url) or None)
         show_td = _clone_cell_as_td(soup, get_cell(idx_showtimes))
         runtime_td = _clone_cell_as_td(soup, get_cell(idx_runtime))
 
@@ -902,7 +898,6 @@ def apply_final_table_schema(soup: BeautifulSoup, table, movie_by_id: dict[int, 
         tr.append(movie_td)
         tr.append(rtca_td)
         tr.append(imdb_td)
-        tr.append(credits_td)
         tr.append(show_td)
         tr.append(runtime_td)
 
