@@ -15,6 +15,10 @@ HTML_PATH = Path("docs/index.html")
 
 NOISY_OUTPUT_PATTERNS = [
     re.compile(r"Preparing IMDb dataset lookup for", re.I),
+    re.compile(r"^\[INFO\]\s+AMC returned a JS/queue page", re.I),
+    re.compile(r"^\[WARN\]\s+Browser fallback failed", re.I),
+    re.compile(r"Playwright Sync API inside the asyncio loop", re.I),
+    re.compile(r"Please use the Async API instead", re.I),
 ]
 
 def remove_noisy_output(soup: BeautifulSoup) -> None:
