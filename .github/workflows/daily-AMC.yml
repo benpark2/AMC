@@ -103,4 +103,10 @@ jobs:
 
           git commit -m "Daily report refresh" || exit 0
           git push
-
+      - name: Upload AMC debug HTML
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: amc-debug-html
+          path: build/amc_debug/
+          if-no-files-found: ignore
