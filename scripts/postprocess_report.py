@@ -15,14 +15,27 @@ HTML_PATH = Path("docs/index.html")
 
 NOISY_OUTPUT_PATTERNS = [
     re.compile(r"Preparing IMDb dataset lookup for", re.I),
+    re.compile(r"^\[INFO\]\s+AMC returned a JS/queue page", re.I),
+    re.compile(r"^\[WARN\]\s+Browser fallback failed", re.I),
+    re.compile(r"Playwright Sync API inside the asyncio loop", re.I),
+    re.compile(r"Please use the Async API instead", re.I),
 ]
 
+def _all_lines_are_noisy(lines: list[str]) -> bool:
+    if not lines:
+        return False
+    for line in lines:
+        if not any(rx.search(line) for rx in NOISY_OUTPUT_PATTERNS):
+            return False
+    return True
+
 def remove_noisy_output(soup: BeautifulSoup) -> None:
-    for tag in list(soup.find_all(["pre", "p", "div", "span"])):
-        txt = tag.get_text(" ", strip=True)
-        if not txt:
-            continue
-        if not any(rx.search(txt) for rx in NOISY_OUTPUT_PATTERNS):
+    # Be conservative: only remove notebook text-output blocks whose non-empty lines
+    # are all known noisy scraper status messages. This avoids blanking the page.
+    for tag in list(soup.find_all("pre")):
+        txt = tag.get_text("\n", strip=True)
+        lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
+        if not _all_lines_are_noisy(lines):
             continue
         container = tag
         for parent in tag.parents:
