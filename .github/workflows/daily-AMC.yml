@@ -2,7 +2,7 @@ name: daily-AMC-report
 
 on:
   schedule:
-    - cron: "0 16 * * *"  # 16:00 UTC daily (8am Los Angeles during standard time)
+    - cron: "0 16 * * *" # 16:00 UTC daily
   workflow_dispatch:
 
 permissions:
@@ -10,10 +10,13 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Lets the notebook import scripts.movie_titles from the repository root.
+  PYTHONPATH: ${{ github.workspace }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v5
 
@@ -26,22 +29,50 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Test generic title handling
+        run: |
+          python scripts/test_movie_titles.py
+          python -m py_compile \
+            scripts/movie_titles.py \
+            scripts/patch_notebook_titles.py \
+            scripts/finalize_posters.py
+
       - name: Install Playwright browser
         run: python -m playwright install --with-deps chromium
 
       - name: Execute notebook and export HTML
         run: |
           mkdir -p build docs
-          papermill notebooks/AMC_Scraper_5.ipynb build/report.executed.ipynb
-          jupyter nbconvert --to html build/report.executed.ipynb --template lab --output index.html --output-dir docs --embed-images --no-input --HTMLExporter.exclude_output_prompt=True
 
-          # Add the post process script that allows calculations
+          # Patch a temporary notebook copy. The production notebook stays
+          # unchanged and the patch fails loudly if its structure changes.
+          python scripts/patch_notebook_titles.py \
+            notebooks/AMC_Scraper_5.ipynb \
+            build/AMC_Scraper_5.patched.ipynb
+
+          papermill \
+            build/AMC_Scraper_5.patched.ipynb \
+            build/report.executed.ipynb
+
+          jupyter nbconvert \
+            --to html \
+            build/report.executed.ipynb \
+            --template lab \
+            --output index.html \
+            --output-dir docs \
+            --embed-images \
+            --no-input \
+            --HTMLExporter.exclude_output_prompt=True
+
+          # Existing layout/planner/Wikipedia pass.
           python scripts/postprocess_report.py
-          
-          # Always create/update a stamp file so there’s always something to commit
+
+          # Generic canonical-title Wikipedia retry for placeholder images.
+          # No movie-specific overrides or non-Wikipedia poster scraping.
+          python scripts/finalize_posters.py
+
           date -u +"%Y-%m-%dT%H:%M:%SZ" > docs/last_run_utc.txt
 
-          # Optional sanity checks (helps debugging)
           test -f docs/index.html
           ls -la docs
 
@@ -55,23 +86,34 @@ jobs:
           html = p.read_text(encoding="utf-8")
 
           viewport = '<meta name="viewport" content="width=device-width, initial-scale=1" />\n'
-
           css = r"""<style>
           /* Mobile fixes (added by CI) */
           img, svg, video, canvas { max-width: 100%; height: auto; }
+
           @media (max-width: 900px) {
-            .jp-OutputArea-child { display: block !important; overflow-x: auto !important; width: 100% !important; }
-            .jp-RenderedHTMLCommon, .jp-OutputArea-output, .output_area, .output_subarea {
+            .jp-OutputArea-child {
+              display: block !important;
+              overflow-x: auto !important;
+              width: 100% !important;
+            }
+
+            .jp-RenderedHTMLCommon,
+            .jp-OutputArea-output,
+            .output_area,
+            .output_subarea {
               overflow-x: auto !important;
               -webkit-overflow-scrolling: touch;
               max-width: 100% !important;
             }
-            table, table.dataframe {
+
+            table,
+            table.dataframe {
               display: block;
               overflow-x: auto;
               max-width: 100%;
               -webkit-overflow-scrolling: touch;
             }
+
             pre {
               overflow-x: auto;
               -webkit-overflow-scrolling: touch;
@@ -88,21 +130,19 @@ jobs:
 
           if insert and "</head>" in html:
               html = html.replace("</head>", insert + "</head>", 1)
-              p.write_text(html, encoding="utf-8")
+
+          p.write_text(html, encoding="utf-8")
           PY
-
-
 
       - name: Commit and push updated report
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Stage the whole docs folder (won’t fail if a specific file name changes)
           git add -A docs
-
           git commit -m "Daily report refresh" || exit 0
           git push
+
       - name: Upload AMC debug HTML
         if: failure()
         uses: actions/upload-artifact@v4
