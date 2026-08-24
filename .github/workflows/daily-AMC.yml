@@ -54,6 +54,64 @@ jobs:
             build/AMC_Scraper_5.patched.ipynb \
             build/report.executed.ipynb
 
+          # Papermill stores notebook stdout as cell output, and nbconvert would
+          # otherwise publish those diagnostic messages on the public webpage.
+          # Keep the underlying debug HTML files and filtering behavior; remove
+          # only these known informational log lines from the rendered report.
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          notebook_path = Path("build/report.executed.ipynb")
+          notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
+
+          hidden_prefixes = (
+              "[INFO] Saved AMC debug HTML to ",
+              "[INFO] Dropping non-movie AMC inventory:",
+          )
+
+          removed = 0
+
+          for cell in notebook.get("cells", []):
+              outputs = cell.get("outputs")
+              if not isinstance(outputs, list):
+                  continue
+
+              kept_outputs = []
+
+              for output in outputs:
+                  if output.get("output_type") != "stream":
+                      kept_outputs.append(output)
+                      continue
+
+                  text_value = output.get("text", "")
+                  if isinstance(text_value, list):
+                      text_value = "".join(text_value)
+                  else:
+                      text_value = str(text_value)
+
+                  kept_lines = []
+                  for line in text_value.splitlines(keepends=True):
+                      if line.lstrip().startswith(hidden_prefixes):
+                          removed += 1
+                      else:
+                          kept_lines.append(line)
+
+                  cleaned = "".join(kept_lines)
+                  if cleaned:
+                      output["text"] = cleaned
+                      kept_outputs.append(output)
+
+              cell["outputs"] = kept_outputs
+
+          notebook_path.write_text(
+              json.dumps(notebook, ensure_ascii=False, indent=1) + "\n",
+              encoding="utf-8",
+          )
+
+          print(f"[INFO] Removed {removed} diagnostic line(s) from public report output")
+          PY
+
           jupyter nbconvert \
             --to html \
             build/report.executed.ipynb \
