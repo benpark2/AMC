@@ -50,9 +50,59 @@ jobs:
             notebooks/AMC_Scraper_5.ipynb \
             build/AMC_Scraper_5.patched.ipynb
 
-          papermill \
-            build/AMC_Scraper_5.patched.ipynb \
-            build/report.executed.ipynb
+          # AMC occasionally returns a queue/bot/interstitial response to a
+          # GitHub-hosted runner even though the same scraper worked moments
+          # earlier. Retry ONLY that specific all-showtimes-empty failure from a
+          # fresh Papermill process. Any unrelated notebook error fails
+          # immediately instead of being hidden by retries.
+          attempt=1
+          max_attempts=3
+
+          while true; do
+            log_file="build/papermill-attempt-${attempt}.log"
+            echo "[INFO] Papermill attempt ${attempt}/${max_attempts}"
+
+            set +e
+            papermill \
+              build/AMC_Scraper_5.patched.ipynb \
+              build/report.executed.ipynb \
+              2>&1 | tee "${log_file}"
+            pm_status=${PIPESTATUS[0]}
+            set -e
+
+            if [ "${pm_status}" -eq 0 ]; then
+              break
+            fi
+
+            if ! grep -Fq "No fresh AMC showtimes were parsed for the requested dates." "${log_file}"; then
+              echo "[ERROR] Papermill failed for a reason unrelated to the AMC empty-showtimes condition."
+              exit "${pm_status}"
+            fi
+
+            if [ "${attempt}" -ge "${max_attempts}" ]; then
+              echo "[ERROR] AMC returned no parsable showtimes on all ${max_attempts} attempts."
+              exit "${pm_status}"
+            fi
+
+            # Preserve the debug HTML from this failed attempt before the next
+            # fresh run can overwrite same-named theater/date files.
+            if [ -d build/amc_debug ]; then
+              mkdir -p "build/amc_debug_attempts/attempt-${attempt}"
+              cp -a build/amc_debug/. "build/amc_debug_attempts/attempt-${attempt}/" || true
+            fi
+
+            rm -f build/report.executed.ipynb
+
+            # A short backoff helps with temporary AMC queue/interstitial
+            # responses without changing scraper behavior.
+            if [ "${attempt}" -eq 1 ]; then
+              sleep 20
+            else
+              sleep 45
+            fi
+
+            attempt=$((attempt + 1))
+          done
 
           # Papermill stores notebook stdout as cell output, and nbconvert would
           # otherwise publish those diagnostic messages on the public webpage.
@@ -206,5 +256,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: amc-debug-html
-          path: build/amc_debug/
+          path: |
+            build/amc_debug/
+            build/amc_debug_attempts/
+            build/papermill-attempt-*.log
           if-no-files-found: ignore
