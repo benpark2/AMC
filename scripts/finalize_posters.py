@@ -132,8 +132,14 @@ def _api_json(base: str, **params: object) -> dict | None:
 
 def _normalized_match_text(value: str) -> str:
     value = clean_amc_title(value)
+    # Wikipedia often disambiguates films with more context than just
+    # "(2026 film)" -- for example "(2026 American film)",
+    # "(British drama film)", or "(TV film)". Any trailing parenthetical
+    # whose medium word is explicitly film/movie is metadata, not part of the
+    # base movie title, so remove it for identity comparison. Arbitrary
+    # parentheticals that do not say film/movie are preserved.
     value = re.sub(
-        r"\s*\((?:\d{4}\s+)?(?:film|movie)\)\s*$",
+        r"\s*\([^()]*\b(?:film|movie)\s*\)\s*$",
         "",
         value,
         flags=re.IGNORECASE,

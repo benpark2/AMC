@@ -39,53 +39,88 @@ FUNCTION_WRAPPER = """def candidate_title_variants(title: str) -> List[str]:
 
 RT_PARSE_REPLACEMENT = r'''def rt_parse_scores(decoded_html: str, soup: BeautifulSoup) -> Tuple[Optional[int], Optional[int]]:
     """
-    Return (audience, critic) without guessing which side a lone score belongs to.
+    Return (audience, critic) from the visible Rotten Tomatoes scoreboard.
 
-    Rotten Tomatoes renders explicit labels (Tomatometer / Popcornmeter) in
-    the page text. Those labels are the source of truth. A page can have a
-    critic percentage while the Popcornmeter has zero ratings; broad JSON
-    regexes can accidentally copy the critic value into the audience slot.
-    We prefer a missing value to a mislabeled score.
+    Rotten Tomatoes can leave stale/hidden component attributes in the page
+    DOM even when the visible Popcornmeter has no published percentage. The
+    visible scoreboard is therefore authoritative whenever it is present.
     """
     full_text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
-    score_text = full_text
-    h1 = soup.find("h1")
-    if h1:
-        anchor = re.sub(r"\s+", " ", h1.get_text(" ", strip=True)).strip()
-        if anchor:
-            pos = full_text.casefold().find(anchor.casefold())
-            if pos >= 0:
-                score_text = full_text[pos : pos + 8000]
 
-    def _labeled_score(label: str) -> Optional[int]:
-        patterns = [
+    # Work from the first public score-board heading, not the whole page. The
+    # rest of an RT page can contain recommendation cards, historical/hidden
+    # components, and many unrelated percentages.
+    scoreboard = None
+    for anchor_rx in (
+        r"\bWatchlist\s+Tomatometer\s+Popcornmeter\b",
+        r"\bTomatometer\s+Popcornmeter\b",
+    ):
+        m = re.search(anchor_rx, full_text, re.I)
+        if m:
+            scoreboard = full_text[m.start() : m.start() + 1000]
+            break
+
+    if scoreboard is None:
+        # Older/alternate RT markup may omit the combined heading. Limit the
+        # fallback to the first local score area around the movie heading.
+        h1 = soup.find("h1")
+        tail = full_text
+        if h1:
+            anchor = re.sub(r"\s+", " ", h1.get_text(" ", strip=True)).strip()
+            if anchor:
+                pos = full_text.casefold().find(anchor.casefold())
+                if pos >= 0:
+                    tail = full_text[pos:]
+        first_label = re.search(
+            r"\b(?:Tomatometer|Popcornmeter|Audience\s*Score)\b",
+            tail,
+            re.I,
+        )
+        if first_label:
+            scoreboard = tail[first_label.start() : first_label.start() + 1000]
+
+    def _labeled_score(text: str, label: str) -> Optional[int]:
+        for pattern in (
             re.compile(rf"(\d{{1,3}})\s*[％%]\s*{label}\b", re.I),
             re.compile(rf"\b{label}\s*(\d{{1,3}})\s*[％%]", re.I),
-        ]
-        for pattern in patterns:
-            match = pattern.search(score_text)
+        ):
+            match = pattern.search(text)
             if match:
                 value = _int0_100(match.group(1))
                 if value is not None:
                     return value
         return None
 
-    critic = _labeled_score("Tomatometer")
-    audience = _labeled_score(r"(?:Popcornmeter|Audience\s*Score)")
+    if scoreboard is not None:
+        critic = _labeled_score(scoreboard, "Tomatometer")
+        audience = _labeled_score(
+            scoreboard,
+            r"(?:Popcornmeter|Audience\s*Score)",
+        )
 
-    if re.search(
-        r"\bPopcornmeter\s+(?:0|No)\s+(?:Verified\s+)?Ratings?\b",
-        score_text,
-        re.I,
-    ):
-        audience = None
+        # RT withholds the Popcornmeter percentage below its publication
+        # threshold. Hidden/stale attributes must never override this visible
+        # no-score state.
+        audience_unpublished = re.search(
+            r"\bPopcornmeter\s+(?:"
+            r"(?:0|No)\s+(?:Verified\s+)?Ratings?"
+            r"|Fewer\s+than\s+\d+(?:\+)?\s+(?:Verified\s+)?Ratings?"
+            r"|Not\s+Enough\s+(?:Verified\s+)?Ratings?"
+            r")\b",
+            scoreboard,
+            re.I,
+        )
+        if audience_unpublished:
+            audience = None
 
-    if re.search(
-        r"\b(?:Tomatometer|Popcornmeter|Audience\s*Score)\b",
-        score_text,
-        re.I,
-    ):
+        # A visible scoreboard is authoritative. Do not fall through to
+        # hidden DOM attributes just because one side is blank.
         return audience, critic
+
+    # Last-resort compatibility path for an RT layout with no visible labels.
+    # Even here, only semantically named score attributes are considered.
+    critic = None
+    audience = None
 
     for attr in (
         "tomatometerscore",
