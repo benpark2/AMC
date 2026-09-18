@@ -100,10 +100,21 @@ class FakeFuzz:
     @staticmethod
     def token_set_ratio(a, b):
         return 100 if a == b else 10
+
+    @staticmethod
+    def ratio(a, b):
+        if a == b:
+            return 100
+        # Enough fidelity for the article-preservation regression: a leading
+        # article is similar, but must not be treated as an exact identity.
+        return 75 if a.removeprefix("the ") == b or b.removeprefix("the ") == a else 10
 fuzz = FakeFuzz()
 
 def normalize_title_for_match(title: str) -> str:
-    return title.lower()
+    s = title.lower()
+    s = re.sub(r'[^a-z0-9]+', ' ', s)
+    s = re.sub(r'\b(the|a|an)\b', ' ', s)
+    return re.sub(r'\s+', ' ', s).strip()
 
 def candidate_title_variants(title: str) -> List[str]:
     return [title]
@@ -117,21 +128,38 @@ def build_imdb_lookup(session, titles):
         title: [normalize_title_for_match(v) for v in candidate_title_variants(title)]
         for title in titles
     }
-    candidate_map = {
-        title: [{'primaryNorm': normalize_title_for_match(candidate_title_variants(title)[0]), 'originalNorm': ''}]
-        for title in titles
-    }
+    candidate_map = {}
+    for title in titles:
+        base = candidate_title_variants(title)[0]
+        candidate_map[title] = [
+            {
+                'primaryTitle': 'The ' + base,
+                'originalTitle': '',
+                'primaryNorm': normalize_title_for_match('The ' + base),
+                'originalNorm': '',
+            },
+            {
+                'primaryTitle': base,
+                'originalTitle': '',
+                'primaryNorm': normalize_title_for_match(base),
+                'originalNorm': '',
+            },
+        ]
     for title in titles:
         target = normalize_title_for_match(title)
         chosen_key = None
+        chosen_title = None
         for cand in candidate_map.get(title, []):
             exact = int(target in {cand['primaryNorm'], cand['originalNorm']})
             fuzz_score = max(
                 fuzz.token_set_ratio(cand['primaryNorm'], target) if cand['primaryNorm'] else 0,
                 fuzz.token_set_ratio(cand['originalNorm'], target) if cand['originalNorm'] else 0,
             )
-            chosen_key = (exact, fuzz_score)
-    return chosen_key
+            score_key = (exact, fuzz_score)
+            if chosen_key is None or score_key > chosen_key:
+                chosen_key = score_key
+                chosen_title = cand['primaryTitle']
+    return chosen_title, chosen_key
 
 def _int0_100(x):
     if x is None:
@@ -187,13 +215,23 @@ desired = [
     def test_patcher_scopes_imdb_and_adds_rt_changes(self):
         source = self._patched_source()
         ast.parse(source)
-        self.assertIn("lookup_targets = title_variants.get(title) or [target]", source)
+        self.assertIn("lookup_literal_targets = [", source)
+        self.assertIn("candidate_literal_norms = [", source)
+        self.assertIn("fuzz.ratio(candidate_norm, lookup_target)", source)
         self.assertIn('df_display["rt_c/a"]', source)
         self.assertIn('"rt_c/a",', source)
         identifiers = {
             node.id for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Name)
         }
         self.assertNotIn("targets", identifiers)
+
+    def test_imdb_final_ranking_preserves_leading_articles(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        chosen_title, chosen_key = ns["build_imdb_lookup"](None, ["Example"])
+        self.assertEqual(chosen_title, "Example")
+        self.assertEqual(chosen_key[0], 1)
 
     def test_strict_rt_parser_preserves_score_type(self):
         source = self._patched_source()
@@ -431,6 +469,57 @@ class PosterValidationTests(unittest.TestCase):
         self.assertEqual(source, "wikipedia-search")
         self.assertEqual(rejected, [])
 
+    def test_english_is_soft_tiebreak_for_ambiguous_title(self):
+        ctx = self.context(canonical_title="Example", runtime_min=97)
+        foreign_page = {
+            "pageid": 1,
+            "title": "Example (2026 film)",
+            "thumbnail": {"source": "https://upload.wikimedia.org/foreign.jpg"},
+            "pageprops": {"wikibase_item": "Q1"},
+        }
+        english_page = {
+            "pageid": 2,
+            "title": "Example (2026 American film)",
+            "thumbnail": {"source": "https://upload.wikimedia.org/english.jpg"},
+            "pageprops": {"wikibase_item": "Q2"},
+        }
+        foreign = self.entity("Q1", "Example", year=2026, runtime=97, language_qid="Q1004")
+        english = self.entity("Q2", "Example", year=2026, runtime=98, language_qid="Q1003")
+        by_qid = {"Q1": foreign, "Q2": english}
+
+        with patch.object(posters, "_wikipedia_pages_for_titles", return_value=[foreign_page]), \
+             patch.object(posters, "_wikipedia_search_pages", return_value=[english_page]), \
+             patch.object(posters, "_wikidata_entities", side_effect=lambda qids: [by_qid[qids[0]]] if qids and qids[0] in by_qid else []):
+            image, page_title, source, _ = posters._image_via_wikipedia(ctx, 2026)
+
+        self.assertEqual(image, "https://upload.wikimedia.org/english.jpg")
+        self.assertEqual(page_title, "Example (2026 American film)")
+        self.assertEqual(source, "wikipedia-search")
+
+    def test_other_language_remains_valid_when_no_english_candidate_exists(self):
+        ctx = self.context(canonical_title="Example", runtime_min=97)
+        foreign_page = {
+            "pageid": 1,
+            "title": "Example (2026 film)",
+            "thumbnail": {"source": "https://upload.wikimedia.org/foreign.jpg"},
+            "pageprops": {"wikibase_item": "Q1"},
+        }
+        foreign = self.entity("Q1", "Example", year=2026, runtime=97, language_qid="Q1004")
+        with patch.object(posters, "_wikipedia_pages_for_titles", return_value=[foreign_page]), \
+             patch.object(posters, "_wikipedia_search_pages", return_value=[]), \
+             patch.object(posters, "_wikidata_entities", return_value=[foreign]):
+            image, page_title, source, _ = posters._image_via_wikipedia(ctx, 2026)
+        self.assertEqual(image, "https://upload.wikimedia.org/foreign.jpg")
+        self.assertEqual(page_title, "Example (2026 film)")
+        self.assertEqual(source, "wikipedia-exact")
+
+    def test_stronger_runtime_evidence_can_override_english_tiebreak(self):
+        ctx = self.context(canonical_title="Example", runtime_min=100)
+        foreign = self.entity("Q1", "Example", runtime=100, language_qid="Q1004")
+        english = self.entity("Q2", "Example", runtime=118, language_qid="Q1003")
+        best, _ = posters._best_entity_for_context([english, foreign], ctx, None)
+        self.assertEqual(best["id"], "Q1")
+
     def test_short_titles_are_revalidated_but_long_working_titles_can_be_preserved(self):
         short = self.context(canonical_title="Runner")
         long = self.context(canonical_title="A Very Specific Long Movie Title")
@@ -441,7 +530,11 @@ class PosterValidationTests(unittest.TestCase):
     def test_production_files_have_no_regression_title_exceptions(self):
         production = "\n".join(
             Path(path).read_text(encoding="utf-8")
-            for path in (posters.__file__, Path(__file__).with_name("movie_titles.py"))
+            for path in (
+                posters.__file__,
+                Path(__file__).with_name("movie_titles.py"),
+                Path(__file__).with_name("patch_notebook_titles.py"),
+            )
         )
         # These strings may be used as tests here, but not as production rules.
         for title in (
@@ -454,7 +547,7 @@ class PosterValidationTests(unittest.TestCase):
 class AttachedOutputContextTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.path = Path("/mnt/data/Weekend Movies(20260918-031310).htm")
+        cls.path = Path("/mnt/data/Weekend Movies(20260918-034838).htm")
         if not cls.path.exists():
             raise unittest.SkipTest("Attached report is not mounted")
         cls.soup = BeautifulSoup(cls.path.read_text(encoding="utf-8"), "html.parser")

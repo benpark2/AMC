@@ -10,7 +10,10 @@ Poster policy
 -------------
 This is intentionally permissive: a candidate is accepted unless available
 metadata gives a strong reason to reject it.  Missing metadata is NOT a reason
-to reject a poster.
+to reject a poster. When a short/generic title is ambiguous and AMC supplies no
+spoken-language tag, English-language films get only a small ranking bonus;
+other-language films remain eligible and win when stronger year/runtime evidence
+points to them.
 
 Strong contradictions currently used as vetoes:
   * an explicit/inferred release year differs by more than 3 years;
@@ -538,6 +541,14 @@ def _entity_contradictions(entity: dict, context: MovieContext) -> list[str]:
     return reasons
 
 
+def _english_tiebreak_enabled(context: MovieContext) -> bool:
+    """Use English only as a soft preference for genuinely ambiguous titles."""
+    if context.spoken_languages:
+        return False
+    words = re.findall(r"\w+", _normalized_match_text(context.canonical_title), flags=re.UNICODE)
+    return 0 < len(words) <= 2
+
+
 def _entity_score(entity: dict, context: MovieContext, imdb_id: str | None) -> float:
     score = _entity_title_score(entity, context) * 100.0
 
@@ -563,6 +574,12 @@ def _entity_score(entity: dict, context: MovieContext, imdb_id: str | None) -> f
         languages = _entity_languages(entity)
         if languages and set(context.spoken_languages) & languages:
             score += 10.0
+    elif _english_tiebreak_enabled(context):
+        # Soft preference only. Four points is enough to break an otherwise
+        # ambiguous same-title tie, but weaker than strong runtime/year evidence.
+        languages = _entity_languages(entity)
+        if "english" in languages:
+            score += 4.0
 
     return score
 
@@ -640,22 +657,39 @@ def _image_via_wikidata(
     return image, page, source, rejected
 
 
-def _page_context_ok(page: dict, context: MovieContext) -> tuple[bool, list[str]]:
+def _page_evaluation(
+    page: dict,
+    context: MovieContext,
+) -> tuple[bool, list[str], float]:
+    """Validate and rank one Wikipedia page with at most one Wikidata fetch."""
     if page.get("missing") is not None or _page_is_disambiguation(page):
-        return False, ["missing-or-disambiguation"]
+        return False, ["missing-or-disambiguation"], 0.0
     page_title = clean_amc_title(str(page.get("title", "")))
-    if _candidate_identity_score(page_title, context.canonical_title) < 0.82:
-        return False, ["title"]
+    identity = _candidate_identity_score(page_title, context.canonical_title)
+    if identity < 0.82:
+        return False, ["title"], identity * 100.0
     qid = _page_qid(page)
     if not qid:
-        # No structured metadata means no contradiction is known.  This is a
+        # No structured metadata means no contradiction is known. This is a
         # permissive fallback, exactly as intended by the poster policy.
-        return True, []
+        return True, [], identity * 100.0
     entities = _wikidata_entities([qid])
     if not entities:
-        return True, []
-    reasons = _entity_contradictions(entities[0], context)
-    return not reasons, reasons
+        return True, [], identity * 100.0
+    entity = entities[0]
+    reasons = _entity_contradictions(entity, context)
+    return not reasons, reasons, _entity_score(entity, context, None)
+
+
+def _page_context_ok(page: dict, context: MovieContext) -> tuple[bool, list[str]]:
+    ok, reasons, _ = _page_evaluation(page, context)
+    return ok, reasons
+
+
+def _page_rank_score(page: dict, context: MovieContext) -> float:
+    """Rank a validated Wikipedia page using the same soft metadata signals."""
+    _, _, score = _page_evaluation(page, context)
+    return score
 
 
 def _image_via_wikipedia(
@@ -663,44 +697,74 @@ def _image_via_wikipedia(
     reference_year: int,
 ) -> tuple[str | None, str | None, str | None, list[str]]:
     rejected: list[str] = []
-    pages = _wikipedia_pages_for_titles(
-        wikipedia_title_candidates(context.display_title, reference_year=reference_year)
-    )
-    for page in sorted(
-        pages,
-        key=lambda p: _candidate_identity_score(str(p.get("title", "")), context.canonical_title),
-        reverse=True,
-    ):
-        ok, reasons = _page_context_ok(page, context)
+    candidates: list[tuple[float, int, int, str, str, str]] = []
+    seen_pages: set[object] = set()
+    order = 0
+
+    def consider(page: dict, source: str, source_priority: int) -> None:
+        nonlocal order
+        page_id = page.get("pageid") or page.get("title")
+        if page_id in seen_pages:
+            return
+        seen_pages.add(page_id)
+        ok, reasons, rank_score = _page_evaluation(page, context)
         if not ok:
             rejected.append(f"{page.get('title', '?')}:{','.join(reasons)}")
-            continue
+            return
         image = _image_from_page(page)
-        if image:
-            return image, clean_amc_title(str(page.get("title", ""))), "wikipedia-exact", rejected
+        if not image:
+            return
+        title = clean_amc_title(str(page.get("title", "")))
+        candidates.append((
+            rank_score,
+            source_priority,
+            -order,
+            image,
+            title,
+            source,
+        ))
+        order += 1
 
+    # Exact/redirected page-title candidates remain the cheapest first pass.
+    exact_pages = _wikipedia_pages_for_titles(
+        wikipedia_title_candidates(context.display_title, reference_year=reference_year)
+    )
+    for page in exact_pages:
+        consider(page, "wikipedia-exact", 1)
+
+    # A short title with no AMC language tag is genuinely ambiguous. In that
+    # case, do one English-oriented search before accepting an otherwise valid
+    # foreign-language exact redirect. This is a ranking preference, not a
+    # veto: if no good English candidate exists, the foreign candidate remains.
+    if _english_tiebreak_enabled(context):
+        query = f'"{context.canonical_title}" English-language film'
+        for page in _wikipedia_search_pages(query):
+            consider(page, "wikipedia-search", 0)
+
+    if candidates:
+        candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+        _, _, _, image, title, source = candidates[0]
+        return image, title, source, rejected
+
+    # Normal fallback search. For non-ambiguous titles this preserves the old
+    # behavior; for ambiguous titles it runs only when exact + English-first
+    # candidates produced no usable image.
     terms = search_terms_for_title(context.canonical_title)
     queries = [
         f'"{context.canonical_title}" film',
         f'intitle:"{context.canonical_title}" film',
         f"{terms} film",
     ]
-    seen_pages: set[object] = set()
     for query in queries:
         for page in _wikipedia_search_pages(query):
-            page_id = page.get("pageid") or page.get("title")
-            if page_id in seen_pages:
-                continue
-            seen_pages.add(page_id)
-            ok, reasons = _page_context_ok(page, context)
-            if not ok:
-                rejected.append(f"{page.get('title', '?')}:{','.join(reasons)}")
-                continue
-            image = _image_from_page(page)
-            if image:
-                return image, clean_amc_title(str(page.get("title", ""))), "wikipedia-search", rejected
+            consider(page, "wikipedia-search", 0)
 
-    return None, None, None, rejected
+    if not candidates:
+        return None, None, None, rejected
+
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    _, _, _, image, title, source = candidates[0]
+    return image, title, source, rejected
 
 
 def resolve_poster(

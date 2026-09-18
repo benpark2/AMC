@@ -6,8 +6,8 @@ This patcher is intentionally conservative:
 1. Replace the notebook's candidate_title_variants() with the shared generic
    implementation in scripts/movie_titles.py.
 2. Remove non-film AMC inventory before ratings/numbering/planner generation.
-3. Improve IMDb candidate scoring so it considers every normalized lookup
-   variant.
+3. Improve IMDb candidate scoring so it considers every canonical lookup
+   variant while preserving leading articles for final identity ranking.
 4. Parse Rotten Tomatoes scores only when their critic/audience labels are
    explicit, preventing one score from being copied into the other slot.
 5. Emit an explicit RT_C/A display column so a missing side renders as "-".
@@ -291,10 +291,11 @@ def _patch_imdb_scoring(source: str) -> tuple[str, bool]:
     The original function keeps:
         target = normalize_title_for_match(title)
 
-    We replace only the exact/fuzzy scoring assignments with a block that
-    derives lookup_targets locally from title_variants. Because lookup_targets
-    is defined immediately before it is used, there is no cross-function or
-    notebook-global variable dependency.
+    We replace only the exact/fuzzy scoring assignments. Candidate discovery
+    may stay article-insensitive (useful for broad matching), but final ranking
+    uses a second normalization that PRESERVES leading articles. This prevents
+    ambiguous pairs such as "Title" / "The Title" from being treated as exact
+    identities while still allowing canonical AMC suffix variants.
     """
     functions = _top_level_functions(source, "build_imdb_lookup")
     if not functions:
@@ -365,25 +366,30 @@ def _patch_imdb_scoring(source: str) -> tuple[str, bool]:
     indent = original_line[: len(original_line) - len(original_line.lstrip())]
 
     block_lines = [
-        f"{indent}candidate_norms = [\n",
-        f"{indent}    norm\n",
-        f"{indent}    for norm in (cand['primaryNorm'], cand['originalNorm'])\n",
-        f"{indent}    if norm\n",
+        f"{indent}candidate_literal_norms = [\n",
+        f"{indent}    re.sub(r'\\s+', ' ', re.sub(r'[^a-z0-9]+', ' ', str(name or '').casefold())).strip()\n",
+        f"{indent}    for name in (cand.get('primaryTitle', ''), cand.get('originalTitle', ''))\n",
+        f"{indent}    if name\n",
         f"{indent}]\n",
-        f"{indent}lookup_targets = title_variants.get(title) or [target]\n",
+        f"{indent}lookup_literal_targets = [\n",
+        f"{indent}    re.sub(r'\\s+', ' ', re.sub(r'[^a-z0-9]+', ' ', str(variant or '').casefold())).strip()\n",
+        f"{indent}    for variant in candidate_title_variants(title)\n",
+        f"{indent}    if variant\n",
+        f"{indent}]\n",
         f"{indent}exact = int(\n",
         f"{indent}    any(\n",
-        f"{indent}        lookup_target in candidate_norms\n",
-        f"{indent}        for lookup_target in lookup_targets\n",
-        f"{indent}        if lookup_target\n",
+        f"{indent}        lookup_target == candidate_norm\n",
+        f"{indent}        for lookup_target in lookup_literal_targets\n",
+        f"{indent}        for candidate_norm in candidate_literal_norms\n",
+        f"{indent}        if lookup_target and candidate_norm\n",
         f"{indent}    )\n",
         f"{indent})\n",
         f"{indent}fuzz_score = max(\n",
         f"{indent}    (\n",
-        f"{indent}        fuzz.token_set_ratio(candidate_norm, lookup_target)\n",
-        f"{indent}        for candidate_norm in candidate_norms\n",
-        f"{indent}        for lookup_target in lookup_targets\n",
-        f"{indent}        if lookup_target\n",
+        f"{indent}        fuzz.ratio(candidate_norm, lookup_target)\n",
+        f"{indent}        for candidate_norm in candidate_literal_norms\n",
+        f"{indent}        for lookup_target in lookup_literal_targets\n",
+        f"{indent}        if lookup_target and candidate_norm\n",
         f"{indent}    ),\n",
         f"{indent}    default=0,\n",
         f"{indent})\n",
@@ -422,7 +428,7 @@ def _validate_imdb_patch(source: str) -> None:
                 loads.setdefault(node.id, []).append(node.lineno)
 
     # These are introduced by this patch and therefore must be locally assigned.
-    for name in ("candidate_norms", "lookup_targets"):
+    for name in ("candidate_literal_norms", "lookup_literal_targets"):
         if name not in assignments:
             raise RuntimeError(
                 f"Patched build_imdb_lookup() uses no local assignment for {name!r}."
