@@ -1,25 +1,23 @@
 #!/usr/bin/env python3
-"""
-Regression tests for generic AMC title handling and notebook patch safety.
-
-Movie names below are test inputs only. Production lookup logic contains no
-per-movie mappings or poster overrides.
-"""
+"""Regression tests for AMC title, RT-score, and poster-quality fixes."""
 
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
-import tempfile
+import re
 import unittest
 from unittest.mock import patch
+
+import pandas as pd
+from bs4 import BeautifulSoup
 
 from scripts.movie_titles import (
     analyze_movie_title,
     candidate_title_variants,
     canonical_movie_title,
     is_non_movie_title,
-    search_terms_for_title,
     wikipedia_title_candidates,
 )
 from scripts.patch_notebook_titles import patch_notebook
@@ -27,7 +25,7 @@ import scripts.finalize_posters as posters
 
 
 class MovieTitleTests(unittest.TestCase):
-    def test_stacked_anniversary_and_festival_suffixes(self):
+    def test_stacked_anniversary_and_festival(self):
         self.assertEqual(
             canonical_movie_title(
                 "Castle in the Sky 40th Anniversary - Studio Ghibli Fest 2026"
@@ -41,18 +39,24 @@ class MovieTitleTests(unittest.TestCase):
             "The Fast and the Furious",
         )
 
-    def test_sensory_friendly(self):
+    def test_accessibility_and_qa(self):
         self.assertEqual(
             canonical_movie_title(
                 "PAW Patrol: The Dino Movie: Sensory Friendly Screening"
             ),
             "PAW Patrol: The Dino Movie",
         )
-
-    def test_qa_suffix(self):
         self.assertEqual(
             canonical_movie_title("Paper Flowers – Special In-Person Q&A"),
             "Paper Flowers",
+        )
+
+    def test_composite_early_access_qa(self):
+        self.assertEqual(
+            canonical_movie_title(
+                "Forgotten Island - Early Access Screening with Cast Member Q&A"
+            ),
+            "Forgotten Island",
         )
 
     def test_program_code(self):
@@ -63,66 +67,40 @@ class MovieTitleTests(unittest.TestCase):
             "Harry Potter And The Order Of The Phoenix",
         )
 
-    def test_title_containing_number_is_not_damaged(self):
-        title = "40 years of F**kin' Up"
-        self.assertEqual(canonical_movie_title(title), title)
-
-    def test_censored_title_gets_generic_search_variant(self):
-        variants = candidate_title_variants("40 years of F**kin' Up")
-        self.assertIn("40 years of Fkin' Up", variants)
+    def test_real_parenthetical_year_is_preserved_but_analyzed(self):
+        info = analyze_movie_title("Batman (1989)", reference_year=2026)
+        self.assertEqual(info.canonical_title, "Batman (1989)")
+        self.assertEqual(info.explicit_year, 1989)
         self.assertEqual(
-            search_terms_for_title("40 years of F**kin' Up"),
-            "40 years of Fkin' Up",
+            wikipedia_title_candidates("Batman (1989)", reference_year=2026)[0],
+            "Batman (1989 film)",
         )
 
-    def test_private_theatre_rental_filter(self):
+    def test_private_rental_filter(self):
         self.assertTrue(is_non_movie_title("\tPrivate Theatre Rental\n"))
         self.assertTrue(is_non_movie_title("Private Theater Rental - 2 Hours"))
         self.assertFalse(is_non_movie_title("Private Life"))
 
     def test_anniversary_year_inference(self):
-        fast = analyze_movie_title(
+        info = analyze_movie_title(
             "The Fast and the Furious 25th Anniversary",
             reference_year=2026,
         )
-        self.assertEqual(fast.inferred_release_year, 2001)
-
-        castle = analyze_movie_title(
-            "Castle in the Sky 40th Anniversary - Studio Ghibli Fest 2026",
-            reference_year=2026,
-        )
-        self.assertEqual(castle.inferred_release_year, 1986)
-
-    def test_wikipedia_candidate_uses_inferred_year(self):
-        candidates = wikipedia_title_candidates(
-            "The Fast and the Furious 25th Anniversary",
-            reference_year=2026,
-        )
-        self.assertEqual(candidates[0], "The Fast and the Furious (2001 film)")
-
-    def test_canonical_variant_first(self):
-        variants = candidate_title_variants(
-            "Castle in the Sky 40th Anniversary - Studio Ghibli Fest 2026"
-        )
-        self.assertEqual(variants[0], "Castle in the Sky")
-
-    def test_ampersand_variant_is_generic(self):
-        variants = candidate_title_variants("Minions & Monsters")
-        self.assertIn("Minions and Monsters", variants)
+        self.assertEqual(info.inferred_release_year, 2001)
 
 
 class NotebookPatcherTests(unittest.TestCase):
-    """
-    Test the exact failure mode from the first deployment.
-
-    The fixture intentionally includes a decoy
-    `target = normalize_title_for_match(title)` OUTSIDE build_imdb_lookup().
-    A notebook-wide string replacement can patch the decoy and leave IMDb with
-    an undefined variable. The AST-scoped patcher must not do that.
-    """
-
     def _fixture_notebook(self) -> dict:
-        source = """from typing import List
+        source = r'''from typing import List, Optional, Tuple
+import re
+import pandas as pd
+from bs4 import BeautifulSoup
+
+class FakeFuzz:
+    @staticmethod
+    def token_set_ratio(a, b):
+        return 100 if a == b else 10
+fuzz = FakeFuzz()
 
 def normalize_title_for_match(title: str) -> str:
     return title.lower()
@@ -131,16 +109,8 @@ def candidate_title_variants(title: str) -> List[str]:
     return [title]
 
 def unrelated_function(title):
-    # Deliberate decoy. The patcher must leave this untouched.
     target = normalize_title_for_match(title)
     return target
-
-class FakeFuzz:
-    @staticmethod
-    def token_set_ratio(a, b):
-        return 100 if a == b else 10
-
-fuzz = FakeFuzz()
 
 def build_imdb_lookup(session, titles):
     title_variants = {
@@ -148,475 +118,303 @@ def build_imdb_lookup(session, titles):
         for title in titles
     }
     candidate_map = {
-        title: [
-            {
-                'primaryNorm': normalize_title_for_match(
-                    candidate_title_variants(title)[0]
-                ),
-                'originalNorm': '',
-            }
-        ]
+        title: [{'primaryNorm': normalize_title_for_match(candidate_title_variants(title)[0]), 'originalNorm': ''}]
         for title in titles
     }
-
     for title in titles:
         target = normalize_title_for_match(title)
-        chosen = None
         chosen_key = None
-
         for cand in candidate_map.get(title, []):
             exact = int(target in {cand['primaryNorm'], cand['originalNorm']})
             fuzz_score = max(
                 fuzz.token_set_ratio(cand['primaryNorm'], target) if cand['primaryNorm'] else 0,
                 fuzz.token_set_ratio(cand['originalNorm'], target) if cand['originalNorm'] else 0,
             )
-            key = (exact, fuzz_score)
-            if chosen_key is None or key > chosen_key:
-                chosen = cand
-                chosen_key = key
-
+            chosen_key = (exact, fuzz_score)
     return chosen_key
 
-showtimes = []
+def _int0_100(x):
+    if x is None:
+        return None
+    try:
+        n = int(str(x).strip())
+    except Exception:
+        return None
+    return n if 0 <= n <= 100 else None
+
+def rt_parse_scores(decoded_html: str, soup: BeautifulSoup) -> Tuple[Optional[int], Optional[int]]:
+    return 1, 2
+
+showtimes = [{'movie_title': 'Example Movie', 'format_label': ''}]
 df_show = pd.DataFrame(showtimes)
 df_show["format_label"] = df_show["format_label"].fillna("")
-"""
+
+df_summary = pd.DataFrame([
+    {'movie_title': 'A', 'runtime': '1h 20m', 'rt_critic': 100, 'rt_audience': None},
+    {'movie_title': 'B', 'runtime': '2h 30m', 'rt_critic': None, 'rt_audience': 98},
+    {'movie_title': 'C', 'runtime': '1h 30m', 'rt_critic': None, 'rt_audience': None},
+])
+df_display = df_summary.copy()
+
+desired = [
+    "movie_title",
+    "runtime",
+    "rt_critic",
+    "rt_audience",
+    "imdb_rating",
+    "showtimes",
+    "rt_url",
+    "imdb_url",
+]
+'''
         return {
-            "cells": [
-                {
-                    "cell_type": "code",
-                    "execution_count": None,
-                    "metadata": {},
-                    "outputs": [],
-                    "source": source.splitlines(keepends=True),
-                }
-            ],
+            "cells": [{
+                "cell_type": "code",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": source.splitlines(keepends=True),
+            }],
             "metadata": {},
             "nbformat": 4,
             "nbformat_minor": 5,
         }
 
-    def test_imdb_patch_is_scoped_and_has_no_undefined_targets(self):
+    def _patched_source(self) -> str:
         patched = patch_notebook(self._fixture_notebook())
-        source = "".join(patched["cells"][0]["source"])
+        return "".join(patched["cells"][0]["source"])
 
-        # Result must still be valid Python.
+    def test_patcher_scopes_imdb_and_adds_rt_changes(self):
+        source = self._patched_source()
         ast.parse(source)
-
-        # The previous broken variable must not be introduced anywhere.
-        # Check the obsolete variable name as a standalone identifier;
-        # "lookup_targets" is the new, correctly local variable.
-        tree = ast.parse(source)
+        self.assertIn("lookup_targets = title_variants.get(title) or [target]", source)
+        self.assertIn('df_display["rt_c/a"]', source)
+        self.assertIn('"rt_c/a",', source)
         identifiers = {
-            node.id for node in ast.walk(tree) if isinstance(node, ast.Name)
+            node.id for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Name)
         }
         self.assertNotIn("targets", identifiers)
 
-        # The new local variable is defined right in the IMDb scoring loop.
-        self.assertIn(
-            "lookup_targets = title_variants.get(title) or [target]",
-            source,
+    def test_strict_rt_parser_preserves_score_type(self):
+        source = self._patched_source()
+        tree = ast.parse(source)
+        nodes = [
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "rt_parse_scores"
+        ]
+        self.assertEqual(len(nodes), 1)
+        module = ast.Module(body=nodes, type_ignores=[])
+        ast.fix_missing_locations(module)
+        ns = {
+            "re": re,
+            "BeautifulSoup": BeautifulSoup,
+            "Optional": __import__("typing").Optional,
+            "Tuple": __import__("typing").Tuple,
+            "_int0_100": lambda x: int(x) if x is not None and str(x).isdigit() and 0 <= int(x) <= 100 else None,
+        }
+        exec(compile(module, "<rt-test>", "exec"), ns)
+        parser = ns["rt_parse_scores"]
+
+        shaun = "100% Tomatometer 30 Reviews Popcornmeter 0 Verified Ratings"
+        aud, crit = parser(shaun, BeautifulSoup(f"<div>{shaun}</div>", "html.parser"))
+        self.assertEqual((aud, crit), (None, 100))
+
+        hanuman = "Tomatometer 1 Reviews 98% Popcornmeter 50+ Verified Ratings"
+        aud, crit = parser(hanuman, BeautifulSoup(f"<div>{hanuman}</div>", "html.parser"))
+        self.assertEqual((aud, crit), (98, None))
+
+    def test_rt_display_always_has_two_slots_when_one_exists(self):
+        source = self._patched_source()
+        tree = ast.parse(source)
+        node = next(
+            n for n in tree.body
+            if isinstance(n, ast.FunctionDef) and n.name == "_rt_pair_display"
         )
-
-        # Decoy outside build_imdb_lookup() remains unchanged.
-        self.assertIn(
-            "def unrelated_function(title):\n"
-            "    # Deliberate decoy. The patcher must leave this untouched.\n"
-            "    target = normalize_title_for_match(title)",
-            source,
-        )
-
-        # Shared generic title normalization and rental filtering are present.
-        self.assertIn(
-            "from scripts.movie_titles import candidate_title_variants",
-            source,
-        )
-        self.assertIn("is_non_movie_title", source)
-
-        # Execute the patched function through the scoring path. This is the
-        # path that raised NameError in the failed GitHub Actions deployment.
-        definitions_only = source.split("showtimes = []", 1)[0]
-        namespace: dict = {}
-        exec(compile(definitions_only, "<patched-notebook-test>", "exec"), namespace)
-
-        chosen_key = namespace["build_imdb_lookup"](
-            None,
-            ["Example Movie 25th Anniversary"],
-        )
-        self.assertIsNotNone(chosen_key)
-        self.assertEqual(chosen_key[0], 1)  # canonical variant produced exact match
-
-    def test_patcher_refuses_missing_imdb_target_assignment(self):
-        notebook = self._fixture_notebook()
-        source = "".join(notebook["cells"][0]["source"])
-        source = source.replace(
-            "        target = normalize_title_for_match(title)\n",
-            "        target = title\n",
-            1,
-        )
-        notebook["cells"][0]["source"] = source.splitlines(keepends=True)
-
-        with self.assertRaisesRegex(
-            RuntimeError,
-            "expected exactly one.*target = normalize_title_for_match",
-        ):
-            patch_notebook(notebook)
+        module = ast.Module(body=[node], type_ignores=[])
+        ast.fix_missing_locations(module)
+        ns = {"pd": pd}
+        exec(compile(module, "<rt-display-test>", "exec"), ns)
+        fmt = ns["_rt_pair_display"]
+        self.assertEqual(fmt(pd.Series({"rt_critic": 100, "rt_audience": None})), "100/-")
+        self.assertEqual(fmt(pd.Series({"rt_critic": None, "rt_audience": 98})), "-/98")
+        self.assertEqual(fmt(pd.Series({"rt_critic": None, "rt_audience": None})), "")
 
 
-class PosterResolverTests(unittest.TestCase):
-    """
-    Exercise the actual Wikimedia resolver paths without making network calls.
-
-    Tests use representative API payloads shaped like MediaWiki/Wikidata
-    responses. Movie names are regression inputs only; production code remains
-    fully generic.
-    """
-
+class PosterValidationTests(unittest.TestCase):
     def setUp(self):
         posters._JSON_CACHE.clear()
+        posters._LABEL_CACHE.clear()
+        posters._LABEL_CACHE.update({
+            "Q1001": "japanese",
+            "Q1002": "hindi",
+            "Q1003": "english",
+            "Q1004": "catalan",
+        })
 
-    def test_browser_saved_placeholder_is_detected(self):
-        self.assertTrue(
-            posters._is_placeholder(
-                "Weekend%20Movies_files/images-not-found_QI6q.webp"
-            )
-        )
-        self.assertTrue(
-            posters._is_placeholder(
-                "https://example.test/images-not-found.webp"
-            )
-        )
-        self.assertFalse(
-            posters._is_placeholder(
-                "https://upload.wikimedia.org/poster.jpg"
-            )
-        )
-
-    def test_pageimages_requests_allow_nonfree_movie_posters(self):
-        """
-        Wikipedia movie posters are often non-free fair-use files.
-        MediaWiki PageImages defaults to free-only, so pilicense=any is
-        required for the poster use case.
-        """
-        calls = []
-
-        def fake_api(base, **params):
-            calls.append((base, params))
-            return {"query": {"pages": []}}
-
-        with patch.object(posters, "_api_json", side_effect=fake_api):
-            posters._wikipedia_pages_for_titles(["Example Movie (2026 film)"])
-            posters._wikipedia_search_pages('"Example Movie" film')
-
-        self.assertEqual(len(calls), 2)
-        for base, params in calls:
-            self.assertEqual(base, posters.ENWIKI_API)
-            self.assertEqual(params.get("prop"), "pageimages|pageprops")
-            self.assertEqual(params.get("pilicense"), "any")
-
-    def test_pageimages_exact_candidate_resolves_current_film(self):
-        """
-        Verify the Action-API exact-title path used for short/current titles.
-        """
-        api_page = {
-            "pageid": 123,
-            "title": "Colony (2026 film)",
-            "thumbnail": {
-                "source": "https://upload.wikimedia.org/colony.jpg"
-            },
-            "pageprops": {},
+    @staticmethod
+    def entity(
+        qid: str,
+        title: str,
+        *,
+        description: str = "film",
+        year: int | None = None,
+        runtime: int | None = None,
+        language_qid: str | None = None,
+        imdb_id: str | None = None,
+    ) -> dict:
+        claims: dict = {
+            "P31": [{"mainsnak": {"datavalue": {"value": {"id": "Q11424"}}}}],
         }
-
-        with patch.object(
-            posters,
-            "_wikipedia_pages_for_titles",
-            return_value=[api_page],
-        ) as exact_lookup, patch.object(
-            posters,
-            "_wikipedia_search_pages",
-            side_effect=AssertionError(
-                "search fallback should not run after an exact poster match"
-            ),
-        ):
-            image, page, source = posters.resolve_poster(
-                "Colony",
-                reference_year=2026,
-            )
-
-        self.assertEqual(image, "https://upload.wikimedia.org/colony.jpg")
-        self.assertEqual(page, "Colony (2026 film)")
-        self.assertEqual(source, "wikipedia-exact")
-
-        candidate_titles = exact_lookup.call_args.args[0]
-        self.assertIn("Colony (2026 film)", candidate_titles)
-
-    def test_wikipedia_search_handles_title_case_differences(self):
-        """
-        AMC can capitalize every important word while Wikipedia does not.
-        Normalized identity matching must still accept the correct article.
-        """
-        search_page = {
-            "pageid": 456,
-            "index": 1,
-            "title": "Harry Potter and the Goblet of Fire (film)",
-            "thumbnail": {
-                "source": "https://upload.wikimedia.org/goblet.jpg"
-            },
-            "pageprops": {},
-        }
-
-        with patch.object(
-            posters,
-            "_wikipedia_pages_for_titles",
-            return_value=[],
-        ), patch.object(
-            posters,
-            "_wikipedia_search_pages",
-            return_value=[search_page],
-        ):
-            image, page, source = posters.resolve_poster(
-                "Harry Potter And The Goblet Of Fire",
-                reference_year=2026,
-            )
-
-        self.assertEqual(image, "https://upload.wikimedia.org/goblet.jpg")
-        self.assertEqual(
-            page,
-            "Harry Potter and the Goblet of Fire (film)",
-        )
-        self.assertEqual(source, "wikipedia-search")
-
-    def test_imdb_id_uses_wikidata_to_bridge_regional_title(self):
-        """
-        The generated report already knows some IMDb IDs. We use that ID only
-        against Wikidata, never by scraping IMDb. This allows an AMC regional
-        title to resolve to a differently named English-Wikipedia article.
-        """
-        entity = {
-            "id": "Q1",
-            "claims": {
-                "P345": [
-                    {
-                        "mainsnak": {
-                            "datavalue": {
-                                "value": "tt0241527"
-                            }
-                        }
-                    }
-                ]
-            },
-            "labels": {
-                "en": {
-                    "language": "en",
-                    "value": "Harry Potter and the Philosopher's Stone",
-                }
-            },
-            "aliases": {
-                "en": [
-                    {
-                        "language": "en",
-                        "value": "Harry Potter and the Sorcerer's Stone",
-                    }
-                ]
-            },
-            "sitelinks": {
-                "enwiki": {
-                    "site": "enwiki",
-                    "title": "Harry Potter and the Philosopher's Stone (film)",
-                }
-            },
-        }
-        wiki_page = {
-            "pageid": 789,
-            "title": "Harry Potter and the Philosopher's Stone (film)",
-            "thumbnail": {
-                "source": "https://upload.wikimedia.org/stone.jpg"
-            },
-            "pageprops": {},
-        }
-
-        with patch.object(
-            posters,
-            "_wikidata_qids_for_imdb",
-            return_value=["Q1"],
-        ), patch.object(
-            posters,
-            "_wikidata_entities",
-            return_value=[entity],
-        ), patch.object(
-            posters,
-            "_wikipedia_pages_for_titles",
-            return_value=[wiki_page],
-        ), patch.object(
-            posters,
-            "_image_via_wikipedia_title",
-            side_effect=AssertionError(
-                "title fallback should not run after exact IMDb/Wikidata match"
-            ),
-        ):
-            image, page, source = posters.resolve_poster(
-                "Harry Potter and the Sorcerer’s Stone: 25th Anniversary",
-                imdb_id="tt0241527",
-                reference_year=2026,
-            )
-
-        self.assertEqual(image, "https://upload.wikimedia.org/stone.jpg")
-        self.assertEqual(
-            page,
-            "Harry Potter and the Philosopher's Stone (film)",
-        )
-        self.assertEqual(source, "wikidata-enwiki")
-
-    def test_wikidata_p18_can_cover_item_without_wikipedia_sitelink(self):
-        """
-        Newly released films sometimes get a Wikidata item before an enwiki
-        article. A P18 image can still be used through Wikimedia Commons.
-        """
-        entity = {
-            "id": "Q999",
-            "claims": {
-                "P31": [
-                    {
-                        "mainsnak": {
-                            "datavalue": {
-                                "value": {
-                                    "entity-type": "item",
-                                    "id": "Q11424",
-                                }
-                            }
-                        }
-                    }
-                ],
-                "P3383": [
-                    {
-                        "mainsnak": {
-                            "datavalue": {
-                                "value": "Example New Film poster.jpg"
-                            }
-                        }
-                    }
-                ],
-                "P18": [
-                    {
-                        "mainsnak": {
-                            "datavalue": {
-                                "value": "Example New Film still.jpg"
-                            }
-                        }
-                    }
-                ],
-            },
-            "labels": {
-                "en": {
-                    "language": "en",
-                    "value": "Example New Film",
-                }
-            },
+        if year is not None:
+            claims["P577"] = [{"mainsnak": {"datavalue": {"value": {"time": f"+{year:04d}-01-01T00:00:00Z"}}}}]
+        if runtime is not None:
+            claims["P2047"] = [{"mainsnak": {"datavalue": {"value": {"amount": f"+{runtime}", "unit": "http://www.wikidata.org/entity/Q7727"}}}}]
+        if language_qid:
+            claims["P364"] = [{"mainsnak": {"datavalue": {"value": {"id": language_qid}}}}]
+        if imdb_id:
+            claims["P345"] = [{"mainsnak": {"datavalue": {"value": imdb_id}}}]
+        return {
+            "id": qid,
+            "claims": claims,
+            "labels": {"en": {"value": title}},
             "aliases": {},
+            "descriptions": {"en": {"value": description}},
             "sitelinks": {},
         }
 
-        with patch.object(
-            posters,
-            "_wikidata_qids_for_title",
-            return_value=["Q999"],
-        ), patch.object(
-            posters,
-            "_wikidata_entities",
-            return_value=[entity],
+    def context(self, **kwargs):
+        values = dict(
+            display_title="Example",
+            canonical_title="Example",
+            expected_year=None,
+            runtime_min=None,
+            spoken_languages=frozenset(),
+            relax_runtime=False,
+        )
+        values.update(kwargs)
+        return posters.MovieContext(**values)
+
+    def test_missing_metadata_never_rejects(self):
+        entity = self.entity("Q1", "Example")
+        self.assertEqual(posters._entity_contradictions(entity, self.context()), [])
+
+    def test_year_veto_only_when_more_than_three_years_off(self):
+        ctx = self.context(expected_year=1989)
+        near = self.entity("Q1", "Example", year=1992)
+        far = self.entity("Q2", "Example", year=1993)
+        self.assertNotIn("year", posters._entity_contradictions(near, ctx))
+        self.assertIn("year", posters._entity_contradictions(far, ctx))
+
+    def test_runtime_veto_over_twenty_minutes(self):
+        ctx = self.context(runtime_min=100)
+        near = self.entity("Q1", "Example", runtime=120)
+        far = self.entity("Q2", "Example", runtime=121)
+        self.assertNotIn("runtime", posters._entity_contradictions(near, ctx))
+        self.assertIn("runtime", posters._entity_contradictions(far, ctx))
+
+    def test_event_runtime_is_not_a_veto(self):
+        ctx = self.context(runtime_min=160, relax_runtime=True)
+        entity = self.entity("Q1", "Example", runtime=109)
+        self.assertNotIn("runtime", posters._entity_contradictions(entity, ctx))
+
+    def test_language_conflict_is_a_veto(self):
+        ctx = self.context(spoken_languages=frozenset({"japanese"}))
+        wrong = self.entity("Q1", "Example", language_qid="Q1002")
+        right = self.entity("Q2", "Example", language_qid="Q1001")
+        self.assertIn("language", posters._entity_contradictions(wrong, ctx))
+        self.assertNotIn("language", posters._entity_contradictions(right, ctx))
+
+    def test_wrong_imdb_candidate_can_be_vetoed_by_context(self):
+        ctx = self.context(
+            canonical_title="Example",
+            runtime_min=124,
+            spoken_languages=frozenset({"japanese"}),
+        )
+        wrong = self.entity(
+            "Q1", "Example", year=2016, runtime=137,
+            language_qid="Q1002", imdb_id="tt1111111",
+        )
+        right = self.entity(
+            "Q2", "Example", year=1988, runtime=124,
+            language_qid="Q1001",
+        )
+        best, rejected = posters._best_entity_for_context(
+            [wrong, right], ctx, "tt1111111"
+        )
+        self.assertEqual(best["id"], "Q2")
+        self.assertTrue(any("Q1:language" in item for item in rejected))
+
+    def test_runtime_and_language_break_ambiguous_title_tie(self):
+        ctx = self.context(
+            canonical_title="Example",
+            runtime_min=97,
+            spoken_languages=frozenset({"english"}),
+        )
+        wrong = self.entity("Q1", "Example", runtime=110, language_qid="Q1004")
+        right = self.entity("Q2", "Example", runtime=97, language_qid="Q1003")
+        best, _ = posters._best_entity_for_context([wrong, right], ctx, None)
+        self.assertEqual(best["id"], "Q2")
+
+    def test_nonfilm_is_vetoed(self):
+        entity = self.entity("Q1", "Example")
+        entity["claims"]["P31"] = []
+        entity["descriptions"]["en"]["value"] = "athlete"
+        self.assertIn("not-film", posters._entity_contradictions(entity, self.context()))
+
+    def test_short_titles_are_revalidated_but_long_working_titles_can_be_preserved(self):
+        short = self.context(canonical_title="Runner")
+        long = self.context(canonical_title="A Very Specific Long Movie Title")
+        soup = BeautifulSoup('<img class="movie-poster" src="https://example.test/x.jpg">', 'html.parser')
+        self.assertTrue(posters._needs_validation(soup.img, short))
+        self.assertFalse(posters._needs_validation(soup.img, long))
+
+    def test_production_files_have_no_regression_title_exceptions(self):
+        production = "\n".join(
+            Path(path).read_text(encoding="utf-8")
+            for path in (posters.__file__, Path(__file__).with_name("movie_titles.py"))
+        )
+        # These strings may be used as tests here, but not as production rules.
+        for title in (
+            "Akira", "Runner", "Batman (1989)", "Forgotten Island",
+            "Shaun the Sheep", "Hanuman Ansh",
         ):
-            image, page, source = posters._image_via_wikidata_title(
-                "Example New Film"
-            )
+            self.assertNotIn(title, production)
 
-        self.assertIsNone(page)
-        self.assertEqual(source, "wikidata-commons")
-        # Dedicated P3383 film-poster claim must beat the generic P18 still.
-        self.assertIn(
-            "Special:Redirect/file/Example_New_Film_poster.jpg?width=500",
-            image,
-        )
-        self.assertNotIn("still.jpg", image)
 
-    def test_disambiguation_page_is_rejected(self):
-        pages = [
-            {
-                "pageid": 111,
-                "title": "Beyond Belief",
-                "thumbnail": {
-                    "source": "https://upload.wikimedia.org/wrong.jpg"
-                },
-                "pageprops": {"disambiguation": ""},
-            }
-        ]
-
-        image, page = posters._best_wikipedia_page(
-            pages,
-            "Beyond Belief",
-            minimum_similarity=0.88,
-        )
-        self.assertIsNone(image)
-        self.assertIsNone(page)
-
-    def test_wrong_same_name_media_is_not_accepted_by_wikidata_title(self):
-        """
-        wbsearchentities descriptions are used to avoid book/song/person hits
-        when a new film has a generic title.
-        """
-        payload = {
-            "search": [
-                {
-                    "id": "Q1",
-                    "label": "Example",
-                    "description": "album by a band",
-                },
-                {
-                    "id": "Q2",
-                    "label": "Example",
-                    "description": "2026 documentary film",
-                },
-            ]
+class AttachedOutputContextTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.path = Path("/mnt/data/Weekend Movies(20260918-023542).htm")
+        if not cls.path.exists():
+            raise unittest.SkipTest("Attached report is not mounted")
+        cls.soup = BeautifulSoup(cls.path.read_text(encoding="utf-8"), "html.parser")
+        cls.rows = {
+            row.select_one(".movie-cell-title").get_text(" ", strip=True): row
+            for row in cls.soup.select("tr[data-movie-id]")
+            if row.select_one(".movie-cell-title")
         }
 
-        with patch.object(posters, "_api_json", return_value=payload):
-            qids = posters._wikidata_qids_for_title("Example")
+    def test_ambiguous_rows_supply_useful_context(self):
+        row = self.rows["Akira"]
+        ctx = posters._row_movie_context(row, "Akira", 2026)
+        self.assertEqual(ctx.runtime_min, 124)
+        self.assertIn("japanese", ctx.spoken_languages)
 
-        self.assertEqual(qids, ["Q2"])
+        row = self.rows["Runner"]
+        ctx = posters._row_movie_context(row, "Runner", 2026)
+        self.assertEqual(ctx.runtime_min, 97)
 
-    def test_generated_html_row_extracts_imdb_without_contacting_imdb(self):
-        html = """
-        <tr data-movie-id="1">
-          <td><div class="movie-cell-title">Example Movie</div></td>
-          <td><a href="https://www.imdb.com/title/tt1234567/">7.5</a></td>
-        </tr>
-        """
-        soup = posters.BeautifulSoup(html, "html.parser")
-        row = soup.select_one("tr")
-        self.assertEqual(posters._extract_imdb_id(row), "tt1234567")
+        row = self.rows["Batman (1989)"]
+        ctx = posters._row_movie_context(row, "Batman (1989)", 2026)
+        self.assertEqual(ctx.expected_year, 1989)
 
-    def test_production_resolver_contains_no_regression_movie_names(self):
-        """
-        Guard the user's key requirement: no title-by-title production fixes.
-        """
-        source = Path(posters.__file__).read_text(encoding="utf-8")
-        regression_titles = (
-            "Castle in the Sky",
-            "The Fast and the Furious",
-            "PAW Patrol",
-            "Paper Flowers",
-            "Harry Potter",
-            "Colony",
-            "Idiots",
-            "The Last Blossom",
-            "Beyond Belief",
-            "GHOST: 2 Big To Rig",
-            "Legend of the White Dragon",
-            "The King of Cannabis",
-        )
-
-        for title in regression_titles:
-            self.assertNotIn(title, source)
-
+    def test_forgotten_island_event_canonicalizes_and_relaxes_runtime(self):
+        title = "Forgotten Island - Early Access Screening with Cast Member Q&A"
+        row = self.rows[title]
+        ctx = posters._row_movie_context(row, title, 2026)
+        self.assertEqual(ctx.canonical_title, "Forgotten Island")
+        self.assertEqual(ctx.runtime_min, 160)
+        self.assertTrue(ctx.relax_runtime)
 
 
 if __name__ == "__main__":

@@ -57,16 +57,21 @@ _SUFFIX_PATTERNS = (
         re.IGNORECASE,
     ),
 
-    # Q&A and event labels.
+    # Q&A and event labels.  Composite event wording is stripped in one
+    # pass so titles like "<movie> - Early Access Screening with Cast Member
+    # Q&A" collapse all the way to the movie title rather than stopping at
+    # "... Early Access Screening with Cast Member".
+    re.compile(
+        r"\s*(?:[-–—:]\s*)?"
+        r"early\s+access(?:\s+(?:screening|event))?"
+        r"(?:\s+with\s+.{1,80}?\s+q\s*&\s*a)?\s*$",
+        re.IGNORECASE,
+    ),
     re.compile(
         r"\s*(?:[-–—:]\s*)?(?:special\s+)?in[-\s]?person\s+q\s*&\s*a\s*$",
         re.IGNORECASE,
     ),
     re.compile(r"\s*(?:[-–—:]\s*)?q\s*&\s*a\s*$", re.IGNORECASE),
-    re.compile(
-        r"\s*(?:[-–—:]\s*)?early\s+access(?:\s+event)?\s*$",
-        re.IGNORECASE,
-    ),
     re.compile(r"\s*(?:[-–—:]\s*)?sneak\s+peek\s*$", re.IGNORECASE),
     re.compile(r"\s*(?:[-–—:]\s*)?fan\s+event\s*$", re.IGNORECASE),
     re.compile(r"\s*(?:[-–—:]\s*)?opening\s+night\s*$", re.IGNORECASE),
@@ -85,6 +90,11 @@ _SUFFIX_PATTERNS = (
         r"\d{1,3}(?:st|nd|rd|th)\s+anniversary\s*$",
         re.IGNORECASE,
     ),
+)
+
+_EXPLICIT_YEAR_RE = re.compile(
+    r"(?:^|\s|[-–—:])\((18(?:8[8-9]|9\d)|19\d{2}|20\d{2}|21\d{2})\)\s*$",
+    re.IGNORECASE,
 )
 
 _ANNIVERSARY_RE = re.compile(
@@ -153,6 +163,7 @@ class MovieTitleInfo:
     canonical_title: str
     anniversary_years: int | None
     event_year: int | None
+    explicit_year: int | None
     inferred_release_year: int | None
 
 
@@ -181,6 +192,9 @@ def analyze_movie_title(
     event_match = _EVENT_YEAR_RE.search(display)
     event_year = int(event_match.group(1)) if event_match else None
 
+    explicit_match = _EXPLICIT_YEAR_RE.search(display)
+    explicit_year = int(explicit_match.group(1)) if explicit_match else None
+
     ref_year = reference_year or date.today().year
     basis_year = event_year or ref_year
     inferred_release_year = None
@@ -195,6 +209,7 @@ def analyze_movie_title(
         canonical_title=canonical,
         anniversary_years=anniversary_years,
         event_year=event_year,
+        explicit_year=explicit_year,
         inferred_release_year=inferred_release_year,
     )
 
@@ -258,6 +273,17 @@ def candidate_title_variants(title: str) -> list[str]:
     values: list[str] = []
     values.extend(_generic_spelling_variants(canonical))
 
+    # A parenthetical four-digit year is useful disambiguation in the AMC
+    # display title, but metadata providers usually store it as a page suffix
+    # rather than part of the base movie name.
+    base_without_year = re.sub(
+        r"\s*\((?:18(?:8[8-9]|9\d)|19\d{2}|20\d{2}|21\d{2})\)\s*$",
+        "",
+        canonical,
+    ).strip()
+    if base_without_year and base_without_year.casefold() != canonical.casefold():
+        values.extend(_generic_spelling_variants(base_without_year))
+
     if display.casefold() != canonical.casefold():
         values.extend(_generic_spelling_variants(display))
 
@@ -285,14 +311,26 @@ def wikipedia_title_candidates(
     values: list[str] = []
 
     for name in names:
+        base_name = re.sub(
+            r"\s*\((?:18(?:8[8-9]|9\d)|19\d{2}|20\d{2}|21\d{2})\)\s*$",
+            "",
+            name,
+        ).strip()
+        if not base_name:
+            base_name = name
+
+        if info.explicit_year is not None:
+            values.append(f"{base_name} ({info.explicit_year} film)")
+
         if info.inferred_release_year is not None:
-            values.append(f"{name} ({info.inferred_release_year} film)")
+            values.append(f"{base_name} ({info.inferred_release_year} film)")
 
         for year in (ref_year, ref_year - 1, ref_year + 1):
-            values.append(f"{name} ({year} film)")
+            values.append(f"{base_name} ({year} film)")
 
-        values.append(f"{name} (film)")
+        values.append(f"{base_name} (film)")
         values.append(name)
+        values.append(base_name)
 
     return _dedupe(values)
 

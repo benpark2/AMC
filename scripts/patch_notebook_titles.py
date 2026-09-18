@@ -8,6 +8,9 @@ This patcher is intentionally conservative:
 2. Remove non-film AMC inventory before ratings/numbering/planner generation.
 3. Improve IMDb candidate scoring so it considers every normalized lookup
    variant.
+4. Parse Rotten Tomatoes scores only when their critic/audience labels are
+   explicit, preventing one score from being copied into the other slot.
+5. Emit an explicit RT_C/A display column so a missing side renders as "-".
 
 Important safety property
 -------------------------
@@ -32,6 +35,117 @@ FUNCTION_WRAPPER = """def candidate_title_variants(title: str) -> List[str]:
     \"""Use the shared generic AMC-title normalizer for metadata lookup.\"""
     from scripts.movie_titles import candidate_title_variants as _shared_variants
     return _shared_variants(title)
+"""
+
+RT_PARSE_REPLACEMENT = r'''def rt_parse_scores(decoded_html: str, soup: BeautifulSoup) -> Tuple[Optional[int], Optional[int]]:
+    """
+    Return (audience, critic) without guessing which side a lone score belongs to.
+
+    Rotten Tomatoes renders explicit labels (Tomatometer / Popcornmeter) in
+    the page text. Those labels are the source of truth. A page can have a
+    critic percentage while the Popcornmeter has zero ratings; broad JSON
+    regexes can accidentally copy the critic value into the audience slot.
+    We prefer a missing value to a mislabeled score.
+    """
+    full_text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
+    score_text = full_text
+    h1 = soup.find("h1")
+    if h1:
+        anchor = re.sub(r"\s+", " ", h1.get_text(" ", strip=True)).strip()
+        if anchor:
+            pos = full_text.casefold().find(anchor.casefold())
+            if pos >= 0:
+                score_text = full_text[pos : pos + 8000]
+
+    def _labeled_score(label: str) -> Optional[int]:
+        patterns = [
+            re.compile(rf"(\d{{1,3}})\s*[％%]\s*{label}\b", re.I),
+            re.compile(rf"\b{label}\s*(\d{{1,3}})\s*[％%]", re.I),
+        ]
+        for pattern in patterns:
+            match = pattern.search(score_text)
+            if match:
+                value = _int0_100(match.group(1))
+                if value is not None:
+                    return value
+        return None
+
+    critic = _labeled_score("Tomatometer")
+    audience = _labeled_score(r"(?:Popcornmeter|Audience\s*Score)")
+
+    if re.search(
+        r"\bPopcornmeter\s+(?:0|No)\s+(?:Verified\s+)?Ratings?\b",
+        score_text,
+        re.I,
+    ):
+        audience = None
+
+    if re.search(
+        r"\b(?:Tomatometer|Popcornmeter|Audience\s*Score)\b",
+        score_text,
+        re.I,
+    ):
+        return audience, critic
+
+    for attr in (
+        "tomatometerscore",
+        "tomatometerScore",
+        "tomatometerscoreallcritics",
+        "tomatometerscoreall",
+    ):
+        tag = soup.find(attrs={attr: True})
+        if tag:
+            critic = _int0_100(tag.get(attr))
+            if critic is not None:
+                break
+
+    for attr in (
+        "audiencescore",
+        "audienceScore",
+        "popcornmeterscore",
+        "popcornmeterScore",
+    ):
+        tag = soup.find(attrs={attr: True})
+        if tag:
+            audience = _int0_100(tag.get(attr))
+            if audience is not None:
+                break
+
+    return audience, critic
+'''
+
+RT_DISPLAY_MARKER = "df_display = df_summary.copy()\n"
+RT_DISPLAY_INSERT = """df_display = df_summary.copy()
+
+def _rt_pair_display(row):
+    def _one(value):
+        if pd.isna(value):
+            return ""
+        try:
+            return str(int(round(float(value))))
+        except Exception:
+            text = str(value).strip()
+            return "" if text.lower() in {"none", "nan", "null", "n/a"} else text
+
+    critic = _one(row.get("rt_critic"))
+    audience = _one(row.get("rt_audience"))
+    if not critic and not audience:
+        return ""
+    return f"{critic or '-'}/{audience or '-'}"
+
+df_display["rt_c/a"] = df_display.apply(_rt_pair_display, axis=1)
+"""
+
+RT_DESIRED_OLD = """desired = [
+    "movie_title",
+    "runtime",
+    "rt_critic",
+"""
+RT_DESIRED_NEW = """desired = [
+    "movie_title",
+    "runtime",
+    "rt_c/a",
+    "rt_critic",
 """
 
 DF_SHOW_MARKER = "df_show = pd.DataFrame(showtimes)\n"
@@ -300,6 +414,9 @@ def patch_notebook(notebook: dict) -> dict:
     candidate_function_replacements = 0
     df_show_insertions = 0
     imdb_function_patches = 0
+    rt_parser_replacements = 0
+    rt_display_insertions = 0
+    rt_desired_replacements = 0
 
     for cell in notebook.get("cells", []):
         if cell.get("cell_type") != "code":
@@ -317,6 +434,31 @@ def patch_notebook(notebook: dict) -> dict:
         source, did_patch_imdb = _patch_imdb_scoring(source)
         imdb_function_patches += int(did_patch_imdb)
 
+        source, did_patch_rt = _replace_function(
+            source,
+            "rt_parse_scores",
+            RT_PARSE_REPLACEMENT,
+        )
+        rt_parser_replacements += int(did_patch_rt)
+
+        rt_display_count = source.count(RT_DISPLAY_MARKER)
+        if rt_display_count:
+            if rt_display_count != 1:
+                raise RuntimeError(
+                    f"Expected one df_display marker in a cell; found {rt_display_count}."
+                )
+            source = source.replace(RT_DISPLAY_MARKER, RT_DISPLAY_INSERT, 1)
+            rt_display_insertions += 1
+
+        rt_desired_count = source.count(RT_DESIRED_OLD)
+        if rt_desired_count:
+            if rt_desired_count != 1:
+                raise RuntimeError(
+                    f"Expected one RT desired-column block; found {rt_desired_count}."
+                )
+            source = source.replace(RT_DESIRED_OLD, RT_DESIRED_NEW, 1)
+            rt_desired_replacements += 1
+
         marker_count = source.count(DF_SHOW_MARKER)
         if marker_count:
             if marker_count != 1:
@@ -332,6 +474,9 @@ def patch_notebook(notebook: dict) -> dict:
         "candidate_title_variants replacement": candidate_function_replacements,
         "df_show non-movie filter": df_show_insertions,
         "build_imdb_lookup patch": imdb_function_patches,
+        "rt_parse_scores replacement": rt_parser_replacements,
+        "RT display column insertion": rt_display_insertions,
+        "RT desired-column replacement": rt_desired_replacements,
     }
 
     failures = {name: count for name, count in expected.items() if count != 1}
