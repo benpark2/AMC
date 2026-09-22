@@ -539,9 +539,268 @@ class PosterValidationTests(unittest.TestCase):
         # These strings may be used as tests here, but not as production rules.
         for title in (
             "Akira", "Runner", "Batman (1989)", "Forgotten Island",
-            "Shaun the Sheep", "Hanuman Ansh",
+            "Shaun the Sheep", "Hanuman Ansh", "One of Them Days",
+            "In the Heights", "Coco",
         ):
             self.assertNotIn(title, production)
+
+
+
+class AudienceFocusTests(unittest.TestCase):
+    def setUp(self):
+        posters._JSON_CACHE.clear()
+        posters._LABEL_CACHE.clear()
+        posters._LABEL_CACHE.update({
+            "Q2001": "hindi",
+            "Q2002": "english",
+            "Q2003": "spanish",
+            "Q2004": "india",
+            "Q2005": "united states of america",
+            "Q2006": "angel studios",
+            "Q2007": "lgbt themes",
+            "Q2008": "african-american culture",
+            "Q2009": "latino culture",
+            "Q2010": "bet studios",
+            "Q2011": "codeblack films",
+            "Q2012": "pantelion films",
+            "Q2013": "telemundo studios",
+            "Q2014": "vix",
+            "Q2015": "exile content studio",
+            "Q2016": "tyler perry studios",
+            "Q2017": "macro",
+            "Q2018": "mucho mas media",
+        })
+
+    @staticmethod
+    def context(*, languages=frozenset()):
+        return posters.MovieContext(
+            display_title="Example",
+            canonical_title="Example",
+            expected_year=None,
+            runtime_min=100,
+            spoken_languages=languages,
+            relax_runtime=False,
+        )
+
+    @staticmethod
+    def entity(*, description="film", claims=None):
+        base_claims = {
+            "P31": [{"mainsnak": {"datavalue": {"value": {"id": "Q11424"}}}}],
+        }
+        if claims:
+            base_claims.update(claims)
+        return {
+            "id": "QMovie",
+            "claims": base_claims,
+            "labels": {"en": {"value": "Example"}},
+            "aliases": {},
+            "descriptions": {"en": {"value": description}},
+            "sitelinks": {},
+        }
+
+    def test_general_when_no_strong_signal_exists(self):
+        result = posters.classify_audience_focus(self.context(), self.entity())
+        self.assertEqual(result.tags, ("General",))
+
+    def test_amc_hindi_is_indian_without_remote_metadata(self):
+        result = posters.classify_audience_focus(
+            self.context(languages=frozenset({"hindi"})),
+            None,
+        )
+        self.assertEqual(result.tags, ("Indian",))
+        self.assertTrue(any("AMC lists hindi" in reason for reason in result.reasons))
+
+    def test_angel_studios_is_soft_faith_signal_not_political_label(self):
+        entity = self.entity(
+            claims={
+                "P750": [{"mainsnak": {"datavalue": {"value": {"id": "Q2006"}}}}],
+            }
+        )
+        result = posters.classify_audience_focus(self.context(), entity)
+        self.assertIn("Faith-oriented", result.tags)
+        self.assertFalse(any("polit" in reason.casefold() for reason in result.reasons))
+
+    def test_bet_and_codeblack_are_soft_black_focus_signals(self):
+        for qid, expected_name in (("Q2010", "BET Studios"), ("Q2011", "Codeblack Films")):
+            with self.subTest(qid=qid):
+                entity = self.entity(
+                    claims={
+                        "P272": [{"mainsnak": {"datavalue": {"value": {"id": qid}}}}],
+                    }
+                )
+                result = posters.classify_audience_focus(self.context(), entity)
+                self.assertIn("Black-focused", result.tags)
+                self.assertTrue(any(expected_name in reason for reason in result.reasons))
+
+    def test_latino_focused_studios_are_soft_latino_signals(self):
+        for qid, expected_name in (
+            ("Q2012", "Pantelion Films"),
+            ("Q2013", "Telemundo Studios"),
+            ("Q2014", "ViX"),
+            ("Q2015", "Exile Content Studio"),
+        ):
+            with self.subTest(qid=qid):
+                entity = self.entity(
+                    claims={
+                        "P750": [{"mainsnak": {"datavalue": {"value": {"id": qid}}}}],
+                    }
+                )
+                result = posters.classify_audience_focus(self.context(), entity)
+                self.assertIn("Latino/Hispanic-focused", result.tags)
+                self.assertTrue(any(expected_name in reason for reason in result.reasons))
+
+    def test_broad_studios_do_not_trigger_identity_focus_by_themselves(self):
+        entity = self.entity(
+            claims={
+                "P272": [
+                    {"mainsnak": {"datavalue": {"value": {"id": "Q2016"}}}},
+                    {"mainsnak": {"datavalue": {"value": {"id": "Q2017"}}}},
+                    {"mainsnak": {"datavalue": {"value": {"id": "Q2018"}}}},
+                ],
+            }
+        )
+        result = posters.classify_audience_focus(self.context(), entity)
+        self.assertEqual(result.tags, ("General",))
+
+    def test_explicit_subject_metadata_can_add_identity_focus_tags(self):
+        entity = self.entity(
+            claims={
+                "P921": [
+                    {"mainsnak": {"datavalue": {"value": {"id": "Q2007"}}}},
+                    {"mainsnak": {"datavalue": {"value": {"id": "Q2008"}}}},
+                    {"mainsnak": {"datavalue": {"value": {"id": "Q2009"}}}},
+                ],
+            }
+        )
+        result = posters.classify_audience_focus(self.context(), entity)
+        self.assertIn("LGBTQ+-focused", result.tags)
+        self.assertIn("Black-focused", result.tags)
+        self.assertIn("Latino/Hispanic-focused", result.tags)
+
+    def test_spanish_language_does_not_by_itself_infer_latino_identity(self):
+        result = posters.classify_audience_focus(
+            self.context(languages=frozenset({"spanish"})),
+            None,
+        )
+        self.assertEqual(result.tags, ("Spanish-language",))
+        self.assertNotIn("Latino/Hispanic-focused", result.tags)
+
+    def test_wikipedia_african_american_category_can_add_black_focus(self):
+        entity = self.entity()
+        result = posters.classify_audience_focus(
+            self.context(),
+            entity,
+            supplemental_focus_text="African-American comedy films | American buddy comedy films",
+        )
+        self.assertIn("Black-focused", result.tags)
+
+    def test_wikipedia_mexican_cultural_context_can_add_latino_focus(self):
+        entity = self.entity()
+        result = posters.classify_audience_focus(
+            self.context(),
+            entity,
+            supplemental_focus_text=(
+                "The concept is inspired by the Mexican holiday Day of the Dead "
+                "and was praised for its respect for Mexican culture."
+            ),
+        )
+        self.assertIn("Latino/Hispanic-focused", result.tags)
+
+    def test_generic_mexico_setting_alone_does_not_add_latino_focus(self):
+        entity = self.entity()
+        result = posters.classify_audience_focus(
+            self.context(),
+            entity,
+            supplemental_focus_text="Films set in Mexico",
+        )
+        self.assertEqual(result.tags, ("General",))
+
+    def test_cast_demographics_alone_do_not_add_identity_focus(self):
+        entity = self.entity()
+        result = posters.classify_audience_focus(
+            self.context(),
+            entity,
+            supplemental_focus_text=(
+                "The film features an all-Latino principal cast and stars an "
+                "African-American actor."
+            ),
+        )
+        self.assertEqual(result.tags, ("General",))
+
+    def test_wikipedia_focus_page_extracts_intro_and_categories(self):
+        page = {
+            "title": "Example",
+            "extract": "A film centered on Mexican culture.",
+            "categories": [
+                {"title": "Category:African-American comedy films"},
+                {"title": "Category:2026 films"},
+            ],
+        }
+        text = posters._page_focus_text(page)
+        self.assertIn("mexican culture", text)
+        self.assertIn("african-american comedy films", text)
+        self.assertNotIn("category:", text)
+
+    def test_country_and_original_language_can_mark_international_market(self):
+        entity = self.entity(
+            claims={
+                "P364": [{"mainsnak": {"datavalue": {"value": {"id": "Q2001"}}}}],
+                "P495": [{"mainsnak": {"datavalue": {"value": {"id": "Q2004"}}}}],
+            }
+        )
+        result = posters.classify_audience_focus(self.context(), entity)
+        self.assertEqual(result.tags, ("Indian",))
+
+    def test_generated_column_uses_batched_wikipedia_context(self):
+        html = (
+            '<html><head></head><body><table class="dataframe"><thead><tr>'
+            '<th>#</th><th>Movie</th><th>RT_C/A</th><th>IMDb</th><th>Showtimes</th><th>Runtime</th>'
+            '</tr></thead><tbody><tr data-movie-id="1"><td>1</td>'
+            '<td><div class="movie-cell-title">Example</div>'
+            '<img class="movie-poster" data-wikipedia-page="Example (film)" src="x.jpg"></td>'
+            '<td>90/95</td><td></td><td>AMC Example<br>• 2026-09-20: 1:00 pm</td>'
+            '<td>1h 40m</td></tr></tbody></table></body></html>'
+        )
+        soup = BeautifulSoup(html, "html.parser")
+        entity = self.entity()
+        focus_pages = {
+            "example (film)": {
+                "title": "Example (film)",
+                "extract": "An American buddy comedy film.",
+                "categories": [{"title": "Category:African-American comedy films"}],
+            }
+        }
+        with patch.object(posters, "_audience_entity_for_context", return_value=entity), \
+             patch.object(posters, "_wikipedia_focus_pages", return_value=focus_pages) as fetch:
+            self.assertEqual(posters._add_audience_focus_column(soup, 2026), 1)
+        fetch.assert_called_once_with(["Example (film)"])
+        cell = soup.select_one("td.audience-focus-cell")
+        self.assertIsNotNone(cell)
+        self.assertIn("Black-focused", cell.get_text(" ", strip=True))
+
+    def test_generated_column_is_appended_and_idempotent(self):
+        html = (
+            '<html><head></head><body><table class="dataframe"><thead><tr>'
+            '<th>#</th><th>Movie</th><th>RT_C/A</th><th>IMDb</th><th>Showtimes</th><th>Runtime</th>'
+            '</tr></thead><tbody><tr data-movie-id="1"><td>1</td>'
+            '<td><div class="movie-cell-title">Example</div></td><td>90/95</td><td></td>'
+            '<td>AMC Example<br>• 2026-09-20: 1:00 pm [Hindi Spoken with English Subtitles]</td>'
+            '<td>1h 40m</td></tr></tbody></table></body></html>'
+        )
+        soup = BeautifulSoup(html, "html.parser")
+        with patch.object(posters, "_audience_entity_for_context", return_value=None):
+            self.assertEqual(posters._add_audience_focus_column(soup, 2026), 1)
+            self.assertEqual(posters._add_audience_focus_column(soup, 2026), 1)
+        headers = [x.get_text(" ", strip=True) for x in soup.select("thead th")]
+        self.assertEqual(headers.count("Audience Focus"), 1)
+        cell = soup.select_one("td.audience-focus-cell")
+        self.assertIsNotNone(cell)
+        self.assertEqual(cell.get_text(" ", strip=True), "Indian")
+        self.assertIn("AMC lists hindi", cell.get("title", ""))
+
+    def test_production_classifier_does_not_inspect_cast_identity(self):
+        production = Path(posters.__file__).read_text(encoding="utf-8")
+        self.assertNotIn('"P161"', production)
 
 
 class AttachedOutputContextTests(unittest.TestCase):
