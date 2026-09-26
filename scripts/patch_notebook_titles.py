@@ -11,6 +11,8 @@ This patcher is intentionally conservative:
 4. Parse Rotten Tomatoes scores only when their critic/audience labels are
    explicit, preventing one score from being copied into the other slot.
 5. Emit an explicit RT_C/A display column so a missing side renders as "-".
+6. Add a fallback parser for AMC's current escaped React/Next showtime payload,
+   pairing showtime objects with their nearest "Showtimes for <Movie>" anchor.
 
 Important safety property
 -------------------------
@@ -182,6 +184,160 @@ RT_DESIRED_NEW = """desired = [
     "rt_c/a",
     "rt_critic",
 """
+
+AMC_SHOWTIME_PARSE_REPLACEMENT = r'''def extract_showtimes_from_json_scripts(html_txt: str, theatre_name: str, d: date) -> List[dict]:
+    """
+    Extract AMC showtimes from structured scripts, with a fallback for AMC's
+    current escaped React/Next server-rendered payload.
+
+    The existing generic JSON walker remains first choice because it can retain
+    runtime/format metadata. If it finds nothing, parse the flight/SSR payload
+    pattern currently used by AMC: movie anchors like
+    aria-label=\"Showtimes for <Movie>\" followed by showtime objects containing
+    showtimeId/status/showDateTimeUtc/display.time/display.amPm.
+    """
+    soup = BeautifulSoup(html_txt or "", "html.parser")
+    out: List[dict] = []
+    seen = set()
+    wanted = d.isoformat()
+
+    for script in soup.find_all("script"):
+        txt = script.string or script.get_text(" ", strip=False) or ""
+        if not txt or wanted not in txt:
+            continue
+        low = txt.lower()
+        if "showtime" not in low and "showtimes" not in low and "datetime" not in low and "startdate" not in low:
+            continue
+
+        candidates: List[object] = []
+        stype = (script.get("type") or "").lower()
+        if stype == "application/ld+json":
+            try:
+                candidates.append(json.loads(txt))
+            except Exception:
+                pass
+        if "__NEXT_DATA__" in txt or '"props"' in txt or '"pageProps"' in txt:
+            try:
+                candidates.append(json.loads(txt))
+            except Exception:
+                pass
+
+        if not candidates:
+            chunks = []
+            if wanted in txt and (txt.lstrip().startswith("{") or txt.lstrip().startswith("[")):
+                chunks.append(txt)
+            for chunk in chunks:
+                try:
+                    candidates.append(json.loads(chunk))
+                except Exception:
+                    pass
+
+        for cand in candidates:
+            for row in _iter_json_showtime_rows(cand, d, theatre_name):
+                key = (
+                    row["movie_title"].strip().lower(),
+                    row["theatre"].strip().lower(),
+                    row["show_date"],
+                    row["show_time"],
+                    (row.get("format_label") or "").strip().lower(),
+                )
+                if row["show_date"] == wanted and key not in seen:
+                    out.append(row)
+                    seen.add(key)
+
+    if out:
+        return out
+
+    text = html_txt or ""
+    text = text.replace(r'\\"', '"').replace(r'\"', '"')
+
+    def _decode_text(value: str) -> str:
+        def repl(match):
+            try:
+                return chr(int(match.group(1), 16))
+            except Exception:
+                return match.group(0)
+        value = re.sub(r"\\u([0-9a-fA-F]{4})", repl, value or "")
+        try:
+            return html_lib.unescape(value)
+        except Exception:
+            return value
+
+    anchors = [
+        (m.start(), _normalize_space(_decode_text(m.group(1))))
+        for m in re.finditer(r'aria-label"\s*:\s*"Showtimes for ([^"]+)"', text, re.I)
+    ]
+    if not anchors:
+        anchors = [
+            (m.start(), _normalize_space(_decode_text(m.group(1))))
+            for m in re.finditer(r"aria-label\s*=\s*[\"']Showtimes for ([^\"']+)[\"']", text, re.I)
+        ]
+
+    showtime_rx = re.compile(
+        r'"showtimeId"\s*:\s*(?:"(\d+)"|(\d+))'
+        r'(?:(?!"showtimeId").){0,3500}?'
+        r'"status"\s*:\s*"([^"]+)"'
+        r'(?:(?!"showtimeId").){0,3500}?'
+        r'"showDateTimeUtc"\s*:\s*"([^"]+)"'
+        r'(?:(?!"showtimeId").){0,3500}?'
+        r'"display"\s*:\s*\{(?:(?!\}).){0,500}?'
+        r'"time"\s*:\s*"([^"]+)"\s*,\s*"amPm"\s*:\s*"([^"]+)"',
+        re.I | re.S,
+    )
+
+    try:
+        from zoneinfo import ZoneInfo
+        pacific = ZoneInfo("America/Los_Angeles")
+    except Exception:
+        pacific = None
+
+    anchor_i = 0
+    current_title = None
+    for m in showtime_rx.finditer(text):
+        while anchor_i < len(anchors) and anchors[anchor_i][0] < m.start():
+            current_title = anchors[anchor_i][1]
+            anchor_i += 1
+
+        if not current_title or not looks_like_title_text(current_title):
+            continue
+
+        utc_txt = _decode_text(m.group(4)).strip()
+        if utc_txt:
+            try:
+                dt = datetime.fromisoformat(utc_txt.replace("Z", "+00:00"))
+                if dt.tzinfo is not None and pacific is not None:
+                    dt = dt.astimezone(pacific)
+                if dt.date().isoformat() != wanted:
+                    continue
+            except Exception:
+                pass
+
+        time_txt = _normalize_space(f"{_decode_text(m.group(5))} {_decode_text(m.group(6))}").lower()
+        if not TIME_RE.search(time_txt):
+            continue
+
+        row = {
+            "movie_title": current_title,
+            "theatre": theatre_name,
+            "show_date": wanted,
+            "show_time": time_txt,
+            "format_label": None,
+            "runtime_min": None,
+            "a_list_excluded": False,
+        }
+        key = (
+            row["movie_title"].strip().lower(),
+            row["theatre"].strip().lower(),
+            row["show_date"],
+            row["show_time"],
+            "",
+        )
+        if key not in seen:
+            out.append(row)
+            seen.add(key)
+
+    return out
+'''
 
 DF_SHOW_MARKER = "df_show = pd.DataFrame(showtimes)\n"
 DF_SHOW_INSERT = """df_show = pd.DataFrame(showtimes)
@@ -458,6 +614,7 @@ def patch_notebook(notebook: dict) -> dict:
     rt_parser_replacements = 0
     rt_display_insertions = 0
     rt_desired_replacements = 0
+    amc_showtime_parser_replacements = 0
 
     for cell in notebook.get("cells", []):
         if cell.get("cell_type") != "code":
@@ -481,6 +638,13 @@ def patch_notebook(notebook: dict) -> dict:
             RT_PARSE_REPLACEMENT,
         )
         rt_parser_replacements += int(did_patch_rt)
+
+        source, did_patch_amc_showtimes = _replace_function(
+            source,
+            "extract_showtimes_from_json_scripts",
+            AMC_SHOWTIME_PARSE_REPLACEMENT,
+        )
+        amc_showtime_parser_replacements += int(did_patch_amc_showtimes)
 
         rt_display_count = source.count(RT_DISPLAY_MARKER)
         if rt_display_count:
@@ -518,6 +682,7 @@ def patch_notebook(notebook: dict) -> dict:
         "rt_parse_scores replacement": rt_parser_replacements,
         "RT display column insertion": rt_display_insertions,
         "RT desired-column replacement": rt_desired_replacements,
+        "AMC escaped showtime parser replacement": amc_showtime_parser_replacements,
     }
 
     failures = {name: count for name, count in expected.items() if count != 1}
@@ -549,7 +714,7 @@ def main() -> int:
 
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
-        "non-movie filtering, IMDb variant scoring -> "
+        "non-movie filtering, IMDb variant scoring, AMC SSR showtime fallback -> "
         f"{args.output_notebook}"
     )
     return 0

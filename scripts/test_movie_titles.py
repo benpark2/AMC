@@ -92,9 +92,23 @@ class MovieTitleTests(unittest.TestCase):
 class NotebookPatcherTests(unittest.TestCase):
     def _fixture_notebook(self) -> dict:
         source = r'''from typing import List, Optional, Tuple
+from datetime import date, datetime
+import html as html_lib
+import json
 import re
 import pandas as pd
 from bs4 import BeautifulSoup
+
+TIME_RE = re.compile(r"(\b\d{1,2}:\d{2}\s*(?:am|pm)\b)", re.I)
+
+def _normalize_space(txt: str) -> str:
+    return re.sub(r"\s+", " ", (txt or "")).strip()
+
+def looks_like_title_text(txt: str) -> bool:
+    return bool(_normalize_space(txt))
+
+def _iter_json_showtime_rows(obj, d, theatre_name, inherited_title=None):
+    return []
 
 class FakeFuzz:
     @staticmethod
@@ -173,6 +187,9 @@ def _int0_100(x):
 def rt_parse_scores(decoded_html: str, soup: BeautifulSoup) -> Tuple[Optional[int], Optional[int]]:
     return 1, 2
 
+def extract_showtimes_from_json_scripts(html_txt: str, theatre_name: str, d: date) -> List[dict]:
+    return []
+
 showtimes = [{'movie_title': 'Example Movie', 'format_label': ''}]
 df_show = pd.DataFrame(showtimes)
 df_show["format_label"] = df_show["format_label"].fillna("")
@@ -220,6 +237,8 @@ desired = [
         self.assertIn("fuzz.ratio(candidate_norm, lookup_target)", source)
         self.assertIn('df_display["rt_c/a"]', source)
         self.assertIn('"rt_c/a",', source)
+        self.assertIn('"showDateTimeUtc"', source)
+        self.assertIn('Showtimes for ([^', source)
         identifiers = {
             node.id for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Name)
         }
@@ -232,6 +251,41 @@ desired = [
         chosen_title, chosen_key = ns["build_imdb_lookup"](None, ["Example"])
         self.assertEqual(chosen_title, "Example")
         self.assertEqual(chosen_key[0], 1)
+
+    def test_amc_current_ssr_payload_fallback_extracts_showtimes(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        parser = ns["extract_showtimes_from_json_scripts"]
+
+        # Current AMC pages can serialize the useful fields inside escaped
+        # React/Next flight data rather than a clean JSON script.
+        html = r'''
+        <script>
+        self.__next_f.push([1,"aria-label\":\"Showtimes for Runner\" blah
+        \"showtimeId\":123456,\"status\":\"AVAILABLE\",\"showDateTimeUtc\":\"2026-09-27T02:00:00Z\",\"display\":{\"time\":\"7:00\",\"amPm\":\"PM\"}
+        aria-label\":\"Showtimes for Example Two\" blah
+        \"showtimeId\":789012,\"status\":\"AVAILABLE\",\"showDateTimeUtc\":\"2026-09-27T04:30:00Z\",\"display\":{\"time\":\"9:30\",\"amPm\":\"PM\"}"])
+        </script>
+        '''
+        rows = parser(html, "AMC Example 10", ns["date"](2026, 9, 26))
+        self.assertEqual(
+            [(r["movie_title"], r["show_time"]) for r in rows],
+            [("Runner", "7:00 pm"), ("Example Two", "9:30 pm")],
+        )
+        self.assertTrue(all(r["show_date"] == "2026-09-26" for r in rows))
+
+    def test_amc_ssr_fallback_rejects_wrong_local_date(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        parser = ns["extract_showtimes_from_json_scripts"]
+        html = r'''
+        aria-label\":\"Showtimes for Example\"
+        \"showtimeId\":123,\"status\":\"AVAILABLE\",\"showDateTimeUtc\":\"2026-09-28T03:00:00Z\",\"display\":{\"time\":\"8:00\",\"amPm\":\"PM\"}
+        '''
+        rows = parser(html, "AMC Example 10", ns["date"](2026, 9, 26))
+        self.assertEqual(rows, [])
 
     def test_strict_rt_parser_preserves_score_type(self):
         source = self._patched_source()
