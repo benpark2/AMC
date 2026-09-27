@@ -73,7 +73,7 @@ ENWIKI_API = "https://en.wikipedia.org/w/api.php"
 WIKIDATA_API = "https://www.wikidata.org/w/api.php"
 COMMONS_FILE_REDIRECT = "https://commons.wikimedia.org/wiki/Special:Redirect/file/"
 USER_AGENT = (
-    "AMC-weekend-movie-report/6.0 "
+    "AMC-weekend-movie-report/6.1 "
     "(https://github.com/benpark2/AMC; Wikimedia metadata lookup)"
 )
 PLACEHOLDER_TOKEN = "images-not-found"
@@ -377,6 +377,124 @@ def _image_from_page(page: dict) -> str | None:
         if isinstance(value, str) and value.startswith(("https://", "http://")):
             return value
     return None
+
+
+def _wikipedia_page_wikitext(page_title: str) -> str | None:
+    """Return the current main-slot wikitext for one English Wikipedia page.
+
+    PageImages can legitimately be empty even when a film infobox visibly has a
+    poster.  Wikitext is used only after the page itself has already passed the
+    normal title/year/runtime/language validation.
+    """
+    page_title = clean_amc_title(page_title)
+    if not page_title:
+        return None
+    data = _api_json(
+        ENWIKI_API,
+        action="query",
+        format="json",
+        formatversion=2,
+        redirects=1,
+        prop="revisions",
+        rvprop="content",
+        rvslots="main",
+        titles=page_title,
+    )
+    for page in _pages_from_query(data):
+        revisions = page.get("revisions") or []
+        if not revisions or not isinstance(revisions[0], dict):
+            continue
+        slots = revisions[0].get("slots") or {}
+        main = slots.get("main") or {}
+        content = main.get("content")
+        if isinstance(content, str) and content.strip():
+            return content
+        # Compatibility with older MediaWiki response shapes.
+        legacy = revisions[0].get("*")
+        if isinstance(legacy, str) and legacy.strip():
+            return legacy
+    return None
+
+
+def _infobox_image_filename(wikitext: str | None) -> str | None:
+    """Extract a film infobox image filename without selecting body photos.
+
+    This intentionally reads only an ``image``/``poster`` parameter near the
+    beginning of the article.  It does not search arbitrary File: links, which
+    protects against selecting premiere/event photos instead of the poster.
+    """
+    if not isinstance(wikitext, str) or not wikitext.strip():
+        return None
+    # Film infoboxes are at the top.  Limiting the scan also prevents unrelated
+    # template parameters later in a long article from being mistaken as a poster.
+    head = wikitext[:20000]
+    match = re.search(
+        r"(?im)^\s*\|\s*(?:image|poster)\s*=\s*(.+?)\s*$",
+        head,
+    )
+    if not match:
+        return None
+    value = match.group(1).strip()
+    if not value or value.casefold() in {"none", "n/a", "na"}:
+        return None
+
+    # Common forms are a bare filename or [[File:Name.jpg|...]].
+    wrapped = re.match(
+        r"(?is)^\[\[(?:File|Image):\s*([^|\]]+)",
+        value,
+    )
+    if wrapped:
+        value = wrapped.group(1).strip()
+    else:
+        # Strip simple HTML comments/references and harmless surrounding markup.
+        value = re.sub(r"<!--.*?-->", "", value, flags=re.DOTALL).strip()
+        value = re.sub(r"<ref\b[^>]*>.*?</ref>", "", value, flags=re.DOTALL | re.IGNORECASE).strip()
+        value = re.sub(r"<ref\b[^>]*/>", "", value, flags=re.IGNORECASE).strip()
+        value = re.sub(r"^\[\[(?:File|Image):\s*", "", value, flags=re.IGNORECASE).strip()
+        value = value.split("|", 1)[0].replace("]]", "").strip()
+
+    value = re.sub(r"^(?:File|Image):\s*", "", value, flags=re.IGNORECASE).strip()
+    if not value or any(token in value for token in ("{{", "}}", "<", ">")):
+        return None
+    # Reject obvious non-image garbage while allowing the extensions Wikipedia
+    # commonly uses for posters.
+    if not re.search(r"\.(?:jpe?g|png|webp|gif|svg|tiff?)$", value, flags=re.IGNORECASE):
+        return None
+    return value
+
+
+def _wikipedia_file_thumbnail(filename: str, width: int = 500) -> str | None:
+    filename = clean_amc_title(filename)
+    if not filename:
+        return None
+    title = filename if filename.casefold().startswith(("file:", "image:")) else f"File:{filename}"
+    data = _api_json(
+        ENWIKI_API,
+        action="query",
+        format="json",
+        formatversion=2,
+        prop="imageinfo",
+        iiprop="url",
+        iiurlwidth=width,
+        titles=title,
+    )
+    for page in _pages_from_query(data):
+        info = page.get("imageinfo") or []
+        if not info or not isinstance(info[0], dict):
+            continue
+        for key in ("thumburl", "url"):
+            value = info[0].get(key)
+            if isinstance(value, str) and value.startswith(("https://", "http://")):
+                return value
+    return None
+
+
+def _image_from_validated_wikipedia_infobox(page_title: str) -> str | None:
+    wikitext = _wikipedia_page_wikitext(page_title)
+    filename = _infobox_image_filename(wikitext)
+    if not filename:
+        return None
+    return _wikipedia_file_thumbnail(filename)
 
 
 def _page_qid(page: dict) -> str | None:
@@ -1211,9 +1329,13 @@ def _image_from_validated_entity(entity: dict) -> tuple[str | None, str | None, 
         for page in pages:
             if page.get("missing") is not None or _page_is_disambiguation(page):
                 continue
+            page_title = clean_amc_title(str(page.get("title", enwiki_title)))
             image = _image_from_page(page)
             if image:
-                return image, clean_amc_title(str(page.get("title", enwiki_title))), "wikidata-enwiki"
+                return image, page_title, "wikidata-enwiki"
+            image = _image_from_validated_wikipedia_infobox(page_title)
+            if image:
+                return image, page_title, "wikidata-enwiki-infobox"
     commons = _commons_url_from_entity(entity)
     if commons:
         return commons, None, "wikidata-commons"
@@ -1316,17 +1438,25 @@ def _image_via_wikipedia(
         if not ok:
             rejected.append(f"{page.get('title', '?')}:{','.join(reasons)}")
             return
+        title = clean_amc_title(str(page.get("title", "")))
         image = _image_from_page(page)
+        resolved_source = source
+        if not image and title:
+            # The validated article can visibly contain an infobox poster even
+            # when PageImages has no selected page image.  Fall back to the
+            # infobox's explicit image filename, never arbitrary body images.
+            image = _image_from_validated_wikipedia_infobox(title)
+            if image:
+                resolved_source = f"{source}-infobox"
         if not image:
             return
-        title = clean_amc_title(str(page.get("title", "")))
         candidates.append((
             rank_score,
             source_priority,
             -order,
             image,
             title,
-            source,
+            resolved_source,
         ))
         order += 1
 

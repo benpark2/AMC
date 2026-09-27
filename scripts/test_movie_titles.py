@@ -577,6 +577,51 @@ class PosterValidationTests(unittest.TestCase):
             "example",
         )
 
+    def test_infobox_image_filename_accepts_bare_and_file_link(self):
+        self.assertEqual(
+            posters._infobox_image_filename(
+                "{{Infobox film\n| name = Example\n| image = Example theatrical poster.jpg\n}}"
+            ),
+            "Example theatrical poster.jpg",
+        )
+        self.assertEqual(
+            posters._infobox_image_filename(
+                "{{Infobox film\n| image = [[File:Example poster.png|220px|Theatrical poster]]\n}}"
+            ),
+            "Example poster.png",
+        )
+
+    def test_infobox_fallback_uses_validated_page_when_pageimages_is_empty(self):
+        ctx = self.context(
+            display_title="Example",
+            canonical_title="Example",
+            runtime_min=122,
+        )
+        page = {
+            "pageid": 77,
+            "title": "Example (2026 film)",
+            "pageprops": {"wikibase_item": "Q77"},
+        }
+        entity = self.entity("Q77", "Example", year=2026, runtime=122)
+        with patch.object(posters, "_wikipedia_pages_for_titles", return_value=[page]), \
+             patch.object(posters, "_wikipedia_search_pages", return_value=[]), \
+             patch.object(posters, "_wikidata_entities", return_value=[entity]), \
+             patch.object(posters, "_image_from_validated_wikipedia_infobox", return_value="https://upload.wikimedia.org/example-poster.jpg") as fallback:
+            image, page_title, source, rejected = posters._image_via_wikipedia(ctx, 2026)
+
+        self.assertEqual(image, "https://upload.wikimedia.org/example-poster.jpg")
+        self.assertEqual(page_title, "Example (2026 film)")
+        self.assertEqual(source, "wikipedia-exact-infobox")
+        self.assertEqual(rejected, [])
+        fallback.assert_called_once_with("Example (2026 film)")
+
+    def test_infobox_fallback_does_not_scan_arbitrary_body_file(self):
+        wikitext = (
+            "{{Infobox film\n| name = Example\n}}\n"
+            "Some article text. [[File:Premiere event photo.jpg|thumb|Cast at premiere]]"
+        )
+        self.assertIsNone(posters._infobox_image_filename(wikitext))
+
     def test_wikipedia_search_accepts_country_disambiguator_when_context_matches(self):
         ctx = self.context(
             display_title="Runner",
@@ -672,7 +717,7 @@ class PosterValidationTests(unittest.TestCase):
         for title in (
             "Akira", "Runner", "Batman (1989)", "Forgotten Island",
             "Shaun the Sheep", "Hanuman Ansh", "One of Them Days",
-            "In the Heights", "Coco",
+            "In the Heights", "Coco", "Ha-Chan, Shake Your Booty!",
         ):
             self.assertNotIn(title, production)
 
