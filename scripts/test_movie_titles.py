@@ -96,6 +96,7 @@ from datetime import date, datetime
 import html as html_lib
 import json
 import re
+import requests
 import pandas as pd
 from bs4 import BeautifulSoup
 
@@ -190,7 +191,33 @@ def rt_parse_scores(decoded_html: str, soup: BeautifulSoup) -> Tuple[Optional[in
 def extract_showtimes_from_json_scripts(html_txt: str, theatre_name: str, d: date) -> List[dict]:
     return []
 
-showtimes = [{'movie_title': 'Example Movie', 'format_label': ''}]
+def fetch_amc_html(session, url, params=None):
+    return 200, ""
+
+def fetch_html_with_browser(url, params=None, timeout_ms=30000):
+    return 200, ""
+
+def _collect_movie_blocks(soup):
+    return []
+
+def _iter_block_tags(block, stop_tag):
+    return []
+
+def _likely_showtime_tag(el, txt):
+    return False
+
+def _extract_local_format_near_tag(el):
+    return None
+
+def is_a_list_excluded_near_tag(el):
+    return False
+
+AMC_RUNTIME_RE = re.compile(r"(\d+)\s*hr?\s*(\d+)\s*min|(\d+)\s*min", re.I)
+
+def scrape_amc_showtimes_for_date(session, theatre_name, showtimes_url, d):
+    return []
+
+showtimes = [{'movie_title': f'Example Movie {i}', 'format_label': ''} for i in range(5)]
 df_show = pd.DataFrame(showtimes)
 df_show["format_label"] = df_show["format_label"].fillna("")
 
@@ -239,6 +266,8 @@ desired = [
         self.assertIn('"rt_c/a",', source)
         self.assertIn('"showDateTimeUtc"', source)
         self.assertIn('Showtimes for ([^', source)
+        self.assertIn('AMC static page for', source)
+        self.assertIn('_unique_movie_count < 5', source)
         identifiers = {
             node.id for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Name)
         }
@@ -286,6 +315,55 @@ desired = [
         '''
         rows = parser(html, "AMC Example 10", ns["date"](2026, 9, 26))
         self.assertEqual(rows, [])
+
+    def test_amc_ssr_fallback_allows_reordered_fields(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        parser = ns["extract_showtimes_from_json_scripts"]
+        html = r'''
+        aria-label\":\"Showtimes for Reordered Movie\"
+        \"showtimeId\":444,\"display\":{\"amPm\":\"PM\",\"time\":\"7:15\"},\"showDateTimeUtc\":\"2026-09-27T02:15:00Z\",\"status\":\"AVAILABLE\"
+        '''
+        rows = parser(html, "AMC Example 10", ns["date"](2026, 9, 26))
+        self.assertEqual(
+            [(r["movie_title"], r["show_time"]) for r in rows],
+            [("Reordered Movie", "7:15 pm")],
+        )
+
+    def test_sparse_static_page_merges_rendered_aria_regions(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+
+        static = '''
+        <div aria-label="Showtimes for Static One"><a href="/showtimes/1">7:00 PM</a></div>
+        '''
+        rendered = '''
+        <div aria-label="Showtimes for Static One"><a href="/showtimes/1">7:00 PM</a></div>
+        <div aria-label="Showtimes for Movie Two"><a href="/showtimes/2">7:10 PM</a></div>
+        <div aria-label="Showtimes for Movie Three"><a href="/showtimes/3">7:20 PM</a></div>
+        <div aria-label="Showtimes for Movie Four"><a href="/showtimes/4">7:30 PM</a></div>
+        <div aria-label="Showtimes for Movie Five"><a href="/showtimes/5">7:40 PM</a></div>
+        <div aria-label="Showtimes for Movie Six"><a href="/showtimes/6">7:50 PM</a></div>
+        '''
+        ns["fetch_amc_html"] = lambda session, url, params=None: (200, static)
+        browser_calls = []
+
+        def browser(url, params=None, timeout_ms=30000):
+            browser_calls.append((url, params, timeout_ms))
+            return 200, rendered
+
+        ns["fetch_html_with_browser"] = browser
+        rows = scraper(
+            None,
+            "AMC Example 10",
+            "https://example.invalid/showtimes",
+            ns["date"](2026, 9, 26),
+        )
+        self.assertEqual(len({r["movie_title"] for r in rows}), 6)
+        self.assertEqual(len(browser_calls), 1)
 
     def test_strict_rt_parser_preserves_score_type(self):
         source = self._patched_source()
