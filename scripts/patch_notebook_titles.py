@@ -13,8 +13,12 @@ This patcher is intentionally conservative:
 5. Emit an explicit RT_C/A display column so a missing side renders as "-".
 6. Parse AMC's current escaped React/Next showtime payload without relying on
    brittle field ordering.
-7. If the server-rendered page is suspiciously sparse, fetch the fully rendered
-   browser DOM and merge its aria-labelled movie/showtime regions.
+7. If the server-rendered page is suspiciously sparse relative to the theatre
+   screen count, fetch the fully rendered browser DOM and merge its
+   aria-labelled movie/showtime regions.
+8. Reject suspiciously incomplete aggregate weekend reports before ratings or
+   publishing, using theatre/date coverage plus a conservative prior-report
+   baseline when available.
 
 Important safety property
 -------------------------
@@ -489,11 +493,25 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
 
     unique_titles = {r["movie_title"].casefold() for r in out}
     browser_html = ""
-    if len(unique_titles) < 5:
+
+    # Theatre names normally end with their screen count (e.g. "AMC Orange 30",
+    # "AMC Tustin 14", "AMC Woodbridge 5"). Use that as a soft completeness
+    # signal instead of one universal cutoff: five movies can be plausible at a
+    # five-screen theatre, but is suspiciously sparse at a 30-screen theatre.
+    _screen_match = re.search(r"\b(\d{1,2})\s*$", theatre_name or "")
+    _screen_count = int(_screen_match.group(1)) if _screen_match else None
+    _sparse_threshold = (
+        max(3, min(10, int((_screen_count * 0.45) + 0.999)))
+        if _screen_count
+        else 5
+    )
+
+    if len(unique_titles) < _sparse_threshold:
         target = requests.Request("GET", showtimes_url, params={"date": wanted}).prepare().url
         print(
             f"[INFO] AMC static page for {theatre_name} {wanted} yielded only "
-            f"{len(unique_titles)} movie(s); merging fully rendered browser DOM from {target}"
+            f"{len(unique_titles)} movie(s) (sparse threshold {_sparse_threshold}); "
+            f"merging fully rendered browser DOM from {target}"
         )
         try:
             status2, browser_html = fetch_html_with_browser(
@@ -509,7 +527,7 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
     out = [r for r in out if r.get("show_date") == wanted]
 
     final_unique = {r["movie_title"].casefold() for r in out}
-    if not out or len(final_unique) < 5:
+    if not out or len(final_unique) < _sparse_threshold:
         debug_dir = Path("build/amc_debug")
         debug_dir.mkdir(parents=True, exist_ok=True)
         slug = re.sub(r"[^a-z0-9]+", "-", theatre_name.lower()).strip("-")
@@ -535,14 +553,55 @@ df_show = df_show.loc[~_non_movie_mask].copy()
 if df_show.empty:
     raise RuntimeError("All AMC rows were filtered as non-movie inventory.")
 
-# A three-theatre weekend report with fewer than five unique movies is almost
-# certainly a sparse/partial AMC response. Reuse the workflow retry path rather
-# than silently publishing an obviously incomplete report.
+# Completeness guard. AMC occasionally serves a partial React/queue response
+# that contains a handful of valid showtimes. A non-empty dataframe therefore
+# is not enough evidence that the weekend scrape is complete.
 _unique_movie_count = int(df_show["movie_title"].nunique())
-if _unique_movie_count < 5:
+_theatre_count = int(df_show["theatre"].nunique()) if "theatre" in df_show.columns else 0
+_date_count = int(df_show["show_date"].nunique()) if "show_date" in df_show.columns else 0
+
+# This report intentionally combines multiple AMC locations across both weekend
+# days. Ten unique titles is a conservative absolute floor: it is well below a
+# normal result for this configuration but safely rejects the 3- and 5-title
+# partial responses AMC has recently returned to GitHub-hosted runners.
+_minimum_unique_movies = 10
+
+# When the checked-in prior report was healthy, use it as an additional soft
+# baseline. This prevents a sudden collapse (e.g. 35 -> 11) from silently
+# replacing a normal report, while still allowing substantial week-to-week
+# changes. If the previous report is already tiny, ignore it rather than
+# perpetuating a bad baseline.
+try:
+    from pathlib import Path as _AMCPath
+    _previous_html = _AMCPath("docs/index.html")
+    _previous_movie_count = 0
+    if _previous_html.exists():
+        _previous_text = _previous_html.read_text(encoding="utf-8", errors="ignore")
+        _previous_movie_count = len(
+            set(re.findall(r'data-movie-id="([0-9]+)"', _previous_text))
+        )
+    if _previous_movie_count >= 12:
+        _minimum_unique_movies = max(
+            _minimum_unique_movies,
+            min(20, int((_previous_movie_count * 0.40) + 0.999)),
+        )
+except Exception:
+    _previous_movie_count = 0
+
+_incomplete_reasons = []
+if _unique_movie_count < _minimum_unique_movies:
+    _incomplete_reasons.append(
+        f"only {_unique_movie_count} unique movie(s), expected at least {_minimum_unique_movies}"
+    )
+if _theatre_count and _theatre_count < 2:
+    _incomplete_reasons.append(f"only {_theatre_count} theatre represented")
+if _date_count and _date_count < 2:
+    _incomplete_reasons.append(f"only {_date_count} weekend date represented")
+
+if _incomplete_reasons:
     raise RuntimeError(
         "No fresh AMC showtimes were parsed for the requested dates. "
-        f"The AMC scrape was suspiciously incomplete: only {_unique_movie_count} unique movie(s) were recovered."
+        "The AMC scrape was suspiciously incomplete: " + "; ".join(_incomplete_reasons) + "."
     )
 """
 
@@ -914,7 +973,7 @@ def main() -> int:
 
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
-        "non-movie filtering, IMDb variant scoring, AMC sparse-page browser fallback -> "
+        "non-movie filtering, IMDb variant scoring, AMC adaptive completeness guard -> "
         f"{args.output_notebook}"
     )
     return 0

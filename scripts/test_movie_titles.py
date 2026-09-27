@@ -217,7 +217,15 @@ AMC_RUNTIME_RE = re.compile(r"(\d+)\s*hr?\s*(\d+)\s*min|(\d+)\s*min", re.I)
 def scrape_amc_showtimes_for_date(session, theatre_name, showtimes_url, d):
     return []
 
-showtimes = [{'movie_title': f'Example Movie {i}', 'format_label': ''} for i in range(5)]
+showtimes = [
+    {
+        'movie_title': f'Example Movie {i}',
+        'format_label': '',
+        'theatre': 'AMC Example 30' if i < 6 else 'AMC Example 14',
+        'show_date': '2026-09-26' if i % 2 == 0 else '2026-09-27',
+    }
+    for i in range(12)
+]
 df_show = pd.DataFrame(showtimes)
 df_show["format_label"] = df_show["format_label"].fillna("")
 
@@ -267,7 +275,9 @@ desired = [
         self.assertIn('"showDateTimeUtc"', source)
         self.assertIn('Showtimes for ([^', source)
         self.assertIn('AMC static page for', source)
-        self.assertIn('_unique_movie_count < 5', source)
+        self.assertIn('_minimum_unique_movies = 10', source)
+        self.assertIn('_screen_count * 0.45', source)
+        self.assertIn('_previous_movie_count * 0.40', source)
         identifiers = {
             node.id for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Name)
         }
@@ -330,6 +340,53 @@ desired = [
             [(r["movie_title"], r["show_time"]) for r in rows],
             [("Reordered Movie", "7:15 pm")],
         )
+
+    def test_large_theatre_five_movies_is_still_sparse(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+
+        static = "".join(
+            f'<div aria-label="Showtimes for Static {i}"><a href="/showtimes/{i}">7:{i:02d} PM</a></div>'
+            for i in range(1, 6)
+        )
+        rendered = "".join(
+            f'<div aria-label="Showtimes for Movie {i}"><a href="/showtimes/{100+i}">8:{i:02d} PM</a></div>'
+            for i in range(1, 13)
+        )
+        ns["fetch_amc_html"] = lambda session, url, params=None: (200, static)
+        browser_calls = []
+
+        def browser(url, params=None, timeout_ms=30000):
+            browser_calls.append((url, params, timeout_ms))
+            return 200, rendered
+
+        ns["fetch_html_with_browser"] = browser
+        rows = scraper(
+            None,
+            "AMC Example 30",
+            "https://example.invalid/showtimes",
+            ns["date"](2026, 9, 26),
+        )
+        self.assertEqual(len(browser_calls), 1)
+        self.assertGreaterEqual(len({r["movie_title"] for r in rows}), 12)
+
+    def test_five_movie_aggregate_is_rejected(self):
+        source = self._patched_source()
+        source = re.sub(
+            r"showtimes = \[.*?\]\ndf_show = pd.DataFrame\(showtimes\)",
+            "showtimes = ["
+            "{'movie_title': f'Partial Movie {i}', 'format_label': '', "
+            "'theatre': 'AMC Example 30', "
+            "'show_date': '2026-09-26' if i % 2 == 0 else '2026-09-27'} "
+            "for i in range(5)]\ndf_show = pd.DataFrame(showtimes)",
+            source,
+            count=1,
+            flags=re.S,
+        )
+        with self.assertRaisesRegex(RuntimeError, "suspiciously incomplete"):
+            exec(compile(source, "<partial-report-test>", "exec"), {})
 
     def test_sparse_static_page_merges_rendered_aria_regions(self):
         source = self._patched_source()
