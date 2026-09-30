@@ -1065,7 +1065,7 @@ def main() -> int:
 
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
-        "non-movie filtering, IMDb variant scoring, AMC showtime-ID dedupe -> "
+        "non-movie filtering, IMDb variant scoring, AMC showtime-ID dedupe v16 -> "
         f"{args.output_notebook}"
     )
     return 0

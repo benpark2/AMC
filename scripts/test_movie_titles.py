@@ -221,10 +221,10 @@ showtimes = [
     {
         'movie_title': f'Example Movie {i}',
         'format_label': '',
-        'theatre': 'AMC Example 30' if i < 6 else 'AMC Example 14',
+        'theatre': 'AMC Example 30' if i < 10 else 'AMC Example 14',
         'show_date': '2026-09-26' if i % 2 == 0 else '2026-09-27',
     }
-    for i in range(12)
+    for i in range(20)
 ]
 df_show = pd.DataFrame(showtimes)
 df_show["format_label"] = df_show["format_label"].fillna("")
@@ -374,6 +374,16 @@ desired = [
         )
         self.assertEqual(len(browser_calls), 1)
         self.assertGreaterEqual(len({r["movie_title"] for r in rows}), 12)
+
+    def test_fixture_clears_max_adaptive_prior_report_floor(self):
+        # Parser/unit tests execute the whole patched notebook fixture. The
+        # fixture must remain healthy even when Actions sees a large checked-in
+        # docs/index.html and raises the adaptive minimum to its 20-title cap.
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<healthy-fixture-test>", "exec"), ns)
+        self.assertEqual(ns["_unique_movie_count"], 20)
+        self.assertLessEqual(ns["_minimum_unique_movies"], 20)
 
     def test_five_movie_aggregate_is_rejected(self):
         source = self._patched_source()
