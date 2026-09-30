@@ -273,7 +273,8 @@ desired = [
         self.assertIn('df_display["rt_c/a"]', source)
         self.assertIn('"rt_c/a",', source)
         self.assertIn('"showDateTimeUtc"', source)
-        self.assertIn('Showtimes for ([^', source)
+        self.assertIn('showtime_id', source)
+        self.assertIn('aria_count == 0', source)
         self.assertIn('AMC static page for', source)
         self.assertIn('_minimum_unique_movies = 10', source)
         self.assertIn('_screen_count * 0.45', source)
@@ -326,19 +327,21 @@ desired = [
         rows = parser(html, "AMC Example 10", ns["date"](2026, 9, 26))
         self.assertEqual(rows, [])
 
-    def test_amc_ssr_fallback_allows_reordered_fields(self):
+    def test_amc_ssr_fallback_rejects_unbounded_reordered_records(self):
         source = self._patched_source()
         ns = {}
         exec(compile(source, "<patched-notebook-test>", "exec"), ns)
         parser = ns["extract_showtimes_from_json_scripts"]
         html = r'''
-        aria-label\":\"Showtimes for Reordered Movie\"
-        \"showtimeId\":444,\"display\":{\"amPm\":\"PM\",\"time\":\"7:15\"},\"showDateTimeUtc\":\"2026-09-27T02:15:00Z\",\"status\":\"AVAILABLE\"
+        aria-label\":\"Showtimes for Hanuman Ansh\"
+        \"showtimeId\":444,\"status\":\"AVAILABLE\",\"showDateTimeUtc\":\"2026-09-27T02:15:00Z\",\"display\":{\"time\":\"7:15\",\"amPm\":\"PM\"}
+        \"showtimeId\":445,\"display\":{\"time\":\"7:25\",\"amPm\":\"PM\"},\"showDateTimeUtc\":\"2026-09-27T02:25:00Z\",\"status\":\"AVAILABLE\"
+        \"showtimeId\":446,\"showDateTimeUtc\":\"2026-09-27T02:35:00Z\",\"status\":\"AVAILABLE\",\"display\":{\"time\":\"7:35\",\"amPm\":\"PM\"}
         '''
         rows = parser(html, "AMC Example 10", ns["date"](2026, 9, 26))
         self.assertEqual(
-            [(r["movie_title"], r["show_time"]) for r in rows],
-            [("Reordered Movie", "7:15 pm")],
+            [(r["showtime_id"], r["movie_title"], r["show_time"]) for r in rows],
+            [("444", "Hanuman Ansh", "7:15 pm")],
         )
 
     def test_large_theatre_five_movies_is_still_sparse(self):
@@ -421,6 +424,62 @@ desired = [
         )
         self.assertEqual(len({r["movie_title"] for r in rows}), 6)
         self.assertEqual(len(browser_calls), 1)
+
+    def test_amc_same_showtime_id_is_merged_across_ssr_and_dom(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        ns["Path"] = Path
+        scraper = ns["scrape_amc_showtimes_for_date"]
+
+        html = r'''
+        <script>
+        self.__next_f.push([1,"aria-label\":\"Showtimes for Runner\"
+        \"showtimeId\":42,\"status\":\"AVAILABLE\",\"showDateTimeUtc\":\"2026-09-27T02:00:00Z\",\"display\":{\"time\":\"7:00\",\"amPm\":\"PM\"}"])
+        </script>
+        <div aria-label="Showtimes for Runner">
+          <a href="/showtimes/42">7:00 PM</a>
+          <a href="/showtimes/42">7:00 PM</a>
+        </div>
+        '''
+        ns["fetch_amc_html"] = lambda session, url, params=None: (200, html)
+        ns["_collect_movie_blocks"] = lambda soup: (_ for _ in ()).throw(
+            AssertionError("legacy parser should not run when aria showtime links exist")
+        )
+        rows = scraper(
+            None,
+            "AMC Example 5",
+            "https://example.invalid/showtimes",
+            ns["date"](2026, 9, 26),
+        )
+        runner_rows = [r for r in rows if r["movie_title"] == "Runner"]
+        self.assertEqual(len(runner_rows), 1)
+        self.assertEqual(runner_rows[0]["showtime_id"], "42")
+        self.assertEqual(runner_rows[0]["show_time"], "7:00 pm")
+
+    def test_amc_distinct_showtime_ids_at_same_clock_time_are_preserved(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        ns["Path"] = Path
+        scraper = ns["scrape_amc_showtimes_for_date"]
+
+        html = '''
+        <div aria-label="Showtimes for Example Movie">
+          <a href="/showtimes/42">7:00 PM</a>
+          <a href="/showtimes/43">7:00 PM</a>
+        </div>
+        '''
+        ns["fetch_amc_html"] = lambda session, url, params=None: (200, html)
+        rows = scraper(
+            None,
+            "AMC Example 5",
+            "https://example.invalid/showtimes",
+            ns["date"](2026, 9, 26),
+        )
+        example_rows = [r for r in rows if r["movie_title"] == "Example Movie"]
+        self.assertEqual({r["showtime_id"] for r in example_rows}, {"42", "43"})
+        self.assertEqual(len(example_rows), 2)
 
     def test_strict_rt_parser_preserves_score_type(self):
         source = self._patched_source()
