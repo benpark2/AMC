@@ -217,14 +217,19 @@ AMC_RUNTIME_RE = re.compile(r"(\d+)\s*hr?\s*(\d+)\s*min|(\d+)\s*min", re.I)
 def scrape_amc_showtimes_for_date(session, theatre_name, showtimes_url, d):
     return []
 
+_fixture_theatres = [
+    'AMC Tustin 14 @ The District',
+    'AMC Woodbridge 5',
+    'AMC Orange 30',
+]
 showtimes = [
     {
         'movie_title': f'Example Movie {i}',
         'format_label': '',
-        'theatre': 'AMC Example 30' if i < 10 else 'AMC Example 14',
-        'show_date': '2026-09-26' if i % 2 == 0 else '2026-09-27',
+        'theatre': _fixture_theatres[i % 3],
+        'show_date': '2026-09-26' if (i // 3) % 2 == 0 else '2026-09-27',
     }
-    for i in range(20)
+    for i in range(60)
 ]
 df_show = pd.DataFrame(showtimes)
 df_show["format_label"] = df_show["format_label"].fillna("")
@@ -279,6 +284,8 @@ desired = [
         self.assertIn('_minimum_unique_movies = 10', source)
         self.assertIn('_screen_count * 0.45', source)
         self.assertIn('_previous_movie_count * 0.40', source)
+        self.assertIn('_project_theatre_specs', source)
+        self.assertIn('_combo_min_movies', source)
         identifiers = {
             node.id for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Name)
         }
@@ -382,7 +389,7 @@ desired = [
         source = self._patched_source()
         ns = {}
         exec(compile(source, "<healthy-fixture-test>", "exec"), ns)
-        self.assertEqual(ns["_unique_movie_count"], 20)
+        self.assertEqual(ns["_unique_movie_count"], 60)
         self.assertLessEqual(ns["_minimum_unique_movies"], 20)
 
     def test_five_movie_aggregate_is_rejected(self):
@@ -400,6 +407,55 @@ desired = [
         )
         with self.assertRaisesRegex(RuntimeError, "suspiciously incomplete"):
             exec(compile(source, "<partial-report-test>", "exec"), {})
+
+
+    def test_missing_tustin_is_rejected_even_when_other_theatres_cover_both_dates(self):
+        source = self._patched_source()
+        replacement = """showtimes = [
+    {
+        'movie_title': f'Partial Movie {i}',
+        'format_label': '',
+        'theatre': 'AMC Orange 30' if i % 2 == 0 else 'AMC Woodbridge 5',
+        'show_date': '2026-09-26' if (i // 2) % 2 == 0 else '2026-09-27',
+    }
+    for i in range(40)
+]
+df_show = pd.DataFrame(showtimes)"""
+        source = re.sub(
+            r"_fixture_theatres = \[.*?\]\nshowtimes = \[.*?\]\ndf_show = pd.DataFrame\(showtimes\)",
+            replacement,
+            source,
+            count=1,
+            flags=re.S,
+        )
+        with self.assertRaisesRegex(RuntimeError, "missing AMC Tustin 14 entirely"):
+            exec(compile(source, "<missing-tustin-test>", "exec"), {})
+
+    def test_one_day_partial_matrix_is_rejected(self):
+        source = self._patched_source()
+        replacement = """showtimes = [
+    {
+        'movie_title': f'Partial Movie {i}',
+        'format_label': '',
+        'theatre': [
+            'AMC Tustin 14 @ The District',
+            'AMC Woodbridge 5',
+            'AMC Orange 30',
+        ][i % 3],
+        'show_date': '2026-09-27',
+    }
+    for i in range(45)
+]
+df_show = pd.DataFrame(showtimes)"""
+        source = re.sub(
+            r"_fixture_theatres = \[.*?\]\nshowtimes = \[.*?\]\ndf_show = pd.DataFrame\(showtimes\)",
+            replacement,
+            source,
+            count=1,
+            flags=re.S,
+        )
+        with self.assertRaisesRegex(RuntimeError, "only 1 weekend date represented"):
+            exec(compile(source, "<missing-saturday-test>", "exec"), {})
 
     def test_sparse_static_page_merges_rendered_aria_regions(self):
         source = self._patched_source()

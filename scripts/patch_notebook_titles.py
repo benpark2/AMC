@@ -646,23 +646,27 @@ if df_show.empty:
     raise RuntimeError("All AMC rows were filtered as non-movie inventory.")
 
 # Completeness guard. AMC occasionally serves a partial React/queue response
-# that contains a handful of valid showtimes. A non-empty dataframe therefore
-# is not enough evidence that the weekend scrape is complete.
+# that contains many valid rows for only one theatre or one day. A healthy
+# aggregate count therefore is not enough evidence that the weekend is complete.
 _unique_movie_count = int(df_show["movie_title"].nunique())
 _theatre_count = int(df_show["theatre"].nunique()) if "theatre" in df_show.columns else 0
 _date_count = int(df_show["show_date"].nunique()) if "show_date" in df_show.columns else 0
 
-# This report intentionally combines multiple AMC locations across both weekend
-# days. Ten unique titles is a conservative absolute floor: it is well below a
-# normal result for this configuration but safely rejects the 3- and 5-title
-# partial responses AMC has recently returned to GitHub-hosted runners.
+# This report intentionally combines these three configured AMC locations
+# across both weekend days. Match by stable theatre prefix so harmless wording
+# changes such as "@ The District" vs "at The District" do not break coverage.
+_project_theatre_specs = [
+    ("AMC Tustin 14", 14),
+    ("AMC Woodbridge 5", 5),
+    ("AMC Orange 30", 30),
+]
+
+# Ten unique titles is a conservative overall floor.
 _minimum_unique_movies = 10
 
 # When the checked-in prior report was healthy, use it as an additional soft
-# baseline. This prevents a sudden collapse (e.g. 35 -> 11) from silently
-# replacing a normal report, while still allowing substantial week-to-week
-# changes. If the previous report is already tiny, ignore it rather than
-# perpetuating a bad baseline.
+# baseline. This prevents a sudden collapse from silently replacing a normal
+# report, while still allowing substantial week-to-week changes.
 try:
     from pathlib import Path as _AMCPath
     _previous_html = _AMCPath("docs/index.html")
@@ -685,10 +689,46 @@ if _unique_movie_count < _minimum_unique_movies:
     _incomplete_reasons.append(
         f"only {_unique_movie_count} unique movie(s), expected at least {_minimum_unique_movies}"
     )
-if _theatre_count and _theatre_count < 2:
-    _incomplete_reasons.append(f"only {_theatre_count} theatre represented")
-if _date_count and _date_count < 2:
+if _date_count < 2:
     _incomplete_reasons.append(f"only {_date_count} weekend date represented")
+
+# Validate the full theatre x date matrix instead of merely requiring "2
+# theatres somewhere" and "2 dates somewhere". That old aggregate rule allowed
+# Sunday Orange + a few Woodbridge rows to publish even when Tustin and most of
+# Saturday were absent.
+_theatre_text = df_show["theatre"].fillna("").astype(str)
+_observed_dates = sorted(
+    str(x) for x in df_show["show_date"].dropna().astype(str).unique()
+)
+
+for _theatre_prefix, _screen_count in _project_theatre_specs:
+    _theatre_mask = _theatre_text.str.contains(
+        re.escape(_theatre_prefix), case=False, regex=True, na=False
+    )
+    _theatre_rows = df_show.loc[_theatre_mask]
+    if _theatre_rows.empty:
+        _incomplete_reasons.append(f"missing {_theatre_prefix} entirely")
+        continue
+
+    _theatre_dates = set(_theatre_rows["show_date"].dropna().astype(str))
+    if len(_theatre_dates) < 2:
+        _incomplete_reasons.append(
+            f"{_theatre_prefix} has only {len(_theatre_dates)} weekend date(s)"
+        )
+
+    # Use the same screen-count-aware floor that triggers browser enrichment:
+    # Orange 30 -> 10 titles/date, Tustin 14 -> 7, Woodbridge 5 -> 3.
+    _combo_min_movies = max(3, min(10, int((_screen_count * 0.45) + 0.999)))
+    for _wanted_date in _observed_dates:
+        _combo_rows = _theatre_rows.loc[
+            _theatre_rows["show_date"].astype(str) == _wanted_date
+        ]
+        _combo_movies = int(_combo_rows["movie_title"].nunique())
+        if _combo_movies < _combo_min_movies:
+            _incomplete_reasons.append(
+                f"{_theatre_prefix} {_wanted_date} has only {_combo_movies} "
+                f"movie(s), expected at least {_combo_min_movies}"
+            )
 
 if _incomplete_reasons:
     raise RuntimeError(
@@ -1065,7 +1105,7 @@ def main() -> int:
 
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
-        "non-movie filtering, IMDb variant scoring, AMC showtime-ID dedupe v16 -> "
+        "non-movie filtering, IMDb variant scoring, AMC theatre-date completeness guard v17 -> "
         f"{args.output_notebook}"
     )
     return 0
