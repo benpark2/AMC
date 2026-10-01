@@ -382,18 +382,30 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
     """
     Merge AMC sources while deduplicating on AMC's numeric showtime ID.
 
-    Rendered aria-labelled regions are authoritative for movie-to-showtime
-    pairing. The legacy semantic DOM parser is used only when those regions
-    are absent, not additively on top of them.
+    v18 also keeps a small fresh cache in build/ for the lifetime of one
+    workflow run. GitHub retries launch Papermill again in the same workspace,
+    so a theatre/date combination that succeeded on attempt 1 is retained
+    rather than thrown away when another combination fails.
     """
-    wanted = d.isoformat()
-    status, html_txt = fetch_amc_html(session, showtimes_url, params={"date": wanted})
-    if status != 200:
-        return []
+    from pathlib import Path as _AMCPath
 
+    wanted = d.isoformat()
     out: List[dict] = []
     id_to_index = {}
     fallback_to_index = {}
+
+    _screen_match = re.search(r"\b(\d{1,2})\s*$", theatre_name or "")
+    _screen_count = int(_screen_match.group(1)) if _screen_match else None
+    _sparse_threshold = (
+        max(3, min(10, int((_screen_count * 0.45) + 0.999)))
+        if _screen_count
+        else 5
+    )
+
+    _cache_dir = _AMCPath("build/amc_combo_cache")
+    _cache_dir.mkdir(parents=True, exist_ok=True)
+    _cache_slug = re.sub(r"[^a-z0-9]+", "-", theatre_name.lower()).strip("-")
+    _cache_path = _cache_dir / f"{_cache_slug}-{wanted}.json"
 
     def _merge_format(old_value, new_value):
         parts = []
@@ -421,9 +433,6 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         row["_source_rank"] = int(source_rank)
         sid = _normalize_space(str(row.get("showtime_id") or ""))
 
-        # The numeric showtime ID is AMC's stable screening identity. Merge
-        # repeated SSR/DOM observations of the same screening rather than
-        # displaying one row per nearby badge.
         if sid:
             idx = id_to_index.get(sid)
             if idx is not None:
@@ -450,8 +459,6 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         )
 
         if not sid:
-            # If an ID-backed row already represents this movie/time, a
-            # metadata-poor no-ID row is only a duplicate observation.
             same_time_idx = next(
                 (
                     i for i, existing in enumerate(out)
@@ -466,8 +473,7 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
             )
             if same_time_idx is not None:
                 out[same_time_idx]["format_label"] = _merge_format(
-                    out[same_time_idx].get("format_label"),
-                    row.get("format_label"),
+                    out[same_time_idx].get("format_label"), row.get("format_label")
                 )
                 return
 
@@ -475,10 +481,6 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         if idx is not None:
             old = out[idx]
             old_sid = _normalize_space(str(old.get("showtime_id") or ""))
-
-            # Same clock time can legitimately have two different AMC
-            # screening IDs (for example standard and premium formats). Never
-            # collapse distinct IDs merely because their display time matches.
             if sid and old_sid and old_sid != sid:
                 idx = None
             else:
@@ -493,12 +495,55 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
 
         idx = len(out)
         out.append(row)
-        # Only let this clock-time fallback key identify the new row when it
-        # does not hide a different ID-backed screening already at that time.
         if fallback_key not in fallback_to_index or not sid:
             fallback_to_index[fallback_key] = idx
         if sid:
             id_to_index[sid] = idx
+
+    def _clean_rows() -> List[dict]:
+        cleaned = []
+        for row in out:
+            row = dict(row)
+            row.pop("_source_rank", None)
+            if row.get("show_date") == wanted:
+                cleaned.append(row)
+        return cleaned
+
+    def _unique_title_count() -> int:
+        return len({str(r.get("movie_title") or "").casefold() for r in out if r.get("movie_title")})
+
+    def _save_cache() -> None:
+        rows = _clean_rows()
+        if not rows:
+            return
+        try:
+            _cache_path.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+        except Exception as e:
+            print(f"[WARN] Could not save AMC in-run cache for {theatre_name} {wanted}: {e}")
+
+    # Retain successes and partial discoveries across the workflow's Papermill
+    # retries. The build directory is runner-local and is not committed, so this
+    # never falls back to an older day's report.
+    if _cache_path.exists():
+        try:
+            cached = json.loads(_cache_path.read_text(encoding="utf-8"))
+            if isinstance(cached, list):
+                for row in cached:
+                    if isinstance(row, dict):
+                        add_row(row, source_rank=1)
+                if _unique_title_count() >= _sparse_threshold:
+                    print(
+                        f"[INFO] Reusing fresh in-run AMC cache for {theatre_name} {wanted}: "
+                        f"{_unique_title_count()} movie(s)"
+                    )
+                    return _clean_rows()
+                elif out:
+                    print(
+                        f"[INFO] Loaded partial in-run AMC cache for {theatre_name} {wanted}: "
+                        f"{_unique_title_count()} movie(s); continuing enrichment"
+                    )
+        except Exception as e:
+            print(f"[WARN] Ignoring unreadable AMC in-run cache for {theatre_name} {wanted}: {e}")
 
     def merge_html(page_html: str, *, rendered: bool = False) -> None:
         if not page_html:
@@ -508,7 +553,6 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
             add_row(row, source_rank=1)
 
         soup = BeautifulSoup(page_html, "html.parser")
-
         aria_count = 0
         for region in soup.find_all(attrs={"aria-label": re.compile(r"^Showtimes for\s+", re.I)}):
             aria = str(region.get("aria-label") or "")
@@ -549,10 +593,6 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
                     "showtime_id": sid_m.group(1),
                 }, source_rank=3 if rendered else 2)
 
-        # Current AMC's aria-labelled showtime links are already the actual
-        # screening controls. Running the legacy walker on the same page turns
-        # adjacent badges (Laser/captions/language) into extra rows, so use the
-        # legacy parser only when the current structure is completely absent.
         if aria_count == 0:
             movie_blocks = _collect_movie_blocks(soup)
             for idx, (block, title) in enumerate(movie_blocks):
@@ -580,54 +620,75 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
                                 "a_list_excluded": is_a_list_excluded_near_tag(el),
                             }, source_rank=0)
 
-    merge_html(html_txt, rendered=False)
-
-    unique_titles = {r["movie_title"].casefold() for r in out}
     browser_html = ""
+    html_txt = ""
+    target = requests.Request("GET", showtimes_url, params={"date": wanted}).prepare().url
 
-    _screen_match = re.search(r"\b(\d{1,2})\s*$", theatre_name or "")
-    _screen_count = int(_screen_match.group(1)) if _screen_match else None
-    _sparse_threshold = (
-        max(3, min(10, int((_screen_count * 0.45) + 0.999)))
-        if _screen_count
-        else 5
-    )
-
-    if len(unique_titles) < _sparse_threshold:
-        target = requests.Request("GET", showtimes_url, params={"date": wanted}).prepare().url
-        print(
-            f"[INFO] AMC static page for {theatre_name} {wanted} yielded only "
-            f"{len(unique_titles)} movie(s) (sparse threshold {_sparse_threshold}); "
-            f"merging fully rendered browser DOM from {target}"
-        )
+    # Two targeted rounds are much more useful than throwing away every good
+    # theatre/date and restarting the entire notebook. Round 1 always renders
+    # the browser DOM because AMC's static React payload can contain enough
+    # titles while still omitting individual showtime links. Round 2 is used
+    # only when the combination remains sparse.
+    _max_rounds = 2
+    for _round in range(1, _max_rounds + 1):
         try:
-            status2, browser_html = fetch_html_with_browser(
-                showtimes_url,
-                params={"date": wanted},
-                timeout_ms=45000,
-            )
-            if status2 == 200 and browser_html:
-                merge_html(browser_html, rendered=True)
+            status, round_html = fetch_amc_html(session, showtimes_url, params={"date": wanted})
         except Exception as e:
-            print(f"[WARN] Sparse-page browser enrichment failed for {theatre_name} {wanted}: {e}")
+            status, round_html = 0, ""
+            print(f"[WARN] AMC static fetch failed for {theatre_name} {wanted} round {_round}: {e}")
 
-    cleaned = []
-    for row in out:
-        row = dict(row)
-        row.pop("_source_rank", None)
-        cleaned.append(row)
-    out = [r for r in cleaned if r.get("show_date") == wanted]
+        if status == 200 and round_html:
+            html_txt = round_html
+            merge_html(round_html, rendered=False)
+        else:
+            print(
+                f"[WARN] AMC static fetch returned status {status} for "
+                f"{theatre_name} {wanted} round {_round}; trying browser DOM"
+            )
 
-    final_unique = {r["movie_title"].casefold() for r in out}
-    if not out or len(final_unique) < _sparse_threshold:
-        debug_dir = Path("build/amc_debug")
+        _need_browser = (_round == 1) or (_unique_title_count() < _sparse_threshold)
+        if _need_browser:
+            if _round == 1:
+                print(
+                    f"[INFO] Merging rendered AMC DOM for {theatre_name} {wanted} "
+                    f"(static/cached titles so far: {_unique_title_count()})"
+                )
+            else:
+                print(
+                    f"[INFO] Targeted AMC retry {_round}/{_max_rounds} for {theatre_name} {wanted}: "
+                    f"only {_unique_title_count()} movie(s), threshold {_sparse_threshold}"
+                )
+            try:
+                status2, round_browser_html = fetch_html_with_browser(
+                    showtimes_url,
+                    params={"date": wanted},
+                    timeout_ms=45000,
+                )
+                if status2 == 200 and round_browser_html:
+                    browser_html = round_browser_html
+                    merge_html(round_browser_html, rendered=True)
+                else:
+                    print(
+                        f"[WARN] AMC browser fetch returned status {status2} for "
+                        f"{theatre_name} {wanted} round {_round}"
+                    )
+            except Exception as e:
+                print(f"[WARN] AMC browser enrichment failed for {theatre_name} {wanted} round {_round}: {e}")
+
+        _save_cache()
+        if _unique_title_count() >= _sparse_threshold:
+            break
+
+    final_rows = _clean_rows()
+    final_unique = {r["movie_title"].casefold() for r in final_rows if r.get("movie_title")}
+    if not final_rows or len(final_unique) < _sparse_threshold:
+        debug_dir = _AMCPath("build/amc_debug")
         debug_dir.mkdir(parents=True, exist_ok=True)
-        slug = re.sub(r"[^a-z0-9]+", "-", theatre_name.lower()).strip("-")
-        debug_path = debug_dir / f"{slug}-{wanted}.html"
+        debug_path = debug_dir / f"{_cache_slug}-{wanted}.html"
         debug_path.write_text(browser_html or html_txt or "", encoding="utf-8")
         print(f"[INFO] Saved AMC debug HTML to {debug_path}")
 
-    return out
+    return final_rows
 '''
 
 DF_SHOW_MARKER = "df_show = pd.DataFrame(showtimes)\n"
@@ -1105,7 +1166,7 @@ def main() -> int:
 
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
-        "non-movie filtering, IMDb variant scoring, AMC theatre-date completeness guard v17 -> "
+        "non-movie filtering, IMDb variant scoring, AMC retained theatre-date recovery v18 -> "
         f"{args.output_notebook}"
     )
     return 0

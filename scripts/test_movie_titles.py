@@ -90,6 +90,13 @@ class MovieTitleTests(unittest.TestCase):
 
 
 class NotebookPatcherTests(unittest.TestCase):
+    def setUp(self):
+        cache_dir = Path("build/amc_combo_cache")
+        if cache_dir.exists():
+            for child in cache_dir.glob("*"):
+                if child.is_file():
+                    child.unlink()
+
     def _fixture_notebook(self) -> dict:
         source = r'''from typing import List, Optional, Tuple
 from datetime import date, datetime
@@ -280,12 +287,15 @@ desired = [
         self.assertIn('"showDateTimeUtc"', source)
         self.assertIn('showtime_id', source)
         self.assertIn('aria_count == 0', source)
-        self.assertIn('AMC static page for', source)
+        self.assertIn('Merging rendered AMC DOM for', source)
         self.assertIn('_minimum_unique_movies = 10', source)
         self.assertIn('_screen_count * 0.45', source)
         self.assertIn('_previous_movie_count * 0.40', source)
         self.assertIn('_project_theatre_specs', source)
         self.assertIn('_combo_min_movies', source)
+        self.assertIn('_cache_dir = _AMCPath("build/amc_combo_cache")', source)
+        self.assertIn('_max_rounds = 2', source)
+        self.assertIn('_need_browser = (_round == 1)', source)
         identifiers = {
             node.id for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Name)
         }
@@ -350,6 +360,104 @@ desired = [
             [(r["showtime_id"], r["movie_title"], r["show_time"]) for r in rows],
             [("444", "Hanuman Ansh", "7:15 pm")],
         )
+
+    def test_non_200_static_still_uses_browser(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+
+        ns["fetch_amc_html"] = lambda session, url, params=None: (403, "blocked")
+        rendered = "".join(
+            f'<div aria-label="Showtimes for Movie {i}"><a href="/showtimes/{100+i}">8:{i:02d} PM</a></div>'
+            for i in range(1, 7)
+        )
+        calls = []
+        def browser(url, params=None, timeout_ms=30000):
+            calls.append(1)
+            return 200, rendered
+        ns["fetch_html_with_browser"] = browser
+
+        rows = scraper(None, "AMC Example 10", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len({r["movie_title"] for r in rows}), 6)
+
+    def test_complete_static_page_still_gets_one_rendered_merge_for_missing_times(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+
+        static = "".join(
+            f'<div aria-label="Showtimes for Movie {i}"><a href="/showtimes/{100+i}">7:00 PM</a></div>'
+            for i in range(1, 7)
+        )
+        rendered = static + '<div aria-label="Showtimes for Movie 1"><a href="/showtimes/999">9:45 PM</a></div>'
+        ns["fetch_amc_html"] = lambda session, url, params=None: (200, static)
+        calls = []
+        def browser(url, params=None, timeout_ms=30000):
+            calls.append(1)
+            return 200, rendered
+        ns["fetch_html_with_browser"] = browser
+
+        rows = scraper(None, "AMC Example 10", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+        self.assertEqual(len(calls), 1)
+        movie1 = [r for r in rows if r["movie_title"] == "Movie 1"]
+        self.assertEqual({r["showtime_id"] for r in movie1}, {"101", "999"})
+
+    def test_partial_combo_is_accumulated_across_targeted_rounds(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+
+        ns["fetch_amc_html"] = lambda session, url, params=None: (200, "")
+        rendered_pages = [
+            "".join(
+                f'<div aria-label="Showtimes for Movie {i}"><a href="/showtimes/{100+i}">7:{i:02d} PM</a></div>'
+                for i in range(1, 4)
+            ),
+            "".join(
+                f'<div aria-label="Showtimes for Movie {i}"><a href="/showtimes/{100+i}">8:{i:02d} PM</a></div>'
+                for i in range(4, 7)
+            ),
+        ]
+        calls = []
+        def browser(url, params=None, timeout_ms=30000):
+            calls.append(1)
+            return 200, rendered_pages[min(len(calls)-1, 1)]
+        ns["fetch_html_with_browser"] = browser
+
+        rows = scraper(None, "AMC Example 10", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len({r["movie_title"] for r in rows}), 6)
+
+    def test_fresh_combo_cache_is_reused_on_next_papermill_attempt(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+
+        rendered = "".join(
+            f'<div aria-label="Showtimes for Movie {i}"><a href="/showtimes/{100+i}">8:{i:02d} PM</a></div>'
+            for i in range(1, 7)
+        )
+        network = {"static": 0, "browser": 0}
+        def static(session, url, params=None):
+            network["static"] += 1
+            return 200, ""
+        def browser(url, params=None, timeout_ms=30000):
+            network["browser"] += 1
+            return 200, rendered
+        ns["fetch_amc_html"] = static
+        ns["fetch_html_with_browser"] = browser
+
+        args = (None, "AMC Example 10", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+        first = scraper(*args)
+        first_counts = dict(network)
+        second = scraper(*args)
+        self.assertEqual(len(first), len(second))
+        self.assertEqual(network, first_counts, "complete fresh cache should avoid another network fetch")
 
     def test_large_theatre_five_movies_is_still_sparse(self):
         source = self._patched_source()
