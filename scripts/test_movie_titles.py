@@ -20,7 +20,7 @@ from scripts.movie_titles import (
     is_non_movie_title,
     wikipedia_title_candidates,
 )
-from scripts.patch_notebook_titles import patch_notebook
+from scripts.patch_notebook_titles import patch_notebook, patch_postprocess_source
 import scripts.finalize_posters as posters
 
 
@@ -293,6 +293,10 @@ desired = [
         self.assertIn('_previous_movie_count * 0.40', source)
         self.assertIn('_project_theatre_specs', source)
         self.assertIn('_combo_min_movies', source)
+        self.assertIn('_display_duplicate_cols', source)
+        self.assertIn('_clock_duplicate_mask', source)
+        self.assertIn('NOALIST', source)
+        self.assertIn('_a_list_excluded_for_showtime', source)
         self.assertIn('_cache_dir = _AMCPath("build/amc_combo_cache")', source)
         self.assertIn('_max_rounds = 2', source)
         self.assertIn('_need_browser = (_round == 1)', source)
@@ -331,6 +335,45 @@ desired = [
             [("Runner", "7:00 pm"), ("Example Two", "9:30 pm")],
         )
         self.assertTrue(all(r["show_date"] == "2026-09-26" for r in rows))
+
+    def test_amc_ssr_fallback_preserves_noalist_attribute(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        parser = ns["extract_showtimes_from_json_scripts"]
+        html = r'''
+        aria-label\":\"Showtimes for Special Event\"
+        \"showtimeId\":555,\"status\":\"AVAILABLE\",\"showDateTimeUtc\":\"2026-09-27T02:00:00Z\",\"display\":{\"time\":\"7:00\",\"amPm\":\"PM\"},\"attributes\":[{\"code\":\"NOALIST\",\"name\":\"Excluded from A-List\"}]
+        aria-label\":\"Showtimes for Regular Movie\"
+        \"showtimeId\":556,\"status\":\"AVAILABLE\",\"showDateTimeUtc\":\"2026-09-27T04:00:00Z\",\"display\":{\"time\":\"9:00\",\"amPm\":\"PM\"},\"attributes\":[{\"code\":\"RESERVEDSEATING\"}]
+        '''
+        rows = parser(html, "AMC Example 10", ns["date"](2026, 9, 26))
+        by_id = {r["showtime_id"]: r for r in rows}
+        self.assertTrue(by_id["555"]["a_list_excluded"])
+        self.assertFalse(by_id["556"]["a_list_excluded"])
+
+    def test_rendered_dom_uses_format_block_noalist_without_marking_sibling_format(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+        rendered = r'''
+        <div aria-label="Showtimes for Special Event">
+          <section><span>Excluded from A-List</span><a href="/showtimes/701">7:00 PM</a></section>
+          <section><span>Reserved Seating</span><a href="/showtimes/702">9:00 PM</a></section>
+        </div>
+        <div aria-label="Showtimes for Movie Two"><a href="/showtimes/703">7:10 PM</a></div>
+        <div aria-label="Showtimes for Movie Three"><a href="/showtimes/704">7:20 PM</a></div>
+        <div aria-label="Showtimes for Movie Four"><a href="/showtimes/705">7:30 PM</a></div>
+        <div aria-label="Showtimes for Movie Five"><a href="/showtimes/706">7:40 PM</a></div>
+        <div aria-label="Showtimes for Movie Six"><a href="/showtimes/707">7:50 PM</a></div>
+        '''
+        ns["fetch_amc_html"] = lambda session, url, params=None: (200, "")
+        ns["fetch_html_with_browser"] = lambda url, params=None, timeout_ms=30000: (200, rendered)
+        rows = scraper(None, "AMC Example 10", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+        by_id = {r.get("showtime_id"): r for r in rows}
+        self.assertTrue(by_id["701"]["a_list_excluded"])
+        self.assertFalse(by_id["702"]["a_list_excluded"])
 
     def test_amc_ssr_fallback_rejects_wrong_local_date(self):
         source = self._patched_source()
@@ -725,6 +768,43 @@ df_show = pd.DataFrame(showtimes)"""
         self.assertEqual(fmt(pd.Series({"rt_critic": 100, "rt_audience": None})), "100/-")
         self.assertEqual(fmt(pd.Series({"rt_critic": None, "rt_audience": 98})), "-/98")
         self.assertEqual(fmt(pd.Series({"rt_critic": None, "rt_audience": None})), "")
+
+
+class PublicReportScrubTests(unittest.TestCase):
+    def _patched_remove(self):
+        source = '''
+import re
+from bs4 import BeautifulSoup
+
+def remove_noisy_output(soup: BeautifulSoup) -> None:
+    pass
+'''
+        patched = patch_postprocess_source(source)
+        ns = {}
+        exec(compile(patched, "<postprocess-scrub-test>", "exec"), ns)
+        return ns["remove_noisy_output"]
+
+    def test_public_scrub_removes_info_warn_but_preserves_user_output(self):
+        remove = self._patched_remove()
+        soup = BeautifulSoup(
+            '<div class="jp-OutputArea-child"><pre>[WARN] blocked\n[INFO] retry\nUpcoming weekend: Sat/Sun\n</pre></div>',
+            'html.parser',
+        )
+        remove(soup)
+        text = soup.get_text("\n")
+        self.assertNotIn("[WARN]", text)
+        self.assertNotIn("[INFO]", text)
+        self.assertIn("Upcoming weekend", text)
+
+    def test_public_scrub_removes_diagnostic_only_output_container(self):
+        remove = self._patched_remove()
+        soup = BeautifulSoup(
+            '<div class="jp-OutputArea-child"><pre>[INFO] Merging rendered AMC DOM\n</pre></div>',
+            'html.parser',
+        )
+        remove(soup)
+        self.assertNotIn("Merging rendered AMC DOM", soup.get_text())
+        self.assertIsNone(soup.find("div", class_="jp-OutputArea-child"))
 
 
 class PosterValidationTests(unittest.TestCase):

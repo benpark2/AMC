@@ -19,6 +19,10 @@ This patcher is intentionally conservative:
 8. Reject suspiciously incomplete aggregate weekend reports before ratings or
    publishing, using theatre/date coverage plus a conservative prior-report
    baseline when available.
+9. Preserve AMC's explicit A-List exclusion metadata (NOALIST) through SSR and
+   rendered-DOM recovery paths.
+10. Keep scraper INFO/WARN diagnostics out of the public HTML while leaving
+    them available in the GitHub Actions execution log.
 
 Important safety property
 -------------------------
@@ -364,6 +368,24 @@ AMC_SHOWTIME_PARSE_REPLACEMENT = r'''def extract_showtimes_from_json_scripts(htm
         if not TIME_RE.search(time_txt):
             continue
 
+        # AMC's canonical showtime attribute code for an A-List exclusion is
+        # NOALIST. The attributes array can be serialized after display, so
+        # inspect only this showtime's bounded tail (never the next showtime or
+        # movie region) rather than hard-coding False as the old fallback did.
+        record_end = min(len(text), m.end() + 8000)
+        next_sid = re.search(r'"showtimeId"\s*:', text[m.end():], re.I)
+        if next_sid:
+            record_end = min(record_end, m.end() + next_sid.start())
+        next_anchor = next((pos for pos, _ in anchors if pos > m.start()), None)
+        if next_anchor is not None:
+            record_end = min(record_end, next_anchor)
+        record_text = text[m.start():record_end]
+        a_list_excluded = bool(re.search(
+            r'\bNOALIST\b|Excluded\s+from\s+A-List',
+            _decode_text(record_text),
+            re.I,
+        ))
+
         add_row({
             "movie_title": movie,
             "theatre": theatre_name,
@@ -371,7 +393,7 @@ AMC_SHOWTIME_PARSE_REPLACEMENT = r'''def extract_showtimes_from_json_scripts(htm
             "show_time": time_txt,
             "format_label": None,
             "runtime_min": None,
-            "a_list_excluded": False,
+            "a_list_excluded": a_list_excluded,
             "showtime_id": sid,
         })
 
@@ -545,6 +567,33 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         except Exception as e:
             print(f"[WARN] Ignoring unreadable AMC in-run cache for {theatre_name} {wanted}: {e}")
 
+    def _a_list_excluded_for_showtime(tag, movie_region=None) -> bool:
+        # Retain the notebook's legacy local detector first. Then walk outward
+        # only to the nearest containing block that explicitly carries AMC's
+        # canonical exclusion marker. Do not use the whole movie region as a
+        # fallback because one format can be excluded while another format for
+        # the same title remains A-List eligible.
+        try:
+            if is_a_list_excluded_near_tag(tag):
+                return True
+        except Exception:
+            pass
+
+        marker_rx = re.compile(r'\bNOALIST\b|Excluded\s+from\s+A-List', re.I)
+        node = tag
+        hops = 0
+        while node is not None and node is not movie_region and hops < 8:
+            hops += 1
+            try:
+                raw = str(node)
+                txt = _normalize_space(node.get_text(" ", strip=True))
+                if marker_rx.search(raw) or marker_rx.search(txt):
+                    return True
+            except Exception:
+                pass
+            node = getattr(node, "parent", None)
+        return False
+
     def merge_html(page_html: str, *, rendered: bool = False) -> None:
         if not page_html:
             return
@@ -589,7 +638,7 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
                     "show_time": tm.group(1).lower(),
                     "format_label": _extract_local_format_near_tag(a),
                     "runtime_min": runtime_min,
-                    "a_list_excluded": is_a_list_excluded_near_tag(a),
+                    "a_list_excluded": _a_list_excluded_for_showtime(a, region),
                     "showtime_id": sid_m.group(1),
                 }, source_rank=3 if rendered else 2)
 
@@ -706,6 +755,14 @@ df_show = df_show.loc[~_non_movie_mask].copy()
 if df_show.empty:
     raise RuntimeError("All AMC rows were filtered as non-movie inventory.")
 
+# Collapse indistinguishable duplicate clock times before report/planner aggregation.
+_display_duplicate_cols = ["movie_title", "theatre", "show_date", "show_time"]
+if all(_c in df_show.columns for _c in _display_duplicate_cols):
+    _clock_duplicate_mask = df_show.duplicated(subset=_display_duplicate_cols, keep="first")
+    if _clock_duplicate_mask.any():
+        print(f"[INFO] Collapsing {int(_clock_duplicate_mask.sum())} duplicate AMC clock-time row(s)")
+        df_show = df_show.loc[~_clock_duplicate_mask].copy()
+
 # Completeness guard. AMC occasionally serves a partial React/queue response
 # that contains many valid rows for only one theatre or one day. A healthy
 # aggregate count therefore is not enough evidence that the weekend is complete.
@@ -797,6 +854,61 @@ if _incomplete_reasons:
         "The AMC scrape was suspiciously incomplete: " + "; ".join(_incomplete_reasons) + "."
     )
 """
+
+
+PUBLIC_REPORT_SCRUBBER_REPLACEMENT = r'''def remove_noisy_output(soup: BeautifulSoup) -> None:
+    """Remove captured scraper INFO/WARN lines from public HTML only."""
+    diagnostic_rx = re.compile(r"^\s*\[(?:INFO|WARN)\](?:\s|$)", re.I)
+
+    for tag in list(soup.find_all("pre")):
+        raw = tag.get_text("\n", strip=False)
+        lines = raw.splitlines(keepends=True)
+        if not lines:
+            continue
+
+        kept = [line for line in lines if not diagnostic_rx.search(line)]
+        if len(kept) == len(lines):
+            continue
+
+        cleaned = "".join(kept)
+        if cleaned.strip():
+            tag.clear()
+            tag.append(cleaned)
+            continue
+
+        container = tag
+        for parent in tag.parents:
+            classes = parent.get("class", []) if getattr(parent, "attrs", None) else []
+            if any(cls in {
+                "jp-OutputArea-child", "jp-OutputArea-output", "jp-RenderedText",
+                "output_area", "output_subarea",
+            } for cls in classes):
+                container = parent
+                break
+        container.decompose()
+'''
+
+
+def patch_postprocess_source(source: str) -> str:
+    """AST-safely replace only remove_noisy_output() in postprocess_report.py."""
+    patched, did_replace = _replace_function(
+        source,
+        "remove_noisy_output",
+        PUBLIC_REPORT_SCRUBBER_REPLACEMENT,
+    )
+    if not did_replace:
+        raise RuntimeError(
+            "scripts/postprocess_report.py has no top-level remove_noisy_output(); "
+            "refusing to silently skip public diagnostic cleanup."
+        )
+    ast.parse(patched)
+    return patched
+
+
+def patch_postprocess_file(path: Path) -> None:
+    source = path.read_text(encoding="utf-8")
+    patched = patch_postprocess_source(source)
+    path.write_text(patched, encoding="utf-8")
 
 
 def _source_text(cell: dict) -> str:
@@ -1159,6 +1271,15 @@ def main() -> int:
 
     patched = patch_notebook(notebook)
 
+    # Patch only the runner's working copy. The workflow commits docs/, not
+    # scripts/, so the repository source remains unchanged and this is applied
+    # afresh on every run.
+    postprocess_path = Path("scripts/postprocess_report.py")
+    if postprocess_path.exists():
+        patch_postprocess_file(postprocess_path)
+    else:
+        raise RuntimeError(f"Missing required postprocessor: {postprocess_path}")
+
     args.output_notebook.parent.mkdir(parents=True, exist_ok=True)
     with args.output_notebook.open("w", encoding="utf-8") as fh:
         json.dump(patched, fh, ensure_ascii=False, indent=1)
@@ -1166,7 +1287,7 @@ def main() -> int:
 
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
-        "non-movie filtering, IMDb variant scoring, AMC retained theatre-date recovery v18 -> "
+        "non-movie filtering, IMDb variant scoring, AMC A-List metadata + clean public logs v20 -> "
         f"{args.output_notebook}"
     )
     return 0
