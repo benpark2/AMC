@@ -131,6 +131,18 @@ pre, code, kbd, samp, tt,
   margin: 0 0 12px 0;
 }
 
+/* Visible only when the live AMC request was blocked/too sparse and the
+   notebook reused a recent successful report for the exact same weekend. */
+.amc-cache-notice{
+  font-size: 13px;
+  color: var(--text);
+  margin: 0 0 14px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--grid);
+  border-radius: 10px;
+  background: rgba(15,23,42,0.04);
+}
+
 /* ========== Page chrome ========== */
 body{
   margin: 0 !important;
@@ -713,7 +725,12 @@ def parse_showtimes_blob(blob: str) -> list[dict]:
       AMC Orange 30
       • 2025-12-20: 8:30 am [Laser at AMC], ...
 
-    Returns list of dicts: {theater, date, start, format}
+    Returns list of dicts: {theater, date, start, format, a_list_excluded}
+
+    The exclusion flag is read from the visible ⛔ marker already emitted by
+    the notebook. Serializing it into showtimes-data makes the previous-report
+    fallback lossless on future runs while preserving compatibility with older
+    reports that did not include the field.
     """
     if not blob:
         return []
@@ -749,6 +766,7 @@ def parse_showtimes_blob(blob: str) -> list[dict]:
                 "date": date,
                 "start": start,
                 "format": fmt,
+                "a_list_excluded": "⛔" in p,
             })
 
     return showings
@@ -1069,6 +1087,7 @@ def main() -> None:
                 "date": sh["date"],
                 "start": sh["start"],
                 "runtime_min": runtime_min,
+                "a_list_excluded": bool(sh.get("a_list_excluded")),
             })
 
         # Add numbering column if missing
@@ -1157,10 +1176,37 @@ def main() -> None:
     # Put it at the very top of the container
     container.insert(0, ts_div)
 
+    # If the live AMC page was blocked or only partially hydrated, the notebook
+    # may have reused a recent successful report for the exact same weekend.
+    # Surface that fact in the public report rather than silently presenting
+    # carried-forward showtimes as if they were freshly retrieved.
+    old_fallback_notice = soup.find(id="amc-cache-notice")
+    if old_fallback_notice:
+        old_fallback_notice.decompose()
+
+    insert_pos = 1
+    fallback_marker = Path("build/amc_previous_report_fallback.txt")
+    if fallback_marker.exists():
+        combos = [
+            line.strip()
+            for line in fallback_marker.read_text(encoding="utf-8", errors="ignore").splitlines()
+            if line.strip()
+        ]
+        if combos:
+            notice = soup.new_tag("div", id="amc-cache-notice", **{"class": "amc-cache-notice"})
+            notice.string = (
+                "AMC blocked or incompletely rendered the live schedule for part of this run. "
+                "Those theater/date combinations were carried forward from the most recent "
+                "successful report for the same weekend (maximum age: 36 hours): "
+                + "; ".join(combos)
+            )
+            container.insert(insert_pos, notice)
+            insert_pos += 1
+
     
     body = soup.body or soup
     #old code: body.insert(0, BeautifulSoup(PLANNER_HTML, "html.parser"))
-    container.insert(1, BeautifulSoup(PLANNER_HTML, "html.parser"))
+    container.insert(insert_pos, BeautifulSoup(PLANNER_HTML, "html.parser"))
 
     data_tag = soup.new_tag("script", id="showtimes-data", type="application/json")
     data_tag.string = json.dumps({

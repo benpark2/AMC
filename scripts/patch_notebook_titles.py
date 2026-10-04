@@ -17,12 +17,17 @@ This patcher is intentionally conservative:
 7. If the server-rendered page is suspiciously sparse relative to the theatre
    screen count, fetch the fully rendered browser DOM and merge its
    aria-labelled movie/showtime regions.
-8. Reject suspiciously incomplete aggregate weekend reports before ratings or
+8. Let the Playwright fallback wait for AMC's dynamically rendered showtime
+   DOM to stabilize instead of taking a fixed-delay snapshot.
+9. If AMC still serves a sparse/blocked response, allow only a recent,
+   same-weekend prior successful report to act as a transparent last-good
+   showtime cache; preserve per-showtime A-List exclusions while doing so.
+10. Reject suspiciously incomplete aggregate weekend reports before ratings or
    publishing, using theatre/date coverage plus a conservative prior-report
    baseline when available.
-9. Preserve AMC's explicit A-List exclusion metadata (NOALIST) through SSR and
+11. Preserve AMC's explicit A-List exclusion metadata (NOALIST) through SSR and
    rendered-DOM recovery paths.
-10. Keep scraper INFO/WARN diagnostics out of the public HTML while leaving
+12. Keep scraper INFO/WARN diagnostics out of the public HTML while leaving
     them available in the GitHub Actions execution log.
 
 Important safety property
@@ -39,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import base64
 import json
 from pathlib import Path
 import sys
@@ -231,6 +237,248 @@ RT_GET_SCORES_REPLACEMENT = r'''def rt_get_scores(
     cache[key] = (None, None, None)
     return cache[key]
 '''
+
+
+AMC_BROWSER_CHILD_SCRIPT = r"""
+import json
+import re
+import sys
+import time
+from urllib.parse import unquote, urljoin
+from playwright.sync_api import sync_playwright
+
+AMC_BASE = "https://www.amctheatres.com"
+QUEUE_RE = re.compile(r"document\.location\.href\s*=\s*decodeURIComponent\(\s*['\"]([^'\"]+)['\"]\s*\)", re.I)
+MARKERS = (
+    "the site requires javascript to be enabled",
+    "queue.amctheatres.com",
+    "global safety net",
+    "enable-javascript.com",
+    "access denied",
+    "verify you are human",
+    "checking your browser before accessing",
+    "attention required",
+    "cf-chl",
+    "captcha",
+    "bot protection",
+)
+
+
+def looks_like_interstitial(html_txt: str, final_url: str = "") -> bool:
+    low = (html_txt or "").lower()
+    final_low = (final_url or "").lower()
+    return any(marker in low for marker in MARKERS) or "queue.amctheatres.com" in final_low
+
+
+def extract_redirect(html_txt: str, current_url: str = AMC_BASE):
+    if not html_txt:
+        return None
+    match = QUEUE_RE.search(html_txt)
+    if not match:
+        return None
+    raw = match.group(1)
+    try:
+        decoded = unquote(raw)
+    except Exception:
+        decoded = raw
+    return urljoin(current_url or AMC_BASE, decoded)
+
+
+def showtime_signature(page):
+    # Return generic DOM/data counts that rise as AMC finishes rendering.
+    try:
+        movie_regions = page.locator('[aria-label^="Showtimes for "]').count()
+    except Exception:
+        movie_regions = 0
+    try:
+        showtime_links = page.locator('a[href*="/showtimes/"]').count()
+    except Exception:
+        showtime_links = 0
+    try:
+        html_txt = page.content()
+    except Exception:
+        html_txt = ""
+    return (
+        int(movie_regions),
+        int(showtime_links),
+        min(9999, html_txt.count('showtimeId')),
+        min(9999, html_txt.count('Showtimes for')),
+    )
+
+
+base_url = sys.argv[1]
+qs = sys.argv[2]
+timeout_ms = int(sys.argv[3])
+executable_path = sys.argv[4] or None
+target_url = base_url + (("?" + qs) if qs else "")
+
+with sync_playwright() as p:
+    launch_kwargs = {
+        "headless": True,
+        "args": [
+            "--disable-blink-features=AutomationControlled",
+            "--no-sandbox",
+        ],
+    }
+    if executable_path:
+        launch_kwargs["executable_path"] = executable_path
+    browser = p.chromium.launch(**launch_kwargs)
+
+    # Derive the user agent from installed Chromium instead of freezing a
+    # browser version in source code. Strip only the headless marker.
+    probe = browser.new_page()
+    try:
+        browser_ua = probe.evaluate("navigator.userAgent")
+    finally:
+        probe.close()
+    browser_ua = str(browser_ua or "").replace("HeadlessChrome/", "Chrome/")
+
+    context = browser.new_context(
+        user_agent=browser_ua or None,
+        locale="en-US",
+        timezone_id="America/Los_Angeles",
+        viewport={"width": 1440, "height": 2200},
+        java_script_enabled=True,
+        extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+    )
+    context.add_init_script(
+        '''
+        Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+        window.chrome = window.chrome || { runtime: {} };
+        Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"] });
+        '''
+    )
+    # AMC's legacy cookietest is useful for the real site, but skip it for
+    # local/synthetic diagnostics so the browser helper remains testable.
+    if "amctheatres.com" in target_url.lower():
+        context.add_cookies([{
+            "name": "cookietest",
+            "value": "1",
+            "domain": "www.amctheatres.com",
+            "path": "/",
+        }])
+
+    page = context.new_page()
+    response = page.goto(target_url, wait_until="domcontentloaded", timeout=timeout_ms)
+    status = response.status if response is not None else 200
+    page.wait_for_timeout(1000)
+    html_txt = page.content()
+
+    # Retain the queue-token behavior from the previous fetcher.
+    for _ in range(3):
+        if not looks_like_interstitial(html_txt, page.url):
+            break
+        redirect_url = extract_redirect(html_txt, page.url or target_url)
+        try:
+            if redirect_url:
+                response = page.goto(redirect_url, wait_until="domcontentloaded", timeout=timeout_ms)
+                status = response.status if response is not None else status
+            else:
+                response = page.reload(wait_until="domcontentloaded", timeout=timeout_ms)
+                status = response.status if response is not None else status
+        except Exception:
+            pass
+        try:
+            page.wait_for_load_state("networkidle", timeout=min(7000, timeout_ms))
+        except Exception:
+            pass
+        page.wait_for_timeout(1500)
+        html_txt = page.content()
+
+    # Wait for useful AMC content to stabilize. A page can briefly plateau at
+    # one or two cards while later React requests are still resolving.
+    start = time.monotonic()
+    deadline = start + min(24.0, max(10.0, timeout_ms / 1000.0 * 0.60))
+    first_useful_at = None
+    previous = None
+    stable_samples = 0
+
+    while time.monotonic() < deadline:
+        current_html = page.content()
+        if looks_like_interstitial(current_html, page.url):
+            break
+        try:
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        except Exception:
+            pass
+        page.wait_for_timeout(1200)
+        signature = showtime_signature(page)
+        useful = any(signature)
+        now = time.monotonic()
+
+        if useful and first_useful_at is None:
+            first_useful_at = now
+        if signature == previous and useful:
+            stable_samples += 1
+        else:
+            stable_samples = 0
+        previous = signature
+
+        if (
+            first_useful_at is not None
+            and now - first_useful_at >= 5.0
+            and stable_samples >= 3
+        ):
+            break
+
+    payload = {
+        "status": int(status or 200),
+        "html": page.content(),
+        "url": page.url,
+        "signature": showtime_signature(page),
+    }
+    context.close()
+    browser.close()
+
+print(json.dumps(payload))
+"""
+
+AMC_BROWSER_FETCH_REPLACEMENT_TEMPLATE = r'''def fetch_html_with_browser(url: str, params: dict | None = None, timeout_ms: int = 30000) -> Tuple[int, str]:
+    """
+    Fetch an AMC page in Chromium and wait for its client-rendered showtime DOM
+    to settle before taking the HTML snapshot.
+
+    AMC can hydrate the movie/showtime regions several seconds after the first
+    document arrives. A fixed short sleep is race-prone on GitHub-hosted runners,
+    so the child browser polls generic showtime signals until they stabilize.
+    """
+    import os as _amc_os
+
+    full_url = requests.Request("GET", url, params=params).prepare().url
+    query_string = urlparse(full_url).query
+    browser_fetch_script = base64.b64decode("__BROWSER_FETCH_B64__").decode("utf-8")
+    executable_path = _amc_os.environ.get("AMC_CHROMIUM_EXECUTABLE", "")
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            browser_fetch_script,
+            url,
+            query_string,
+            str(timeout_ms),
+            executable_path,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=max(120, int(timeout_ms / 1000) * 5),
+    )
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or proc.stdout or "browser subprocess failed").strip())
+
+    try:
+        payload = json.loads(proc.stdout)
+    except Exception as e:
+        raise RuntimeError(f"browser subprocess returned invalid JSON: {proc.stdout[:500]}") from e
+
+    return int(payload.get("status") or 200), str(payload.get("html") or "")
+'''
+
+AMC_BROWSER_FETCH_REPLACEMENT = AMC_BROWSER_FETCH_REPLACEMENT_TEMPLATE.replace(
+    "__BROWSER_FETCH_B64__",
+    base64.b64encode(AMC_BROWSER_CHILD_SCRIPT.encode("utf-8")).decode("ascii"),
+)
+
 
 RT_DISPLAY_MARKER = "df_display = df_summary.copy()\n"
 RT_DISPLAY_INSERT = """df_display = df_summary.copy()
@@ -740,6 +988,135 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
                                 "a_list_excluded": is_a_list_excluded_near_tag(el),
                             }, source_rank=0)
 
+    def _previous_report_rows() -> List[dict]:
+        """
+        Recover one theatre/date only from a recent successful checked-in
+        report, and only when that report contains the exact requested date.
+
+        This is a last-good fallback for AMC/GitHub-runner blocking, not a
+        historical-data substitute. The report must be recent (<= 36 hours),
+        same-weekend, and healthy enough to satisfy this theatre's normal
+        sparse threshold. Existing per-showtime A-List exclusion markers are
+        preserved from either structured JSON or the visible table.
+        """
+        report_path = _AMCPath("docs/index.html")
+        stamp_path = _AMCPath("docs/last_run_utc.txt")
+        if not report_path.exists() or not stamp_path.exists():
+            return []
+
+        try:
+            stamp_txt = stamp_path.read_text(encoding="utf-8").strip()
+            stamp_dt = datetime.strptime(stamp_txt, "%Y-%m-%dT%H:%M:%SZ")
+            age_hours = (datetime.utcnow() - stamp_dt).total_seconds() / 3600.0
+            if age_hours < -1 or age_hours > 36:
+                return []
+        except Exception:
+            return []
+
+        try:
+            previous_html = report_path.read_text(encoding="utf-8", errors="ignore")
+            previous_soup = BeautifulSoup(previous_html, "html.parser")
+            data_script = previous_soup.find("script", id="showtimes-data")
+            if data_script is None:
+                return []
+            payload = json.loads(data_script.string or data_script.get_text() or "{}")
+            payload_rows = payload.get("showtimes") or []
+            if not isinstance(payload_rows, list):
+                return []
+        except Exception:
+            return []
+
+        def _norm_theatre(value: str) -> str:
+            value = str(value or "").replace("@", " at ").casefold()
+            return re.sub(r"[^a-z0-9]+", " ", value).strip()
+
+        wanted_theatre = _norm_theatre(theatre_name)
+
+        # Older reports did not serialize the exclusion flag into
+        # showtimes-data. Reconstruct those flags from the visible table's
+        # exact time markers so this fallback never loses the ⛔ behavior.
+        excluded_keys = set()
+        for tr in previous_soup.select("tr[data-movie-id]"):
+            title_tag = tr.select_one(".movie-cell-title")
+            title = _normalize_space(title_tag.get_text(" ", strip=True)) if title_tag else ""
+            if not title:
+                continue
+            candidate_cells = tr.find_all(["td", "th"], recursive=False)
+            show_cell = None
+            for cell in candidate_cells:
+                cell_text = cell.get_text("\n", strip=True)
+                if "AMC " in cell_text and wanted in cell_text:
+                    show_cell = cell
+                    break
+            if show_cell is None:
+                continue
+
+            current_theatre = None
+            raw_blob = show_cell.get_text("\n", strip=True).replace("•", "\n•")
+            for line in [x.strip() for x in raw_blob.splitlines() if x.strip()]:
+                if line.casefold().startswith("amc "):
+                    current_theatre = line
+                    continue
+                dm = re.match(r"^[•\-\*]?\s*(\d{4}-\d{2}-\d{2})\s*:\s*(.+)$", line)
+                if not dm or not current_theatre or dm.group(1) != wanted:
+                    continue
+                if _norm_theatre(current_theatre) != wanted_theatre:
+                    continue
+                for part in [p.strip() for p in dm.group(2).split(",") if p.strip()]:
+                    tm = TIME_RE.search(part)
+                    if tm and "⛔" in part:
+                        excluded_keys.add((
+                            title.casefold(),
+                            wanted_theatre,
+                            wanted,
+                            _normalize_space(tm.group(1)).casefold(),
+                        ))
+
+        recovered = []
+        for item in payload_rows:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("date") or "") != wanted:
+                continue
+            item_theatre = _norm_theatre(item.get("theater") or item.get("theatre") or "")
+            if item_theatre != wanted_theatre:
+                continue
+            title = _normalize_space(str(item.get("movie") or item.get("movie_title") or ""))
+            start = _normalize_space(str(item.get("start") or item.get("show_time") or "")).casefold()
+            if not title or not TIME_RE.search(start):
+                continue
+            exclusion_key = (title.casefold(), wanted_theatre, wanted, start)
+            recovered.append({
+                "movie_title": title,
+                "theatre": theatre_name,
+                "show_date": wanted,
+                "show_time": start,
+                "format_label": _normalize_space(str(item.get("format") or "")) or None,
+                "runtime_min": item.get("runtime_min"),
+                "a_list_excluded": bool(item.get("a_list_excluded")) or exclusion_key in excluded_keys,
+            })
+
+        recovered_unique = {
+            str(row.get("movie_title") or "").casefold()
+            for row in recovered
+            if row.get("movie_title")
+        }
+        if len(recovered_unique) < _sparse_threshold:
+            return []
+        return recovered
+
+    def _mark_previous_report_fallback() -> None:
+        try:
+            marker = _AMCPath("build/amc_previous_report_fallback.txt")
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            existing = set()
+            if marker.exists():
+                existing = {line.strip() for line in marker.read_text(encoding="utf-8").splitlines() if line.strip()}
+            existing.add(f"{theatre_name} | {wanted}")
+            marker.write_text("\n".join(sorted(existing)) + "\n", encoding="utf-8")
+        except Exception as e:
+            print(f"[WARN] Could not record AMC previous-report fallback: {e}")
+
     browser_html = ""
     html_txt = ""
     target = requests.Request("GET", showtimes_url, params={"date": wanted}).prepare().url
@@ -807,6 +1184,20 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         debug_path = debug_dir / f"{_cache_slug}-{wanted}.html"
         debug_path.write_text(browser_html or html_txt or "", encoding="utf-8")
         print(f"[INFO] Saved AMC debug HTML to {debug_path}")
+
+        previous_rows = _previous_report_rows()
+        if previous_rows:
+            _mark_previous_report_fallback()
+            previous_unique = {
+                str(row.get("movie_title") or "").casefold()
+                for row in previous_rows
+                if row.get("movie_title")
+            }
+            print(
+                f"[WARN] AMC live scrape remained sparse for {theatre_name} {wanted}; "
+                f"using recent same-weekend previous report ({len(previous_unique)} movie(s))."
+            )
+            return previous_rows
 
     return final_rows
 '''
@@ -1293,6 +1684,7 @@ def patch_notebook(notebook: dict) -> dict:
     rt_get_scores_replacements = 0
     rt_display_insertions = 0
     rt_desired_replacements = 0
+    amc_browser_fetch_replacements = 0
     amc_showtime_parser_replacements = 0
     amc_scrape_function_replacements = 0
 
@@ -1327,6 +1719,13 @@ def patch_notebook(notebook: dict) -> dict:
             RT_GET_SCORES_REPLACEMENT,
         )
         rt_get_scores_replacements += int(did_patch_rt_get_scores)
+
+        source, did_patch_amc_browser = _replace_function(
+            source,
+            "fetch_html_with_browser",
+            AMC_BROWSER_FETCH_REPLACEMENT,
+        )
+        amc_browser_fetch_replacements += int(did_patch_amc_browser)
 
         source, did_patch_amc_showtimes = _replace_function(
             source,
@@ -1380,6 +1779,7 @@ def patch_notebook(notebook: dict) -> dict:
         "rt_get_scores replacement": rt_get_scores_replacements,
         "RT display column insertion": rt_display_insertions,
         "RT desired-column replacement": rt_desired_replacements,
+        "AMC stabilized browser fetch replacement": amc_browser_fetch_replacements,
         "AMC escaped showtime parser replacement": amc_showtime_parser_replacements,
         "AMC sparse-page scrape replacement": amc_scrape_function_replacements,
     }
@@ -1422,7 +1822,8 @@ def main() -> int:
 
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
-        "non-movie filtering, original-film metadata lookup, AMC A-List metadata + clean public logs v21 -> "
+        "non-movie filtering, original-film metadata lookup, stabilized AMC browser fetch, "
+        "AMC A-List metadata + clean public logs v22 -> "
         f"{args.output_notebook}"
     )
     return 0

@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import ast
+from datetime import datetime
 import json
+import os
 from pathlib import Path
 import re
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -21,7 +24,12 @@ from scripts.movie_titles import (
     metadata_release_year_hint,
     wikipedia_title_candidates,
 )
-from scripts.patch_notebook_titles import patch_notebook, patch_postprocess_source
+from scripts.patch_notebook_titles import (
+    AMC_BROWSER_CHILD_SCRIPT,
+    patch_notebook,
+    patch_postprocess_source,
+)
+from scripts.postprocess_report import parse_showtimes_blob
 import scripts.finalize_posters as posters
 
 
@@ -343,6 +351,13 @@ desired = [
         self.assertIn('_cache_dir = _AMCPath("build/amc_combo_cache")', source)
         self.assertIn('_max_rounds = 2', source)
         self.assertIn('_need_browser = (_round == 1)', source)
+        self.assertIn('AMC_CHROMIUM_EXECUTABLE', source)
+        self.assertIn('base64.b64decode', source)
+        self.assertIn('HeadlessChrome/', AMC_BROWSER_CHILD_SCRIPT)
+        self.assertNotIn('Chrome/123.0.0.0', AMC_BROWSER_CHILD_SCRIPT)
+        self.assertIn('_previous_report_rows', source)
+        self.assertIn('amc_previous_report_fallback.txt', source)
+        self.assertIn('maximum age', Path('scripts/postprocess_report.py').read_text(encoding='utf-8'))
         identifiers = {
             node.id for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Name)
         }
@@ -572,6 +587,74 @@ desired = [
         second = scraper(*args)
         self.assertEqual(len(first), len(second))
         self.assertEqual(network, first_counts, "complete fresh cache should avoid another network fetch")
+
+    def test_recent_same_weekend_report_is_last_good_fallback_and_keeps_noalist(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+
+        # Force the live/static sources to remain empty so recovery must come
+        # from the checked-in prior report for this exact theatre/date.
+        ns["fetch_amc_html"] = lambda session, url, params=None: (200, "")
+        ns["fetch_html_with_browser"] = lambda url, params=None, timeout_ms=30000: (200, "")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docs").mkdir()
+            (root / "docs" / "last_run_utc.txt").write_text(
+                datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ") + "\n",
+                encoding="utf-8",
+            )
+
+            showtimes = []
+            table_rows = []
+            for i in range(1, 7):
+                title = f"Cached Movie {i}"
+                time_txt = f"7:{i:02d} pm"
+                showtimes.append({
+                    "movie_id": i,
+                    "movie": title,
+                    "theater": "AMC Example 10",
+                    "format": "",
+                    "date": "2026-09-26",
+                    "start": time_txt,
+                    "runtime_min": 100 + i,
+                    # Deliberately omit a_list_excluded to verify backward
+                    # compatibility with reports generated before that field.
+                })
+                marker = "⛔" if i == 1 else ""
+                table_rows.append(
+                    f'<tr data-movie-id="{i}"><td><div class="movie-cell-title">{title}</div></td>'
+                    f'<td>AMC Example 10<br>• 2026-09-26: {time_txt}{marker}</td></tr>'
+                )
+
+            payload = json.dumps({"movies": [], "showtimes": showtimes})
+            report_html = (
+                "<html><body><table><tbody>" + "".join(table_rows) + "</tbody></table>"
+                f'<script id="showtimes-data" type="application/json">{payload}</script>'
+                "</body></html>"
+            )
+            (root / "docs" / "index.html").write_text(report_html, encoding="utf-8")
+
+            old_cwd = os.getcwd()
+            os.chdir(root)
+            try:
+                rows = scraper(
+                    None,
+                    "AMC Example 10",
+                    "https://example.invalid/showtimes",
+                    ns["date"](2026, 9, 26),
+                )
+            finally:
+                os.chdir(old_cwd)
+
+            self.assertEqual(len({r["movie_title"] for r in rows}), 6)
+            first = next(r for r in rows if r["movie_title"] == "Cached Movie 1")
+            self.assertTrue(first["a_list_excluded"])
+            marker_path = root / "build" / "amc_previous_report_fallback.txt"
+            self.assertTrue(marker_path.exists())
+            self.assertIn("AMC Example 10 | 2026-09-26", marker_path.read_text(encoding="utf-8"))
 
     def test_large_theatre_five_movies_is_still_sparse(self):
         source = self._patched_source()
@@ -876,6 +959,14 @@ def remove_noisy_output(soup: BeautifulSoup) -> None:
         remove(soup)
         self.assertNotIn("Merging rendered AMC DOM", soup.get_text())
         self.assertIsNone(soup.find("div", class_="jp-OutputArea-child"))
+
+    def test_showtimes_blob_serializes_a_list_exclusion(self):
+        rows = parse_showtimes_blob(
+            "AMC Example 10\n• 2026-09-26: 7:00 pm⛔ [Laser at AMC], 9:00 pm"
+        )
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(rows[0]["a_list_excluded"])
+        self.assertFalse(rows[1]["a_list_excluded"])
 
 
 class PosterValidationTests(unittest.TestCase):
