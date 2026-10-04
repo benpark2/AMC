@@ -7,8 +7,10 @@ import sys
 from pathlib import Path
 from bs4 import BeautifulSoup
 from urllib.request import Request, urlopen
-from urllib.parse import quote, urlencode
+from urllib.parse import quote
 from urllib.error import HTTPError, URLError
+
+from scripts.movie_titles import wikipedia_title_candidates
 
 
 HTML_PATH = Path("docs/index.html")
@@ -30,17 +32,32 @@ def _all_lines_are_noisy(lines: list[str]) -> bool:
     return True
 
 def remove_noisy_output(soup: BeautifulSoup) -> None:
-    # Be conservative: only remove notebook text-output blocks whose non-empty lines
-    # are all known noisy scraper status messages. This avoids blanking the page.
+    """Remove captured scraper INFO/WARN lines from public HTML only."""
+    diagnostic_rx = re.compile(r"^\s*\[(?:INFO|WARN)\](?:\s|$)", re.I)
+
     for tag in list(soup.find_all("pre")):
-        txt = tag.get_text("\n", strip=True)
-        lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
-        if not _all_lines_are_noisy(lines):
+        raw = tag.get_text("\n", strip=False)
+        lines = raw.splitlines(keepends=True)
+        if not lines:
             continue
+
+        kept = [line for line in lines if not diagnostic_rx.search(line)]
+        if len(kept) == len(lines):
+            continue
+
+        cleaned = "".join(kept)
+        if cleaned.strip():
+            tag.clear()
+            tag.append(cleaned)
+            continue
+
         container = tag
         for parent in tag.parents:
             classes = parent.get("class", []) if getattr(parent, "attrs", None) else []
-            if any(cls in {"jp-OutputArea-child", "jp-OutputArea-output", "jp-RenderedText", "output_area", "output_subarea"} for cls in classes):
+            if any(cls in {
+                "jp-OutputArea-child", "jp-OutputArea-output", "jp-RenderedText",
+                "output_area", "output_subarea",
+            } for cls in classes):
                 container = parent
                 break
         container.decompose()
@@ -923,52 +940,31 @@ def _fetch_json(url: str, timeout: int = 15) -> dict | None:
         return None
 
 def wikipedia_thumbnail_url(title: str) -> str | None:
-    """
-    Best-effort poster/thumbnail via Wikipedia.
-    1) Try page summary directly for title and common film suffixes
-    2) Fall back to MediaWiki search to pick the best page, then summary
+    """Return an exact-candidate Wikipedia thumbnail, if one exists.
+
+    This first-pass lookup intentionally avoids MediaWiki's broad search result.
+    A broad one-result search can attach artwork from a song, album, or different
+    same-title film (the failure mode seen with concert/event listings).  The
+    later ``finalize_posters.py`` pass already has a stronger Wikimedia-only
+    search/validation pipeline, so leaving a placeholder here is safer than
+    committing a plausible-but-wrong image.
     """
 
-    # 1. Clean the title: Remove trailing space + anything in parentheses
-    # Pattern explanation: \s* matches whitespace, \(.*?\) matches () and content inside
-    clean_title = re.sub(r'\s*\(.*?\)', '', title).strip()
-
-    
     def summary_thumb(page_title: str) -> str | None:
         t = quote(page_title.replace(" ", "_"))
         data = _fetch_json(f"https://en.wikipedia.org/api/rest_v1/page/summary/{t}")
         if not data:
             return None
         thumb = (data.get("thumbnail") or {}).get("source")
-        return thumb
+        return thumb if isinstance(thumb, str) and thumb.startswith(("http://", "https://")) else None
 
-    candidates = [
-        f"{clean_title} (2026 film)",
-        f"{clean_title} (2025 film)",
-        f"{clean_title} (2024 film)",
-        f"{clean_title} (film)",
-        clean_title,
-    ]
-    for c in candidates:
-        thumb = summary_thumb(c)
+    # Reuse the same generic title normalization as IMDb/RT/final poster lookup.
+    # This preserves the visible AMC title while using an original-film title
+    # and anniversary-derived year for metadata when appropriate.
+    for candidate in wikipedia_title_candidates(title):
+        thumb = summary_thumb(candidate)
         if thumb:
             return thumb
-
-    # Search fallback (helps with titles that don’t match the exact page name)
-    params = urlencode({
-        "action": "query",
-        "list": "search",
-        "srsearch": f"{clean_title} film",
-        "format": "json",
-        "srlimit": 1,
-    })
-    data = _fetch_json(f"https://en.wikipedia.org/w/api.php?{params}")
-    try:
-        hits = data["query"]["search"]
-        if hits:
-            return summary_thumb(hits[0]["title"])
-    except Exception:
-        pass
 
     return None
 

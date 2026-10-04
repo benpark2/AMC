@@ -71,6 +71,13 @@ _SUFFIX_PATTERNS = (
         r"\s*(?:[-–—:]\s*)?(?:special\s+)?in[-\s]?person\s+q\s*&\s*a\s*$",
         re.IGNORECASE,
     ),
+    # Q&A can be the entire trailing presentation label ("Movie Q&A with
+    # Director ... & Cast"), not only a bare final "Q&A" token.  Strip the
+    # event tail while preserving the AMC display title elsewhere in the app.
+    re.compile(
+        r"\s*(?:[-–—:]\s*)?q\s*&\s*a\s+with\s+.{1,160}$",
+        re.IGNORECASE,
+    ),
     re.compile(r"\s*(?:[-–—:]\s*)?q\s*&\s*a\s*$", re.IGNORECASE),
     re.compile(r"\s*(?:[-–—:]\s*)?sneak\s+peek\s*$", re.IGNORECASE),
     re.compile(r"\s*(?:[-–—:]\s*)?fan\s+event\s*$", re.IGNORECASE),
@@ -82,6 +89,16 @@ _SUFFIX_PATTERNS = (
         r"\s*(?:[-–—:]\s*)?the\s+imax\s+experience\s*$",
         re.IGNORECASE,
     ),
+
+    # Alternate-cut / repertory presentation labels.  These are intentionally
+    # generic suffix rules: the visible AMC wording is preserved, but metadata
+    # providers should receive the underlying feature title.
+    re.compile(
+        r"\s*(?:[-–—:]\s*)?(?:the\s+)?sing[- ]along\s+version\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\s*(?:[-–—:]\s*)?remaster(?:ed)?\s*$", re.IGNORECASE),
+    re.compile(r"\s*[-–—:]\s*encore\s*$", re.IGNORECASE),
 
     # Generic anniversary suffix. This comes after event/program suffixes so
     # stacked labels can collapse all the way to the base title.
@@ -333,6 +350,22 @@ def wikipedia_title_candidates(
         values.append(base_name)
 
     return _dedupe(values)
+
+
+def metadata_release_year_hint(
+    title: str,
+    *,
+    reference_year: int | None = None,
+) -> int | None:
+    """Return the strongest release-year hint encoded in an AMC title.
+
+    Explicit parenthetical years win.  Otherwise an anniversary presentation
+    can safely imply the original feature year by subtracting the anniversary
+    count from the presentation year.  This helper lets IMDb/RT ranking prefer
+    the original film without changing the title shown in the HTML report.
+    """
+    info = analyze_movie_title(title, reference_year=reference_year)
+    return info.explicit_year or info.inferred_release_year
 
 
 def search_terms_for_title(title: str) -> str:

@@ -175,6 +175,9 @@ LGBTQ_TEXT_PATTERNS = (
     r"\bqueer\b",
     r"\btransgender\b",
     r"\bbisexual\b",
+    # Some metadata sources use older terminology rather than the modern
+    # LGBTQ umbrella term, so retain this as an evidence synonym.
+    r"\bhomosexual(?:ity|s)?\b",
 )
 BLACK_FOCUS_TEXT_PATTERNS = (
     r"\bafrican[- ]american\b",
@@ -211,7 +214,36 @@ WIKIPEDIA_LGBTQ_FOCUS_PATTERNS = (
     r"\blesbian (?:romance|community|culture|films?|cinema|stories|storytelling)\b",
     r"\btransgender (?:community|culture|films?|cinema|stories|storytelling)\b",
     r"\bqueer (?:culture|community|cinema|films?|stories|storytelling)\b",
+    r"\bhomosexual(?:ity|s)?\b",
 )
+
+# Sparse/new releases do not always have structured religion metadata yet.
+# Title fallback is intentionally limited to explicit, provider-independent
+# religious vocabulary.  Do not add story phrases, character names, or wording
+# taken from a particular current release here; those belong in external
+# metadata (Wikidata/Wikipedia), not in source-code exceptions.
+FAITH_TITLE_PATTERNS = (
+    r"\b(?:jesus(?: christ)?|christian|biblical|bible|gospel|messiah)\b",
+    r"\b(?:eucharist|eucharistic|sacrament|sacramental|adoration)\b",
+)
+
+# Wikipedia prose is useful as a second source for international-market
+# classification when Wikidata is incomplete.  Patterns describe the film or
+# its language; generic setting/culture references are intentionally excluded.
+WIKIPEDIA_MARKET_PATTERNS = {
+    "Indian": (
+        r"\bindian (?:[a-z-]+ )*film\b",
+        r"\b(?:hindi|telugu|tamil|malayalam|kannada|bengali|marathi|gujarati|punjabi|odia|assamese)-language\b",
+    ),
+    "Korean": (r"\bsouth korean (?:[a-z-]+ )*film\b", r"\bkorean-language\b"),
+    "Chinese": (r"\bchinese (?:[a-z-]+ )*film\b", r"\b(?:mandarin|cantonese|chinese)-language\b"),
+    "Vietnamese": (r"\bvietnamese (?:[a-z-]+ )*film\b", r"\bvietnamese-language\b"),
+    "Japanese": (r"\bjapanese (?:[a-z-]+ )*film\b", r"\bjapanese-language\b"),
+    # Do not treat a Philippine setting/mythology reference as a Filipino film.
+    "Filipino": (r"\b(?:filipino|tagalog)-language\b",),
+    "Thai": (r"\bthai (?:[a-z-]+ )*film\b", r"\bthai-language\b"),
+    "Spanish-language": (r"\bspanish-language\b",),
+}
 WIKIPEDIA_BLACK_FOCUS_PATTERNS = (
     r"\bafrican[- ]american (?:comedy|drama|films?|cinema|culture|community|communities|experience|stories|storytelling)\b",
     r"\bblack american (?:culture|community|communities|experience|films?|cinema|stories|storytelling)\b",
@@ -716,6 +748,19 @@ def _claim_string_values(entity: dict, property_id: str) -> list[str]:
     return [v for v in _claim_values(entity, property_id) if isinstance(v, str) and v]
 
 
+def _entity_has_imdb_id(entity: dict, imdb_id: str | None) -> bool:
+    """Verify an IMDb bridge result instead of trusting Wikidata search ranking.
+
+    MediaWiki ``list=search`` can occasionally return textually related items
+    for a haswbstatement query.  We therefore require the returned entity to
+    contain the exact P345 value before using it as film identity evidence.
+    """
+    if not imdb_id:
+        return False
+    wanted = imdb_id.casefold()
+    return wanted in {value.casefold() for value in _claim_string_values(entity, "P345")}
+
+
 def _claim_entity_values(entity: dict, property_id: str) -> list[str]:
     out: list[str] = []
     for value in _claim_values(entity, property_id):
@@ -861,6 +906,64 @@ def _add_language_focus(
         reasons.append(f"{label}: {source_label} {clean}")
 
 
+def _add_entity_market_focus(
+    tags: set[str],
+    reasons: list[str],
+    languages: set[str],
+    countries: set[str],
+) -> None:
+    """Add Wikidata market tags while suppressing contradictory metadata.
+
+    A same-title mismatch often presents as a country from one film and a
+    language from another.  When both claim types exist, a non-Spanish market
+    tag must agree across the two claim sets.  When only one claim type exists,
+    it can still be used as the best available structured evidence.
+    """
+    for tag, known_languages in LANGUAGE_FOCUS_GROUPS.items():
+        matched_languages = sorted(languages & known_languages)
+        known_countries = COUNTRY_FOCUS_GROUPS.get(tag, set())
+        matched_countries = sorted(countries & known_countries)
+
+        if tag == "Spanish-language":
+            if matched_languages:
+                tags.add(tag)
+                reasons.append(
+                    f"{tag}: Wikidata original language {', '.join(matched_languages)}"
+                )
+            continue
+
+        # If both structured claim types are present, require them to agree.
+        # This prevents one anomalous language/country claim from dominating.
+        if languages and countries:
+            if not (matched_languages and matched_countries):
+                continue
+            tags.add(tag)
+            reasons.append(
+                f"{tag}: Wikidata language/country agree "
+                f"({', '.join(matched_languages)}; {', '.join(matched_countries)})"
+            )
+        elif matched_languages:
+            tags.add(tag)
+            reasons.append(
+                f"{tag}: Wikidata original language {', '.join(matched_languages)}"
+            )
+        elif matched_countries:
+            tags.add(tag)
+            reasons.append(f"{tag}: country of origin {', '.join(matched_countries)}")
+
+
+def _add_wikipedia_market_focus(
+    tags: set[str],
+    reasons: list[str],
+    focus_text: str,
+) -> None:
+    """Add market tags only from explicit film/language wording on Wikipedia."""
+    for tag, patterns in WIKIPEDIA_MARKET_PATTERNS.items():
+        if _matches_any_pattern(focus_text, patterns):
+            tags.add(tag)
+            reasons.append(f"{tag}: explicit Wikipedia film/language context")
+
+
 def _explicit_focus_text(entity: dict) -> str:
     """Text that may legitimately describe a film's themes/audience focus."""
     description = (((entity.get("descriptions") or {}).get("en") or {}).get("value") or "")
@@ -972,22 +1075,18 @@ def classify_audience_focus(
     if amc_languages:
         _add_language_focus(tags, reasons, amc_languages, source_label="AMC lists")
 
+    # Title wording is used only for a small set of unambiguous faith terms.
+    # This is a generic fallback for new releases whose Wikidata/Wikipedia
+    # records have not yet accumulated subject or genre metadata.
+    title_focus_text = context.canonical_title.casefold()
+    if _matches_any_pattern(title_focus_text, FAITH_TITLE_PATTERNS):
+        tags.add("Faith-oriented")
+        reasons.append("Faith-oriented: explicit religious wording in title")
+
     if entity is not None:
         entity_languages = _entity_languages(entity)
-        if entity_languages:
-            _add_language_focus(
-                tags,
-                reasons,
-                entity_languages,
-                source_label="Wikidata original language",
-            )
-
         countries = _entity_claim_labels(entity, ("P495",))
-        for tag, known_countries in COUNTRY_FOCUS_GROUPS.items():
-            matched = sorted(countries & known_countries)
-            if matched:
-                tags.add(tag)
-                reasons.append(f"{tag}: country of origin {', '.join(matched)}")
+        _add_entity_market_focus(tags, reasons, entity_languages, countries)
 
         focus_text = _explicit_focus_text(entity)
         if _matches_any_pattern(focus_text, FAITH_TEXT_PATTERNS):
@@ -1046,6 +1145,7 @@ def classify_audience_focus(
 
     if supplemental_focus_text:
         focus_text = supplemental_focus_text.casefold()
+        _add_wikipedia_market_focus(tags, reasons, focus_text)
         if _matches_any_pattern(focus_text, FAITH_TEXT_PATTERNS):
             tags.add("Faith-oriented")
             reasons.append("Faith-oriented: explicit Wikipedia film context")
@@ -1098,7 +1198,11 @@ def _audience_entity_for_context(
     # produce a context-compatible entity.  This keeps the new column from
     # roughly doubling Wikimedia calls for every English-language movie.
     if imdb_id:
-        imdb_entities = _wikidata_entities(_wikidata_qids_for_imdb(imdb_id))
+        imdb_entities = [
+            entity
+            for entity in _wikidata_entities(_wikidata_qids_for_imdb(imdb_id))
+            if _entity_has_imdb_id(entity, imdb_id)
+        ]
         entity, _ = _best_entity_for_context(imdb_entities, context, imdb_id)
         if entity is not None:
             return entity
@@ -1367,17 +1471,34 @@ def _image_via_wikidata(
     context: MovieContext,
     imdb_id: str | None,
 ) -> tuple[str | None, str | None, str | None, list[str]]:
-    qids: list[str] = []
-    seen: set[str] = set()
-    for qid in (
-        _wikidata_qids_for_imdb(imdb_id) if imdb_id else []
-    ) + _wikidata_qids_for_title(context.canonical_title):
-        if qid not in seen:
-            seen.add(qid)
-            qids.append(qid)
+    """Resolve a poster through Wikidata, preferring a verified IMDb bridge."""
+    rejected: list[str] = []
 
-    entities = _wikidata_entities(qids)
-    entity, rejected = _best_entity_for_context(entities, context, imdb_id)
+    if imdb_id:
+        imdb_entities = [
+            entity
+            for entity in _wikidata_entities(_wikidata_qids_for_imdb(imdb_id))
+            if _entity_has_imdb_id(entity, imdb_id)
+        ]
+        entity, imdb_rejected = _best_entity_for_context(
+            imdb_entities, context, imdb_id
+        )
+        rejected.extend(imdb_rejected)
+        if entity is not None:
+            image, page, source = _image_from_validated_entity(entity)
+            if image:
+                return image, page, source, rejected
+
+    # Fall back to title search only after the exact external-ID bridge.  This
+    # keeps sparse new releases working while preventing a merely similar IMDb
+    # search hit from becoming the film's country/language/poster identity.
+    title_entities = _wikidata_entities(
+        _wikidata_qids_for_title(context.canonical_title)
+    )
+    entity, title_rejected = _best_entity_for_context(
+        title_entities, context, None
+    )
+    rejected.extend(title_rejected)
     if entity is None:
         return None, None, None, rejected
     image, page, source = _image_from_validated_entity(entity)

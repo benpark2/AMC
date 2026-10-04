@@ -8,8 +8,9 @@ This patcher is intentionally conservative:
 2. Remove non-film AMC inventory before ratings/numbering/planner generation.
 3. Improve IMDb candidate scoring so it considers every canonical lookup
    variant while preserving leading articles for final identity ranking.
-4. Parse Rotten Tomatoes scores only when their critic/audience labels are
-   explicit, preventing one score from being copied into the other slot.
+4. Keep Rotten Tomatoes on its existing direct-page method, but add the
+   original release-year hint for anniversary/repertory titles and parse scores
+   only when critic/audience labels are explicit.
 5. Emit an explicit RT_C/A display column so a missing side renders as "-".
 6. Parse AMC's current escaped React/Next showtime payload without relying on
    brittle field ordering.
@@ -44,10 +45,17 @@ import sys
 
 
 FUNCTION_WRAPPER = """def candidate_title_variants(title: str) -> List[str]:
-    \"""Use the shared generic AMC-title normalizer for metadata lookup.\"""
+    \"\"\"Use the shared generic AMC-title normalizer for metadata lookup.\"\"\"
     from scripts.movie_titles import candidate_title_variants as _shared_variants
     return _shared_variants(title)
+
+
+def metadata_release_year_hint(title: str, reference_year: int | None = None) -> Optional[int]:
+    \"\"\"Return the original-feature year encoded by an AMC presentation title.\"\"\"
+    from scripts.movie_titles import metadata_release_year_hint as _shared_year_hint
+    return _shared_year_hint(title, reference_year=reference_year)
 """
+
 
 RT_PARSE_REPLACEMENT = r'''def rt_parse_scores(decoded_html: str, soup: BeautifulSoup) -> Tuple[Optional[int], Optional[int]]:
     """
@@ -159,6 +167,69 @@ RT_PARSE_REPLACEMENT = r'''def rt_parse_scores(decoded_html: str, soup: Beautifu
                 break
 
     return audience, critic
+'''
+
+RT_GET_SCORES_REPLACEMENT = r'''def rt_get_scores(
+    session: requests.Session,
+    title: str,
+    cache: Dict[str, Tuple[Optional[int], Optional[int], Optional[str]]],
+    debug: bool = False) -> Tuple[Optional[int], Optional[int], Optional[str]]:
+    """
+    Fetch Rotten Tomatoes with the same direct-page strategy as the notebook.
+
+    The only lookup expansion here is evidence already encoded in AMC's title:
+    an explicit year or anniversary-derived original release year is tried
+    before the current-year guesses.  This fixes repertory presentations such
+    as "<film> 10th Anniversary Remastered" without adding another scraper or
+    relying on a search engine that may be blocked in CI.
+    """
+    key = (title or "").lower().strip()
+    if key in cache:
+        return cache[key]
+
+    current_year = date.today().year
+    hinted_year = metadata_release_year_hint(title, reference_year=current_year)
+    years_to_check = []
+    for year in (hinted_year, current_year, current_year + 1, current_year - 1):
+        if year is not None and year not in years_to_check:
+            years_to_check.append(year)
+
+    for q in candidate_title_variants(title):
+        base_slug = rt_slugify(q)
+        if not base_slug:
+            continue
+
+        # Keep the yearless RT slug last because it can be ambiguous for reused
+        # titles.  A known original-feature year should get first chance.
+        url_attempts = [f"{RT_BASE}/m/{base_slug}_{y}" for y in years_to_check]
+        url_attempts.append(f"{RT_BASE}/m/{base_slug}")
+
+        for rt_url in url_attempts:
+            status, raw_html = fetch_html(session, rt_url, params=None, tries=2)
+            if debug:
+                print(f"[RT] Testing {rt_url} -> Status: {status}")
+            if status != 200 or not raw_html:
+                continue
+
+            lower_html = raw_html.lower()
+            if "404 - page not found" in lower_html or "couldn't find the page you're looking for" in lower_html:
+                continue
+
+            decoded = html_lib.unescape(raw_html)
+            soup = BeautifulSoup(decoded, "html.parser")
+            aud, crit = rt_parse_scores(decoded, soup)
+
+            # A 200 response without either labeled score is not a successful
+            # movie match. Continue to the next canonical/year candidate rather
+            # than caching a blank result too early.
+            if aud is None and crit is None:
+                continue
+
+            cache[key] = (aud, crit, rt_url)
+            return cache[key]
+
+    cache[key] = (None, None, None)
+    return cache[key]
 '''
 
 RT_DISPLAY_MARKER = "df_display = df_summary.copy()\n"
@@ -1104,12 +1175,63 @@ def _patch_imdb_scoring(source: str) -> tuple[str, bool]:
         f"{indent}    ),\n",
         f"{indent}    default=0,\n",
         f"{indent})\n",
+        f"{indent}lookup_year_hint = metadata_release_year_hint(title, reference_year=current_year)\n",
+        f"{indent}year_match = int(\n",
+        f"{indent}    lookup_year_hint is not None and cand.get('startYear') == lookup_year_hint\n",
+        f"{indent})\n",
     ]
 
     updated = "".join(lines[:start]) + "".join(block_lines) + "".join(lines[end:])
 
     _validate_imdb_patch(updated)
     return updated, True
+
+
+def _patch_imdb_year_priority(source: str) -> tuple[str, bool]:
+    """Put an anniversary/explicit release-year match ahead of generic recency.
+
+    This is AST-scoped to ``build_imdb_lookup`` for the same safety reason as
+    the title-scoring patch: if the notebook layout changes, fail rather than
+    editing an unrelated tuple elsewhere in the notebook.
+    """
+    functions = _top_level_functions(source, "build_imdb_lookup")
+    if not functions:
+        return source, False
+    if len(functions) != 1:
+        raise RuntimeError("Expected one build_imdb_lookup() for year-priority patch.")
+    fn = functions[0]
+    score_assignments = [
+        node for node in ast.walk(fn)
+        if _assignment_name(node) == "score_key" and isinstance(node.value, ast.Tuple)
+    ]
+    if len(score_assignments) != 1:
+        raise RuntimeError(
+            "Inside build_imdb_lookup(), expected one score_key tuple; "
+            f"found {len(score_assignments)}."
+        )
+    node = score_assignments[0]
+    segment = ast.get_source_segment(source, node)
+    if not segment or "exact" not in segment or "fuzz_score" not in segment:
+        raise RuntimeError("IMDb score_key layout changed; refusing year-priority patch.")
+    lines = source.splitlines(keepends=True)
+    start = node.lineno - 1
+    end = node.end_lineno
+    original = "".join(lines[start:end])
+    if "year_match," in original:
+        return source, True
+    marker = "score_key = (\n"
+    if marker not in original:
+        raise RuntimeError(
+            "IMDb score_key tuple formatting changed; refusing a partial year-priority patch."
+        )
+    updated_tuple = original.replace(
+        marker,
+        marker + " " * (node.col_offset + 4) + "year_match,\n",
+        1,
+    )
+    if "year_match," not in updated_tuple:
+        raise RuntimeError("IMDb year-priority patch did not modify score_key.")
+    return "".join(lines[:start]) + updated_tuple + "".join(lines[end:]), True
 
 
 def _validate_imdb_patch(source: str) -> None:
@@ -1166,7 +1288,9 @@ def patch_notebook(notebook: dict) -> dict:
     candidate_function_replacements = 0
     df_show_insertions = 0
     imdb_function_patches = 0
+    imdb_year_priority_patches = 0
     rt_parser_replacements = 0
+    rt_get_scores_replacements = 0
     rt_display_insertions = 0
     rt_desired_replacements = 0
     amc_showtime_parser_replacements = 0
@@ -1187,6 +1311,8 @@ def patch_notebook(notebook: dict) -> dict:
 
         source, did_patch_imdb = _patch_imdb_scoring(source)
         imdb_function_patches += int(did_patch_imdb)
+        source, did_patch_imdb_year = _patch_imdb_year_priority(source)
+        imdb_year_priority_patches += int(did_patch_imdb_year)
 
         source, did_patch_rt = _replace_function(
             source,
@@ -1194,6 +1320,13 @@ def patch_notebook(notebook: dict) -> dict:
             RT_PARSE_REPLACEMENT,
         )
         rt_parser_replacements += int(did_patch_rt)
+
+        source, did_patch_rt_get_scores = _replace_function(
+            source,
+            "rt_get_scores",
+            RT_GET_SCORES_REPLACEMENT,
+        )
+        rt_get_scores_replacements += int(did_patch_rt_get_scores)
 
         source, did_patch_amc_showtimes = _replace_function(
             source,
@@ -1242,7 +1375,9 @@ def patch_notebook(notebook: dict) -> dict:
         "candidate_title_variants replacement": candidate_function_replacements,
         "df_show non-movie filter": df_show_insertions,
         "build_imdb_lookup patch": imdb_function_patches,
+        "IMDb original-year priority patch": imdb_year_priority_patches,
         "rt_parse_scores replacement": rt_parser_replacements,
+        "rt_get_scores replacement": rt_get_scores_replacements,
         "RT display column insertion": rt_display_insertions,
         "RT desired-column replacement": rt_desired_replacements,
         "AMC escaped showtime parser replacement": amc_showtime_parser_replacements,
@@ -1287,7 +1422,7 @@ def main() -> int:
 
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
-        "non-movie filtering, IMDb variant scoring, AMC A-List metadata + clean public logs v20 -> "
+        "non-movie filtering, original-film metadata lookup, AMC A-List metadata + clean public logs v21 -> "
         f"{args.output_notebook}"
     )
     return 0

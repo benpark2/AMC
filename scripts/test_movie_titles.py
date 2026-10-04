@@ -18,6 +18,7 @@ from scripts.movie_titles import (
     candidate_title_variants,
     canonical_movie_title,
     is_non_movie_title,
+    metadata_release_year_hint,
     wikipedia_title_candidates,
 )
 from scripts.patch_notebook_titles import patch_notebook, patch_postprocess_source
@@ -88,6 +89,25 @@ class MovieTitleTests(unittest.TestCase):
         )
         self.assertEqual(info.inferred_release_year, 2001)
 
+    def test_special_presentation_titles_use_original_feature_for_metadata(self):
+        cases = {
+            "Example Feature Q&A with Director Jane Doe/Actor John Roe & Cast": "Example Feature",
+            "Example Feature: Encore": "Example Feature",
+            "Example Feature The Sing-Along Version": "Example Feature",
+            "Example Feature 10th Anniversary Remastered": "Example Feature",
+        }
+        for display, expected in cases.items():
+            with self.subTest(display=display):
+                self.assertEqual(canonical_movie_title(display), expected)
+
+    def test_anniversary_metadata_year_hint_targets_original_release(self):
+        self.assertEqual(
+            metadata_release_year_hint(
+                "Example Feature 10th Anniversary Remastered", reference_year=2026
+            ),
+            2016,
+        )
+
 
 class NotebookPatcherTests(unittest.TestCase):
     def setUp(self):
@@ -98,7 +118,7 @@ class NotebookPatcherTests(unittest.TestCase):
                     child.unlink()
 
     def _fixture_notebook(self) -> dict:
-        source = r'''from typing import List, Optional, Tuple
+        source = r'''from typing import Dict, List, Optional, Tuple
 from datetime import date, datetime
 import html as html_lib
 import json
@@ -159,14 +179,17 @@ def build_imdb_lookup(session, titles):
                 'originalTitle': '',
                 'primaryNorm': normalize_title_for_match('The ' + base),
                 'originalNorm': '',
+                'startYear': 2026,
             },
             {
                 'primaryTitle': base,
                 'originalTitle': '',
                 'primaryNorm': normalize_title_for_match(base),
                 'originalNorm': '',
+                'startYear': 2016,
             },
         ]
+    current_year = date.today().year
     for title in titles:
         target = normalize_title_for_match(title)
         chosen_key = None
@@ -177,7 +200,10 @@ def build_imdb_lookup(session, titles):
                 fuzz.token_set_ratio(cand['primaryNorm'], target) if cand['primaryNorm'] else 0,
                 fuzz.token_set_ratio(cand['originalNorm'], target) if cand['originalNorm'] else 0,
             )
-            score_key = (exact, fuzz_score)
+            score_key = (
+                exact,
+                fuzz_score,
+            )
             if chosen_key is None or score_key > chosen_key:
                 chosen_key = score_key
                 chosen_title = cand['primaryTitle']
@@ -192,8 +218,21 @@ def _int0_100(x):
         return None
     return n if 0 <= n <= 100 else None
 
+RT_BASE = "https://www.rottentomatoes.com"
+
+def rt_slugify(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", title.casefold()).strip("_")
+
+def fetch_html(session, url, params=None, tries=2):
+    return 404, ""
+
 def rt_parse_scores(decoded_html: str, soup: BeautifulSoup) -> Tuple[Optional[int], Optional[int]]:
     return 1, 2
+
+def rt_get_scores(session, title, cache, debug=False):
+    # Replaced by the production patcher. Keep a structurally representative
+    # fixture so the patcher must continue to match the notebook function.
+    return None, None, None
 
 def extract_showtimes_from_json_scripts(html_txt: str, theatre_name: str, d: date) -> List[dict]:
     return []
@@ -280,6 +319,10 @@ desired = [
         source = self._patched_source()
         ast.parse(source)
         self.assertIn("lookup_literal_targets = [", source)
+        self.assertIn("metadata_release_year_hint", source)
+        self.assertIn("lookup_year_hint", source)
+        self.assertIn("year_match", source)
+        self.assertIn("hinted_year", source)
         self.assertIn("candidate_literal_norms = [", source)
         self.assertIn("fuzz.ratio(candidate_norm, lookup_target)", source)
         self.assertIn('df_display["rt_c/a"]', source)
@@ -311,7 +354,35 @@ desired = [
         exec(compile(source, "<patched-notebook-test>", "exec"), ns)
         chosen_title, chosen_key = ns["build_imdb_lookup"](None, ["Example"])
         self.assertEqual(chosen_title, "Example")
+        self.assertEqual(chosen_key[0], 0)  # no year hint for plain "Example"
+        self.assertEqual(chosen_key[1], 1)  # exact title identity still wins
+
+    def test_imdb_anniversary_prefers_original_release_year(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        chosen_title, chosen_key = ns["build_imdb_lookup"](
+            None, ["Example Feature 10th Anniversary Remastered"]
+        )
+        self.assertEqual(chosen_title, "Example Feature")
         self.assertEqual(chosen_key[0], 1)
+
+    def test_rt_anniversary_tries_original_release_year_first(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        calls = []
+
+        def fake_fetch(session, url, params=None, tries=2):
+            calls.append(url)
+            return 404, ""
+
+        ns["fetch_html"] = fake_fetch
+        ns["rt_get_scores"](
+            None, "Example Feature 10th Anniversary Remastered", {}, debug=False
+        )
+        self.assertTrue(calls)
+        self.assertTrue(calls[0].endswith("/m/example_feature_2016"), calls[0])
 
     def test_amc_current_ssr_payload_fallback_extracts_showtimes(self):
         source = self._patched_source()
@@ -911,6 +982,12 @@ class PosterValidationTests(unittest.TestCase):
         self.assertEqual(best["id"], "Q2")
         self.assertTrue(any("Q1:language" in item for item in rejected))
 
+    def test_imdb_bridge_requires_exact_p345_value(self):
+        wrong = self.entity("Q1", "Example", imdb_id="tt1111111")
+        right = self.entity("Q2", "Example", imdb_id="tt2222222")
+        self.assertFalse(posters._entity_has_imdb_id(wrong, "tt2222222"))
+        self.assertTrue(posters._entity_has_imdb_id(right, "tt2222222"))
+
     def test_runtime_and_language_break_ambiguous_title_tie(self):
         ctx = self.context(
             canonical_title="Example",
@@ -1116,13 +1193,17 @@ class AudienceFocusTests(unittest.TestCase):
             "Q2016": "tyler perry studios",
             "Q2017": "macro",
             "Q2018": "mucho mas media",
+            "Q2019": "korean",
+            "Q2020": "south korea",
+            "Q2021": "filipino",
+            "Q2022": "philippines",
         })
 
     @staticmethod
-    def context(*, languages=frozenset()):
+    def context(*, languages=frozenset(), title="Example"):
         return posters.MovieContext(
-            display_title="Example",
-            canonical_title="Example",
+            display_title=title,
+            canonical_title=title,
             expected_year=None,
             runtime_min=100,
             spoken_languages=languages,
@@ -1297,6 +1378,64 @@ class AudienceFocusTests(unittest.TestCase):
         )
         result = posters.classify_audience_focus(self.context(), entity)
         self.assertEqual(result.tags, ("Indian",))
+
+    def test_conflicting_wikidata_language_country_does_not_mislabel_market(self):
+        # Same-title/stale metadata should not let one Filipino/Korean claim
+        # override a contradictory US/English film identity.
+        filipino_us = self.entity(
+            claims={
+                "P364": [{"mainsnak": {"datavalue": {"value": {"id": "Q2021"}}}}],
+                "P495": [{"mainsnak": {"datavalue": {"value": {"id": "Q2005"}}}}],
+            }
+        )
+        self.assertEqual(
+            posters.classify_audience_focus(self.context(), filipino_us).tags,
+            ("General",),
+        )
+
+        english_korea = self.entity(
+            claims={
+                "P364": [{"mainsnak": {"datavalue": {"value": {"id": "Q2002"}}}}],
+                "P495": [{"mainsnak": {"datavalue": {"value": {"id": "Q2020"}}}}],
+            }
+        )
+        self.assertEqual(
+            posters.classify_audience_focus(self.context(), english_korea).tags,
+            ("General",),
+        )
+
+    def test_wikipedia_film_language_context_can_mark_indian_market(self):
+        result = posters.classify_audience_focus(
+            self.context(),
+            self.entity(),
+            supplemental_focus_text="A 2026 Indian Telugu-language comedy film.",
+        )
+        self.assertIn("Indian", result.tags)
+
+    def test_philippine_mythology_alone_does_not_mark_filipino_market(self):
+        result = posters.classify_audience_focus(
+            self.context(),
+            self.entity(),
+            supplemental_focus_text="An American animated film inspired by Philippine mythology.",
+        )
+        self.assertNotIn("Filipino", result.tags)
+
+    def test_homosexuality_wording_can_mark_lgbtq_focus(self):
+        result = posters.classify_audience_focus(
+            self.context(),
+            self.entity(),
+            supplemental_focus_text="The drama explores masculinity, identity, and homosexuality.",
+        )
+        self.assertIn("LGBTQ+-focused", result.tags)
+
+    def test_explicit_faith_title_wording_handles_sparse_new_releases(self):
+        for title in ("A Biblical Journey", "The Eucharistic Miracle"):
+            with self.subTest(title=title):
+                result = posters.classify_audience_focus(
+                    self.context(title=title),
+                    self.entity(),
+                )
+                self.assertIn("Faith-oriented", result.tags)
 
     def test_generated_column_uses_batched_wikipedia_context(self):
         html = (
