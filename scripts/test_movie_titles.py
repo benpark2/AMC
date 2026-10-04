@@ -271,6 +271,12 @@ AMC_RUNTIME_RE = re.compile(r"(\d+)\s*hr?\s*(\d+)\s*min|(\d+)\s*min", re.I)
 def scrape_amc_showtimes_for_date(session, theatre_name, showtimes_url, d):
     return []
 
+THEATRES = [
+    {'name': 'AMC Tustin 14 @ The District'},
+    {'name': 'AMC Woodbridge 5'},
+    {'name': 'AMC Orange 30'},
+]
+dates = [date(2026, 9, 26), date(2026, 9, 27)]
 _fixture_theatres = [
     'AMC Tustin 14 @ The District',
     'AMC Woodbridge 5',
@@ -339,18 +345,22 @@ desired = [
         self.assertIn('showtime_id', source)
         self.assertIn('aria_count == 0', source)
         self.assertIn('Merging rendered AMC DOM for', source)
-        self.assertIn('_minimum_unique_movies = 10', source)
-        self.assertIn('_screen_count * 0.45', source)
-        self.assertIn('_previous_movie_count * 0.40', source)
-        self.assertIn('_project_theatre_specs', source)
-        self.assertIn('_combo_min_movies', source)
+        self.assertNotIn('_minimum_unique_movies = 10', source)
+        self.assertNotIn('_screen_count * 0.45', source)
+        self.assertNotIn('_previous_movie_count * 0.40', source)
+        self.assertIn('_configured_theatre_names', source)
+        self.assertNotIn('_combo_min_movies', source)
         self.assertIn('_display_duplicate_cols', source)
         self.assertIn('_clock_duplicate_mask', source)
         self.assertIn('NOALIST', source)
         self.assertIn('_a_list_excluded_for_showtime', source)
         self.assertIn('_cache_dir = _AMCPath("build/amc_combo_cache")', source)
         self.assertIn('_max_rounds = 2', source)
-        self.assertIn('_need_browser = (_round == 1)', source)
+        self.assertIn('_inspect_source_evidence', source)
+        self.assertIn('_coverage_state', source)
+        self.assertIn('amc_combo_status', source)
+        self.assertIn('.evidence.json', source)
+        self.assertNotIn('_usable_threshold', source)
         self.assertIn('AMC_CHROMIUM_EXECUTABLE', source)
         self.assertIn('base64.b64decode', source)
         self.assertIn('HeadlessChrome/', AMC_BROWSER_CHILD_SCRIPT)
@@ -508,7 +518,7 @@ desired = [
         ns["fetch_html_with_browser"] = browser
 
         rows = scraper(None, "AMC Example 10", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), 2)
         self.assertEqual(len({r["movie_title"] for r in rows}), 6)
 
     def test_complete_static_page_still_gets_one_rendered_merge_for_missing_times(self):
@@ -534,12 +544,15 @@ desired = [
         movie1 = [r for r in rows if r["movie_title"] == "Movie 1"]
         self.assertEqual({r["showtime_id"] for r in movie1}, {"101", "999"})
 
-    def test_partial_combo_is_accumulated_across_targeted_rounds(self):
+    def test_browser_only_small_schedule_is_corroborated_and_merged_across_rounds(self):
         source = self._patched_source()
         ns = {}
         exec(compile(source, "<patched-notebook-test>", "exec"), ns)
         scraper = ns["scrape_amc_showtimes_for_date"]
 
+        # With no usable static evidence, a single browser snapshot is not
+        # enough to call a low-count response complete. A second independent
+        # browser observation is merged rather than replacing the first.
         ns["fetch_amc_html"] = lambda session, url, params=None: (200, "")
         rendered_pages = [
             "".join(
@@ -557,11 +570,180 @@ desired = [
             return 200, rendered_pages[min(len(calls)-1, 1)]
         ns["fetch_html_with_browser"] = browser
 
-        rows = scraper(None, "AMC Example 10", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+        with tempfile.TemporaryDirectory() as tmp:
+            old_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                rows = scraper(None, "AMC Example 10", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+            finally:
+                os.chdir(old_cwd)
         self.assertEqual(len(calls), 2)
         self.assertEqual(len({r["movie_title"] for r in rows}), 6)
 
-    def test_fresh_combo_cache_is_reused_on_next_papermill_attempt(self):
+    def _reordered_flight_payload(self, total=4):
+        """Synthetic source where only the first record matches the strict parser order."""
+        chunks = []
+        for i in range(1, total + 1):
+            chunks.append(f'aria-label\\\":\\\"Showtimes for Source Movie {i}\\\"')
+            if i == 1:
+                chunks.append(
+                    f'\\\"showtimeId\\\":{100+i},\\\"status\\\":\\\"AVAILABLE\\\",'
+                    f'\\\"showDateTimeUtc\\\":\\\"2026-09-27T02:{i:02d}:00Z\\\",'
+                    f'\\\"display\\\":{{\\\"time\\\":\\\"7:{i:02d}\\\",\\\"amPm\\\":\\\"PM\\\"}}'
+                )
+            else:
+                # Same information, deliberately reordered. The independent
+                # source-evidence scanner must still see it even if the strict
+                # row parser does not.
+                chunks.append(
+                    f'\\\"showtimeId\\\":{100+i},'
+                    f'\\\"display\\\":{{\\\"time\\\":\\\"7:{i:02d}\\\",\\\"amPm\\\":\\\"PM\\\"}},'
+                    f'\\\"showDateTimeUtc\\\":\\\"2026-09-27T02:{i:02d}:00Z\\\",'
+                    f'\\\"status\\\":\\\"AVAILABLE\\\"'
+                )
+        return '<script>self.__next_f.push([1,"' + ' '.join(chunks) + '"])</script>'
+
+    def test_source_parser_gap_is_recorded_and_not_accepted_as_complete(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+        partial_source = self._reordered_flight_payload(total=4)
+        ns["fetch_amc_html"] = lambda session, url, params=None: (200, partial_source)
+        browser_calls = []
+        def browser(url, params=None, timeout_ms=30000):
+            browser_calls.append(1)
+            return 200, partial_source
+        ns["fetch_html_with_browser"] = browser
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                rows = scraper(None, "AMC Example 10", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                status_path = Path("build/amc_combo_status/amc-example-10-2026-09-26.json")
+                status = json.loads(status_path.read_text(encoding="utf-8"))
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertEqual(len(browser_calls), 2)
+        self.assertEqual(len({r["movie_title"] for r in rows}), 1)
+        self.assertFalse(status["complete"])
+        self.assertEqual(status["source_titles"], 4)
+        self.assertEqual(status["parsed_titles"], 1)
+        self.assertGreaterEqual(len(status["missing_titles"]), 3)
+
+    def test_source_parser_gap_can_be_recovered_by_second_rendered_round(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+        partial_source = self._reordered_flight_payload(total=4)
+        rendered_full = "".join(
+            f'<div aria-label="Showtimes for Source Movie {i}"><a href="/showtimes/{100+i}">7:{i:02d} PM</a></div>'
+            for i in range(1, 5)
+        )
+        ns["fetch_amc_html"] = lambda session, url, params=None: (200, partial_source)
+        calls = []
+        def browser(url, params=None, timeout_ms=30000):
+            calls.append(1)
+            return (200, partial_source) if len(calls) == 1 else (200, rendered_full)
+        ns["fetch_html_with_browser"] = browser
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                rows = scraper(None, "AMC Example 10", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                status = json.loads(Path(
+                    "build/amc_combo_status/amc-example-10-2026-09-26.json"
+                ).read_text(encoding="utf-8"))
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len({r["movie_title"] for r in rows}), 4)
+        self.assertTrue(status["complete"])
+        self.assertEqual(status["missing_titles"], [])
+        self.assertEqual(status["missing_showtime_ids"], [])
+
+    def test_persisted_source_evidence_survives_a_later_smaller_response(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+        rich_source = self._reordered_flight_payload(total=4)
+        tiny_source = self._reordered_flight_payload(total=1)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                ns["fetch_amc_html"] = lambda session, url, params=None: (200, rich_source)
+                ns["fetch_html_with_browser"] = lambda url, params=None, timeout_ms=30000: (200, rich_source)
+                scraper(None, "AMC Example 10", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+
+                # Simulate the next Papermill attempt getting a smaller source.
+                ns["fetch_amc_html"] = lambda session, url, params=None: (200, tiny_source)
+                ns["fetch_html_with_browser"] = lambda url, params=None, timeout_ms=30000: (200, tiny_source)
+                scraper(None, "AMC Example 10", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                status = json.loads(Path(
+                    "build/amc_combo_status/amc-example-10-2026-09-26.json"
+                ).read_text(encoding="utf-8"))
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertFalse(status["complete"])
+        self.assertEqual(status["source_titles"], 4)
+        self.assertEqual(status["parsed_titles"], 1)
+
+    def test_one_movie_schedule_is_valid_when_static_and_browser_both_expose_one(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+        one = '<div aria-label="Showtimes for Only Feature"><a href="/showtimes/901">7:00 PM</a></div>'
+        ns["fetch_amc_html"] = lambda session, url, params=None: (200, one)
+        browser_calls = []
+        def browser(url, params=None, timeout_ms=30000):
+            browser_calls.append(1)
+            return 200, one
+        ns["fetch_html_with_browser"] = browser
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                rows = scraper(None, "AMC Example 5", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                status = json.loads(Path(
+                    "build/amc_combo_status/amc-example-5-2026-09-26.json"
+                ).read_text(encoding="utf-8"))
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertEqual(len(browser_calls), 1)
+        self.assertEqual(len({r["movie_title"] for r in rows}), 1)
+        self.assertTrue(status["complete"])
+
+    def test_aggregate_guard_rejects_recorded_source_parser_gap(self):
+        source = self._patched_source()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            status_dir = root / "build" / "amc_combo_status"
+            status_dir.mkdir(parents=True)
+            (status_dir / "amc-tustin-14-the-district-2026-09-26.json").write_text(
+                json.dumps({"complete": False, "reason": "source exposed 8 but parser covered 3"}),
+                encoding="utf-8",
+            )
+            old_cwd = os.getcwd()
+            os.chdir(root)
+            try:
+                with self.assertRaisesRegex(RuntimeError, "source exposed 8 but parser covered 3"):
+                    exec(compile(source, "<source-gap-aggregate-test>", "exec"), {})
+            finally:
+                os.chdir(old_cwd)
+
+    def test_fresh_combo_cache_is_rechecked_on_next_papermill_attempt(self):
         source = self._patched_source()
         ns = {}
         exec(compile(source, "<patched-notebook-test>", "exec"), ns)
@@ -586,7 +768,8 @@ desired = [
         first_counts = dict(network)
         second = scraper(*args)
         self.assertEqual(len(first), len(second))
-        self.assertEqual(network, first_counts, "complete fresh cache should avoid another network fetch")
+        self.assertGreater(network["static"], first_counts["static"])
+        self.assertGreater(network["browser"], first_counts["browser"])
 
     def test_recent_same_weekend_report_is_last_good_fallback_and_keeps_noalist(self):
         source = self._patched_source()
@@ -656,7 +839,7 @@ desired = [
             self.assertTrue(marker_path.exists())
             self.assertIn("AMC Example 10 | 2026-09-26", marker_path.read_text(encoding="utf-8"))
 
-    def test_large_theatre_five_movies_is_still_sparse(self):
+    def test_large_theatre_five_movies_still_gets_one_browser_enrichment_pass(self):
         source = self._patched_source()
         ns = {}
         exec(compile(source, "<patched-notebook-test>", "exec"), ns)
@@ -687,17 +870,79 @@ desired = [
         self.assertEqual(len(browser_calls), 1)
         self.assertGreaterEqual(len({r["movie_title"] for r in rows}), 12)
 
-    def test_fixture_clears_max_adaptive_prior_report_floor(self):
-        # Parser/unit tests execute the whole patched notebook fixture. The
-        # fixture must remain healthy even when Actions sees a large checked-in
-        # docs/index.html and raises the adaptive minimum to its 20-title cap.
+    def test_low_count_advance_schedule_across_all_theatres_is_accepted(self):
         source = self._patched_source()
+        source = source.replace(
+            "dates = [date(2026, 9, 26), date(2026, 9, 27)]",
+            "dates = [date(2026, 10, 10), date(2026, 10, 11)]",
+            1,
+        )
+        rows = []
+        movie_num = 0
+        for theatre, per_day in [
+            ("AMC Tustin 14 @ The District", 5),
+            ("AMC Woodbridge 5", 1),
+            ("AMC Orange 30", 10),
+        ]:
+            for show_date in ("2026-10-10", "2026-10-11"):
+                for _ in range(per_day):
+                    movie_num += 1
+                    rows.append({
+                        "movie_title": f"Advance Movie {movie_num}",
+                        "format_label": "",
+                        "theatre": theatre,
+                        "show_date": show_date,
+                    })
+        replacement = "showtimes = " + repr(rows) + "\ndf_show = pd.DataFrame(showtimes)"
+        source = re.sub(
+            r"_fixture_theatres = \[.*?\]\nshowtimes = \[.*?\]\ndf_show = pd.DataFrame\(showtimes\)",
+            replacement,
+            source,
+            count=1,
+            flags=re.S,
+        )
         ns = {}
-        exec(compile(source, "<healthy-fixture-test>", "exec"), ns)
-        self.assertEqual(ns["_unique_movie_count"], 60)
-        self.assertLessEqual(ns["_minimum_unique_movies"], 20)
+        exec(compile(source, "<low-count-advance-schedule-test>", "exec"), ns)
+        self.assertEqual(ns["_unique_movie_count"], len(rows))
 
-    def test_five_movie_aggregate_is_rejected(self):
+    def test_asymmetric_advance_schedule_is_warning_not_failure(self):
+        source = self._patched_source()
+        source = source.replace(
+            "dates = [date(2026, 9, 26), date(2026, 9, 27)]",
+            "dates = [date(2026, 10, 10), date(2026, 10, 11)]",
+            1,
+        )
+        rows = []
+        movie_num = 0
+        schedule = [
+            ("AMC Tustin 14 @ The District", "2026-10-11", 5),
+            ("AMC Woodbridge 5", "2026-10-10", 1),
+            ("AMC Woodbridge 5", "2026-10-11", 1),
+            ("AMC Orange 30", "2026-10-10", 10),
+            ("AMC Orange 30", "2026-10-11", 10),
+        ]
+        for theatre, show_date, count in schedule:
+            for _ in range(count):
+                movie_num += 1
+                rows.append({
+                    "movie_title": f"Advance Movie {movie_num}",
+                    "format_label": "",
+                    "theatre": theatre,
+                    "show_date": show_date,
+                })
+        replacement = "showtimes = " + repr(rows) + "\ndf_show = pd.DataFrame(showtimes)"
+        source = re.sub(
+            r"_fixture_theatres = \[.*?\]\nshowtimes = \[.*?\]\ndf_show = pd.DataFrame\(showtimes\)",
+            replacement,
+            source,
+            count=1,
+            flags=re.S,
+        )
+        ns = {}
+        exec(compile(source, "<asymmetric-advance-schedule-test>", "exec"), ns)
+        self.assertEqual(ns["_unique_movie_count"], len(rows))
+
+    def test_rows_from_unconfigured_theatre_only_are_rejected(self):
         source = self._patched_source()
         source = re.sub(
             r"showtimes = \[.*?\]\ndf_show = pd.DataFrame\(showtimes\)",
@@ -710,7 +955,7 @@ desired = [
             count=1,
             flags=re.S,
         )
-        with self.assertRaisesRegex(RuntimeError, "suspiciously incomplete"):
+        with self.assertRaisesRegex(RuntimeError, "missing AMC Tustin 14 @ The District entirely"):
             exec(compile(source, "<partial-report-test>", "exec"), {})
 
 
@@ -733,7 +978,7 @@ df_show = pd.DataFrame(showtimes)"""
             count=1,
             flags=re.S,
         )
-        with self.assertRaisesRegex(RuntimeError, "missing AMC Tustin 14 entirely"):
+        with self.assertRaisesRegex(RuntimeError, "missing AMC Tustin 14 @ The District entirely"):
             exec(compile(source, "<missing-tustin-test>", "exec"), {})
 
     def test_one_day_partial_matrix_is_rejected(self):
@@ -759,7 +1004,7 @@ df_show = pd.DataFrame(showtimes)"""
             count=1,
             flags=re.S,
         )
-        with self.assertRaisesRegex(RuntimeError, "only 1 weekend date represented"):
+        with self.assertRaisesRegex(RuntimeError, r"missing requested weekend date\(s\): 2026-09-26"):
             exec(compile(source, "<missing-saturday-test>", "exec"), {})
 
     def test_sparse_static_page_merges_rendered_aria_regions(self):

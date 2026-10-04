@@ -14,20 +14,24 @@ This patcher is intentionally conservative:
 5. Emit an explicit RT_C/A display column so a missing side renders as "-".
 6. Parse AMC's current escaped React/Next showtime payload without relying on
    brittle field ordering.
-7. If the server-rendered page is suspiciously sparse relative to the theatre
-   screen count, fetch the fully rendered browser DOM and merge its
-   aria-labelled movie/showtime regions.
-8. Let the Playwright fallback wait for AMC's dynamically rendered showtime
-   DOM to stabilize instead of taking a fixed-delay snapshot.
-9. If AMC still serves a sparse/blocked response, allow only a recent,
-   same-weekend prior successful report to act as a transparent last-good
-   showtime cache; preserve per-showtime A-List exclusions while doing so.
-10. Reject suspiciously incomplete aggregate weekend reports before ratings or
-   publishing, using theatre/date coverage plus a conservative prior-report
-   baseline when available.
-11. Preserve AMC's explicit A-List exclusion metadata (NOALIST) through SSR and
-   rendered-DOM recovery paths.
-12. Keep scraper INFO/WARN diagnostics out of the public HTML while leaving
+7. Merge server-rendered, browser-rendered, and retry/cache discoveries for
+   every theatre/date without inferring inventory from screen count.
+8. Measure what each AMC source actually exposes (actionable movie regions and
+   showtime IDs) and compare that evidence with parsed rows. Retry when the
+   parser has not covered the source rather than relying on arbitrary counts.
+9. Persist source evidence and parsed rows across Papermill retries so
+   complementary attempts are merged instead of discarded.
+10. Let the Playwright fallback wait for AMC's dynamically rendered showtime
+    DOM to stabilize instead of taking a fixed-delay snapshot.
+11. If live sources remain incomplete, allow only a recent, same-weekend prior
+    successful report to act as a transparent last-good showtime cache;
+    preserve per-showtime A-List exclusions while doing so.
+12. Reject structural aggregate failures and unresolved source/parser coverage
+    gaps, while accepting genuinely small schedules when AMC itself exposes
+    only a small schedule.
+13. Preserve AMC's explicit A-List exclusion metadata (NOALIST) through SSR and
+    rendered-DOM recovery paths.
+14. Keep scraper INFO/WARN diagnostics out of the public HTML while leaving
     them available in the GitHub Actions execution log.
 
 Important safety property
@@ -443,15 +447,19 @@ AMC_BROWSER_FETCH_REPLACEMENT_TEMPLATE = r'''def fetch_html_with_browser(url: st
     so the child browser polls generic showtime signals until they stabilize.
     """
     import os as _amc_os
+    import base64 as _amc_base64
+    import subprocess as _amc_subprocess
+    import sys as _amc_sys
+    from urllib.parse import urlparse as _amc_urlparse
 
     full_url = requests.Request("GET", url, params=params).prepare().url
-    query_string = urlparse(full_url).query
-    browser_fetch_script = base64.b64decode("__BROWSER_FETCH_B64__").decode("utf-8")
+    query_string = _amc_urlparse(full_url).query
+    browser_fetch_script = _amc_base64.b64decode("__BROWSER_FETCH_B64__").decode("utf-8")
     executable_path = _amc_os.environ.get("AMC_CHROMIUM_EXECUTABLE", "")
 
-    proc = subprocess.run(
+    proc = _amc_subprocess.run(
         [
-            sys.executable,
+            _amc_sys.executable,
             "-c",
             browser_fetch_script,
             url,
@@ -735,18 +743,36 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
     id_to_index = {}
     fallback_to_index = {}
 
-    _screen_match = re.search(r"\b(\d{1,2})\s*$", theatre_name or "")
-    _screen_count = int(_screen_match.group(1)) if _screen_match else None
-    _sparse_threshold = (
-        max(3, min(10, int((_screen_count * 0.45) + 0.999)))
-        if _screen_count
-        else 5
-    )
-
+    # Never infer expected inventory from screen count. Instead, retain two
+    # independent things across this workflow run: rows we successfully parsed
+    # and evidence that AMC's own response exposed an actionable movie/showtime.
+    # This lets a genuine one-movie schedule pass while a page exposing 12
+    # movies but yielding only 2 parsed movies is retried and ultimately rejected.
     _cache_dir = _AMCPath("build/amc_combo_cache")
     _cache_dir.mkdir(parents=True, exist_ok=True)
     _cache_slug = re.sub(r"[^a-z0-9]+", "-", theatre_name.lower()).strip("-")
     _cache_path = _cache_dir / f"{_cache_slug}-{wanted}.json"
+    _evidence_path = _cache_dir / f"{_cache_slug}-{wanted}.evidence.json"
+    _status_dir = _AMCPath("build/amc_combo_status")
+    _status_dir.mkdir(parents=True, exist_ok=True)
+    _status_path = _status_dir / f"{_cache_slug}-{wanted}.json"
+
+    _source_title_keys = set()
+    _source_showtime_ids = set()
+    _source_samples = 0
+
+    # Evidence is runner-local, just like the row cache. Keeping it across the
+    # workflow's Papermill retries prevents a later, smaller anti-bot response
+    # from erasing proof that an earlier response exposed more inventory.
+    if _evidence_path.exists():
+        try:
+            _saved_evidence = json.loads(_evidence_path.read_text(encoding="utf-8"))
+            if isinstance(_saved_evidence, dict):
+                _source_title_keys.update(str(x) for x in (_saved_evidence.get("titles") or []) if x)
+                _source_showtime_ids.update(str(x) for x in (_saved_evidence.get("showtime_ids") or []) if x)
+                _source_samples = int(_saved_evidence.get("samples") or 0)
+        except Exception as e:
+            print(f"[WARN] Ignoring unreadable AMC source-evidence cache for {theatre_name} {wanted}: {e}")
 
     def _merge_format(old_value, new_value):
         parts = []
@@ -853,6 +879,192 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
     def _unique_title_count() -> int:
         return len({str(r.get("movie_title") or "").casefold() for r in out if r.get("movie_title")})
 
+    def _title_evidence_key(value: str) -> str:
+        # Compare identity rather than punctuation/HTML-entity spelling.
+        return re.sub(r"[^a-z0-9]+", " ", _normalize_space(str(value or "")).casefold()).strip()
+
+    def _decode_amc_source_text(value: str) -> str:
+        def _unicode_repl(match):
+            try:
+                return chr(int(match.group(1), 16))
+            except Exception:
+                return match.group(0)
+        value = re.sub(r"\\u([0-9a-fA-F]{4})", _unicode_repl, value or "")
+        try:
+            return html_lib.unescape(value)
+        except Exception:
+            return value
+
+    def _inspect_source_evidence(page_html: str) -> Tuple[set, set]:
+        """
+        Return actionable movie identities and AMC showtime IDs exposed by one
+        response, independently of the normal row parser.
+
+        DOM evidence is counted only when a `Showtimes for ...` region contains
+        a numeric showtime link with a recognizable clock time. For escaped
+        React/Next payloads, the scanner deliberately does *not* depend on the
+        production parser's field order: it associates showtime IDs with the
+        nearest title region and checks for the requested UTC/local date. This
+        is what catches a source/parser regression instead of merely counting
+        whatever the parser happened to understand.
+        """
+        titles = set()
+        showtime_ids = set()
+        if not page_html:
+            return titles, showtime_ids
+
+        # Rendered DOM: every counted item is directly actionable.
+        try:
+            soup = BeautifulSoup(page_html, "html.parser")
+            for region in soup.find_all(attrs={"aria-label": re.compile(r"^Showtimes for\s+", re.I)}):
+                aria = str(region.get("aria-label") or "")
+                title = _normalize_space(re.sub(r"^Showtimes for\s+", "", aria, flags=re.I))
+                title_key = _title_evidence_key(title)
+                local_ids = set()
+                if not title_key or not looks_like_title_text(title):
+                    continue
+                for a in region.find_all("a", href=True):
+                    sid_m = re.search(r"/showtimes/(\d+)", str(a.get("href") or ""))
+                    if not sid_m:
+                        continue
+                    visible = _normalize_space(a.get_text(" ", strip=True))
+                    labelled = _normalize_space(str(a.get("aria-label") or ""))
+                    if not (TIME_RE.search(visible) or TIME_RE.search(labelled)):
+                        continue
+                    local_ids.add(sid_m.group(1))
+                if local_ids:
+                    titles.add(title_key)
+                    showtime_ids.update(local_ids)
+        except Exception:
+            pass
+
+        # Escaped React/Next flight data: use a looser, order-independent scan
+        # than extract_showtimes_from_json_scripts(). The requested date page
+        # can carry UTC timestamps, so verify that at least one timestamp in a
+        # title region resolves to this requested Pacific date before counting.
+        text = page_html or ""
+        for _ in range(2):
+            newer = text.replace(r'\\"', '"').replace(r'\"', '"')
+            if newer == text:
+                break
+            text = newer
+
+        anchors = []
+        for match in re.finditer(r'aria-label"\s*:\s*"Showtimes for ([^"]+)"', text, re.I):
+            title = _normalize_space(_decode_amc_source_text(match.group(1)))
+            key = _title_evidence_key(title)
+            if key and looks_like_title_text(title):
+                anchors.append((match.start(), title, key))
+
+        if anchors:
+            try:
+                from zoneinfo import ZoneInfo as _AMCZoneInfo
+                _pacific = _AMCZoneInfo("America/Los_Angeles")
+            except Exception:
+                _pacific = None
+
+            for idx, (start, _title, title_key) in enumerate(anchors):
+                end = anchors[idx + 1][0] if idx + 1 < len(anchors) else min(len(text), start + 60000)
+                chunk = text[start:end]
+                sid_matches = list(re.finditer(
+                    r'"showtimeId"\s*:\s*(?:"(\d+)"|(\d+))', chunk, re.I
+                ))
+                utc_matches = list(re.finditer(
+                    r'"showDateTimeUtc"\s*:\s*"([^"]+)"', chunk, re.I
+                ))
+                if not sid_matches or not utc_matches:
+                    continue
+
+                local_ids = set()
+                for sid_match in sid_matches:
+                    sid = sid_match.group(1) or sid_match.group(2) or ""
+                    if not sid:
+                        continue
+                    # Pair by proximity rather than field order. This is
+                    # intentionally different from the strict production row
+                    # parser and therefore catches reordered/changed payloads.
+                    nearest_utc = min(
+                        utc_matches,
+                        key=lambda utc_match: abs(utc_match.start() - sid_match.start()),
+                    )
+                    if abs(nearest_utc.start() - sid_match.start()) > 5000:
+                        continue
+                    utc_txt = nearest_utc.group(1)
+                    try:
+                        local_dt = datetime.fromisoformat(
+                            _decode_amc_source_text(utc_txt).replace("Z", "+00:00")
+                        )
+                        if local_dt.tzinfo is not None and _pacific is not None:
+                            local_dt = local_dt.astimezone(_pacific)
+                        if local_dt.date().isoformat() == wanted:
+                            local_ids.add(sid)
+                    except Exception:
+                        continue
+                if local_ids:
+                    titles.add(title_key)
+                    showtime_ids.update(local_ids)
+
+        return titles, showtime_ids
+
+    def _save_source_evidence() -> None:
+        try:
+            _evidence_path.write_text(json.dumps({
+                "titles": sorted(_source_title_keys),
+                "showtime_ids": sorted(_source_showtime_ids),
+                "samples": int(_source_samples),
+            }, ensure_ascii=False), encoding="utf-8")
+        except Exception as e:
+            print(f"[WARN] Could not save AMC source evidence for {theatre_name} {wanted}: {e}")
+
+    def _record_source_evidence(page_html: str, source_label: str) -> None:
+        nonlocal _source_samples
+        titles, showtime_ids = _inspect_source_evidence(page_html)
+        if not titles and not showtime_ids:
+            return
+        _source_samples += 1
+        _source_title_keys.update(titles)
+        _source_showtime_ids.update(showtime_ids)
+        _save_source_evidence()
+        print(
+            f"[INFO] AMC source evidence {theatre_name} {wanted} {source_label}: "
+            f"{len(titles)} movie(s), {len(showtime_ids)} showtime id(s)"
+        )
+
+    def _coverage_state() -> dict:
+        parsed_title_keys = {
+            _title_evidence_key(r.get("movie_title")) for r in out if _title_evidence_key(r.get("movie_title"))
+        }
+        parsed_ids = {
+            _normalize_space(str(r.get("showtime_id") or "")) for r in out
+            if _normalize_space(str(r.get("showtime_id") or ""))
+        }
+        missing_titles = sorted(_source_title_keys - parsed_title_keys)
+        missing_ids = sorted(_source_showtime_ids - parsed_ids)
+        return {
+            "source_titles": len(_source_title_keys),
+            "source_showtime_ids": len(_source_showtime_ids),
+            "parsed_titles": len(parsed_title_keys),
+            "parsed_showtime_ids": len(parsed_ids),
+            "missing_titles": missing_titles,
+            "missing_showtime_ids": missing_ids,
+            "source_samples": int(_source_samples),
+            "complete": not missing_titles and not missing_ids,
+        }
+
+    def _write_combo_status(complete: bool, reason: str = "", fallback: bool = False) -> None:
+        state = _coverage_state()
+        state.update({
+            "complete": bool(complete),
+            "reason": str(reason or ""),
+            "fallback": bool(fallback),
+            "theatre": theatre_name,
+            "date": wanted,
+        })
+        try:
+            _status_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:
+            print(f"[WARN] Could not save AMC combo status for {theatre_name} {wanted}: {e}")
+
     def _save_cache() -> None:
         rows = _clean_rows()
         if not rows:
@@ -872,16 +1084,10 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
                 for row in cached:
                     if isinstance(row, dict):
                         add_row(row, source_rank=1)
-                if _unique_title_count() >= _sparse_threshold:
+                if out:
                     print(
-                        f"[INFO] Reusing fresh in-run AMC cache for {theatre_name} {wanted}: "
-                        f"{_unique_title_count()} movie(s)"
-                    )
-                    return _clean_rows()
-                elif out:
-                    print(
-                        f"[INFO] Loaded partial in-run AMC cache for {theatre_name} {wanted}: "
-                        f"{_unique_title_count()} movie(s); continuing enrichment"
+                        f"[INFO] Loaded in-run AMC cache for {theatre_name} {wanted}: "
+                        f"{_unique_title_count()} movie(s); rechecking live/browser DOM"
                     )
         except Exception as e:
             print(f"[WARN] Ignoring unreadable AMC in-run cache for {theatre_name} {wanted}: {e}")
@@ -913,9 +1119,11 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
             node = getattr(node, "parent", None)
         return False
 
-    def merge_html(page_html: str, *, rendered: bool = False) -> None:
+    def merge_html(page_html: str, *, rendered: bool = False, source_label: str = "source") -> None:
         if not page_html:
             return
+
+        _record_source_evidence(page_html, source_label)
 
         for row in extract_showtimes_from_json_scripts(page_html, theatre_name, d):
             add_row(row, source_rank=1)
@@ -1101,7 +1309,7 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
             for row in recovered
             if row.get("movie_title")
         }
-        if len(recovered_unique) < _sparse_threshold:
+        if not recovered_unique:
             return []
         return recovered
 
@@ -1121,11 +1329,13 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
     html_txt = ""
     target = requests.Request("GET", showtimes_url, params={"date": wanted}).prepare().url
 
-    # Two targeted rounds are much more useful than throwing away every good
-    # theatre/date and restarting the entire notebook. Round 1 always renders
-    # the browser DOM because AMC's static React payload can contain enough
-    # titles while still omitting individual showtime links. Round 2 is used
-    # only when the combination remains sparse.
+    # Each round combines an HTTP/static view with a fresh rendered-browser
+    # view. We stop after round 1 only when (a) every actionable item the source
+    # exposed was parsed and (b) at least two non-empty source observations
+    # corroborated the result. If only one source produced evidence, perform the
+    # second round even for a one-movie schedule; this is how we distinguish a
+    # genuine small schedule from a one-off partial response without hard-coded
+    # inventory floors.
     _max_rounds = 2
     for _round in range(1, _max_rounds + 1):
         try:
@@ -1136,49 +1346,55 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
 
         if status == 200 and round_html:
             html_txt = round_html
-            merge_html(round_html, rendered=False)
+            merge_html(round_html, rendered=False, source_label=f"static-r{_round}")
         else:
             print(
                 f"[WARN] AMC static fetch returned status {status} for "
                 f"{theatre_name} {wanted} round {_round}; trying browser DOM"
             )
 
-        _need_browser = (_round == 1) or (_unique_title_count() < _sparse_threshold)
-        if _need_browser:
-            if _round == 1:
-                print(
-                    f"[INFO] Merging rendered AMC DOM for {theatre_name} {wanted} "
-                    f"(static/cached titles so far: {_unique_title_count()})"
-                )
+        if _round == 1:
+            print(
+                f"[INFO] Merging rendered AMC DOM for {theatre_name} {wanted} "
+                f"(static/cached titles so far: {_unique_title_count()})"
+            )
+        else:
+            _before = _coverage_state()
+            print(
+                f"[INFO] Targeted AMC coverage retry {_round}/{_max_rounds} for {theatre_name} {wanted}: "
+                f"parsed {_before['parsed_titles']}/{_before['source_titles']} source movie(s), "
+                f"{_before['parsed_showtime_ids']}/{_before['source_showtime_ids']} source showtime id(s), "
+                f"source samples={_before['source_samples']}"
+            )
+        try:
+            status2, round_browser_html = fetch_html_with_browser(
+                showtimes_url,
+                params={"date": wanted},
+                timeout_ms=45000,
+            )
+            if status2 == 200 and round_browser_html:
+                browser_html = round_browser_html
+                merge_html(round_browser_html, rendered=True, source_label=f"browser-r{_round}")
             else:
                 print(
-                    f"[INFO] Targeted AMC retry {_round}/{_max_rounds} for {theatre_name} {wanted}: "
-                    f"only {_unique_title_count()} movie(s), threshold {_sparse_threshold}"
+                    f"[WARN] AMC browser fetch returned status {status2} for "
+                    f"{theatre_name} {wanted} round {_round}"
                 )
-            try:
-                status2, round_browser_html = fetch_html_with_browser(
-                    showtimes_url,
-                    params={"date": wanted},
-                    timeout_ms=45000,
-                )
-                if status2 == 200 and round_browser_html:
-                    browser_html = round_browser_html
-                    merge_html(round_browser_html, rendered=True)
-                else:
-                    print(
-                        f"[WARN] AMC browser fetch returned status {status2} for "
-                        f"{theatre_name} {wanted} round {_round}"
-                    )
-            except Exception as e:
-                print(f"[WARN] AMC browser enrichment failed for {theatre_name} {wanted} round {_round}: {e}")
+        except Exception as e:
+            print(f"[WARN] AMC browser enrichment failed for {theatre_name} {wanted} round {_round}: {e}")
 
         _save_cache()
-        if _unique_title_count() >= _sparse_threshold:
+        _save_source_evidence()
+        _state = _coverage_state()
+        if _state["complete"] and _state["parsed_titles"] > 0 and _state["source_samples"] >= 2:
             break
 
     final_rows = _clean_rows()
-    final_unique = {r["movie_title"].casefold() for r in final_rows if r.get("movie_title")}
-    if not final_rows or len(final_unique) < _sparse_threshold:
+    _state = _coverage_state()
+    _coverage_problem = bool(_state["missing_titles"] or _state["missing_showtime_ids"])
+    _no_rows = not final_rows
+
+    if _coverage_problem or _no_rows:
         debug_dir = _AMCPath("build/amc_debug")
         debug_dir.mkdir(parents=True, exist_ok=True)
         debug_path = debug_dir / f"{_cache_slug}-{wanted}.html"
@@ -1193,11 +1409,38 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
                 for row in previous_rows
                 if row.get("movie_title")
             }
+            reason = (
+                "source/parser coverage gap" if _coverage_problem
+                else "no usable live rows"
+            )
+            _write_combo_status(True, reason=reason, fallback=True)
             print(
-                f"[WARN] AMC live scrape remained sparse for {theatre_name} {wanted}; "
+                f"[WARN] AMC live scrape had {reason} for {theatre_name} {wanted}; "
                 f"using recent same-weekend previous report ({len(previous_unique)} movie(s))."
             )
             return previous_rows
+
+        if _coverage_problem:
+            reason = (
+                f"source exposed {_state['source_titles']} movie(s)/{_state['source_showtime_ids']} showtime id(s), "
+                f"but parser covered {_state['parsed_titles']} movie(s)/{_state['parsed_showtime_ids']} showtime id(s); "
+                f"missing {len(_state['missing_titles'])} movie(s) and "
+                f"{len(_state['missing_showtime_ids'])} showtime id(s)"
+            )
+            _write_combo_status(False, reason=reason)
+            print(f"[WARN] AMC source/parser completeness failure for {theatre_name} {wanted}: {reason}")
+        else:
+            _write_combo_status(False, reason="no usable live rows")
+    else:
+        # If the source scanner found no independent evidence but normal parsing
+        # did recover rows, do not invent a failure. The two-round strategy above
+        # has already given AMC/browser a second chance; surface the uncertainty.
+        if _state["source_samples"] == 0:
+            print(
+                f"[WARN] AMC parsed {_state['parsed_titles']} movie(s) for {theatre_name} {wanted}, "
+                "but source-evidence scanner found no independently countable regions"
+            )
+        _write_combo_status(True)
 
     return final_rows
 '''
@@ -1225,96 +1468,72 @@ if all(_c in df_show.columns for _c in _display_duplicate_cols):
         print(f"[INFO] Collapsing {int(_clock_duplicate_mask.sum())} duplicate AMC clock-time row(s)")
         df_show = df_show.loc[~_clock_duplicate_mask].copy()
 
-# Completeness guard. AMC occasionally serves a partial React/queue response
-# that contains many valid rows for only one theatre or one day. A healthy
-# aggregate count therefore is not enough evidence that the weekend is complete.
+# Completeness guard. Browser enrichment already attempts to recover late
+# React/Next rows. At this point, reject only structural coverage failures.
+# A theatre's screen count is NOT a reliable lower bound on the number of
+# movies for an advance schedule, so low-but-valid counts are warnings only.
 _unique_movie_count = int(df_show["movie_title"].nunique())
-_theatre_count = int(df_show["theatre"].nunique()) if "theatre" in df_show.columns else 0
-_date_count = int(df_show["show_date"].nunique()) if "show_date" in df_show.columns else 0
 
-# This report intentionally combines these three configured AMC locations
-# across both weekend days. Match by stable theatre prefix so harmless wording
-# changes such as "@ The District" vs "at The District" do not break coverage.
-_project_theatre_specs = [
-    ("AMC Tustin 14", 14),
-    ("AMC Woodbridge 5", 5),
-    ("AMC Orange 30", 30),
+_configured_theatre_names = [
+    str(th.get("name") or "").strip()
+    for th in THEATRES
+    if isinstance(th, dict) and str(th.get("name") or "").strip()
 ]
-
-# Ten unique titles is a conservative overall floor.
-_minimum_unique_movies = 10
-
-# When the checked-in prior report was healthy, use it as an additional soft
-# baseline. This prevents a sudden collapse from silently replacing a normal
-# report, while still allowing substantial week-to-week changes.
-try:
-    from pathlib import Path as _AMCPath
-    _previous_html = _AMCPath("docs/index.html")
-    _previous_movie_count = 0
-    if _previous_html.exists():
-        _previous_text = _previous_html.read_text(encoding="utf-8", errors="ignore")
-        _previous_movie_count = len(
-            set(re.findall(r'data-movie-id="([0-9]+)"', _previous_text))
-        )
-    if _previous_movie_count >= 12:
-        _minimum_unique_movies = max(
-            _minimum_unique_movies,
-            min(20, int((_previous_movie_count * 0.40) + 0.999)),
-        )
-except Exception:
-    _previous_movie_count = 0
+_requested_dates = {d.isoformat() for d in dates}
+_observed_dates = set(df_show["show_date"].dropna().astype(str))
 
 _incomplete_reasons = []
-if _unique_movie_count < _minimum_unique_movies:
+if _unique_movie_count == 0:
+    _incomplete_reasons.append("no unique movies were parsed")
+_missing_dates = sorted(_requested_dates - _observed_dates)
+if _missing_dates:
     _incomplete_reasons.append(
-        f"only {_unique_movie_count} unique movie(s), expected at least {_minimum_unique_movies}"
+        "missing requested weekend date(s): " + ", ".join(_missing_dates)
     )
-if _date_count < 2:
-    _incomplete_reasons.append(f"only {_date_count} weekend date represented")
 
-# Validate the full theatre x date matrix instead of merely requiring "2
-# theatres somewhere" and "2 dates somewhere". That old aggregate rule allowed
-# Sunday Orange + a few Woodbridge rows to publish even when Tustin and most of
-# Saturday were absent.
-_theatre_text = df_show["theatre"].fillna("").astype(str)
-_observed_dates = sorted(
-    str(x) for x in df_show["show_date"].dropna().astype(str).unique()
-)
+_theatre_text = df_show["theatre"].fillna("").astype(str).map(_normalize_space)
 
-for _theatre_prefix, _screen_count in _project_theatre_specs:
-    _theatre_mask = _theatre_text.str.contains(
-        re.escape(_theatre_prefix), case=False, regex=True, na=False
-    )
+# The scraper writes one runner-local status record per theatre/date. A combo
+# can therefore be rejected for a proven source/parser coverage gap even when
+# it returned some rows. This is the critical distinction between "AMC really
+# lists one movie" and "AMC exposed many movies but we parsed only one."
+from pathlib import Path as _AMCStatusPath
+_combo_status_dir = _AMCStatusPath("build/amc_combo_status")
+for _theatre_name in _configured_theatre_names:
+    _status_slug = re.sub(r"[^a-z0-9]+", "-", _theatre_name.lower()).strip("-")
+    for _wanted_date in sorted(_requested_dates):
+        _status_path = _combo_status_dir / f"{_status_slug}-{_wanted_date}.json"
+        if not _status_path.exists():
+            continue
+        try:
+            _combo_status = json.loads(_status_path.read_text(encoding="utf-8"))
+        except Exception:
+            _combo_status = None
+        if isinstance(_combo_status, dict) and not bool(_combo_status.get("complete")):
+            _reason = _normalize_space(str(_combo_status.get("reason") or "source/parser coverage incomplete"))
+            _incomplete_reasons.append(f"{_theatre_name} {_wanted_date}: {_reason}")
+
+for _theatre_name in _configured_theatre_names:
+    _theatre_mask = _theatre_text.str.casefold() == _normalize_space(_theatre_name).casefold()
     _theatre_rows = df_show.loc[_theatre_mask]
     if _theatre_rows.empty:
-        _incomplete_reasons.append(f"missing {_theatre_prefix} entirely")
+        _incomplete_reasons.append(f"missing {_theatre_name} entirely")
         continue
 
+    # An asymmetric theatre/date matrix can be legitimate while AMC is still
+    # publishing an advance schedule. Surface it in Actions without converting
+    # "not posted yet" into a build failure.
     _theatre_dates = set(_theatre_rows["show_date"].dropna().astype(str))
-    if len(_theatre_dates) < 2:
-        _incomplete_reasons.append(
-            f"{_theatre_prefix} has only {len(_theatre_dates)} weekend date(s)"
-        )
-
-    # Use the same screen-count-aware floor that triggers browser enrichment:
-    # Orange 30 -> 10 titles/date, Tustin 14 -> 7, Woodbridge 5 -> 3.
-    _combo_min_movies = max(3, min(10, int((_screen_count * 0.45) + 0.999)))
-    for _wanted_date in _observed_dates:
-        _combo_rows = _theatre_rows.loc[
-            _theatre_rows["show_date"].astype(str) == _wanted_date
-        ]
-        _combo_movies = int(_combo_rows["movie_title"].nunique())
-        if _combo_movies < _combo_min_movies:
-            _incomplete_reasons.append(
-                f"{_theatre_prefix} {_wanted_date} has only {_combo_movies} "
-                f"movie(s), expected at least {_combo_min_movies}"
-            )
+    for _wanted_date in sorted(_requested_dates):
+        if _wanted_date not in _theatre_dates:
+            print(f"[WARN] {_theatre_name} has no parsed showtimes for {_wanted_date}")
 
 if _incomplete_reasons:
     raise RuntimeError(
         "No fresh AMC showtimes were parsed for the requested dates. "
-        "The AMC scrape was suspiciously incomplete: " + "; ".join(_incomplete_reasons) + "."
+        "The AMC scrape was structurally incomplete: " + "; ".join(_incomplete_reasons) + "."
     )
+
 """
 
 
@@ -1781,7 +2000,7 @@ def patch_notebook(notebook: dict) -> dict:
         "RT desired-column replacement": rt_desired_replacements,
         "AMC stabilized browser fetch replacement": amc_browser_fetch_replacements,
         "AMC escaped showtime parser replacement": amc_showtime_parser_replacements,
-        "AMC sparse-page scrape replacement": amc_scrape_function_replacements,
+        "AMC browser-enriched scrape replacement": amc_scrape_function_replacements,
     }
 
     failures = {name: count for name, count in expected.items() if count != 1}
@@ -1823,7 +2042,7 @@ def main() -> int:
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
         "non-movie filtering, original-film metadata lookup, stabilized AMC browser fetch, "
-        "AMC A-List metadata + clean public logs v22 -> "
+        "AMC A-List metadata + clean public logs v24 -> "
         f"{args.output_notebook}"
     )
     return 0
