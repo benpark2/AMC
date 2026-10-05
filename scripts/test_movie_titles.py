@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import ast
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
@@ -127,7 +127,7 @@ class NotebookPatcherTests(unittest.TestCase):
 
     def _fixture_notebook(self) -> dict:
         source = r'''from typing import Dict, List, Optional, Tuple
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import html as html_lib
 import json
 import re
@@ -136,6 +136,23 @@ import pandas as pd
 from bs4 import BeautifulSoup
 
 TIME_RE = re.compile(r"(\b\d{1,2}:\d{2}\s*(?:am|pm)\b)", re.I)
+OVERRIDE_SATURDAY = ""
+
+def upcoming_weekend_pacific() -> Tuple[date, date]:
+    """Return upcoming Saturday/Sunday in America/Los_Angeles."""
+    try:
+        from zoneinfo import ZoneInfo
+        today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    except Exception:
+        today = date.today()
+
+    if OVERRIDE_SATURDAY:
+        sat = datetime.strptime(OVERRIDE_SATURDAY, "%Y-%m-%d").date()
+        return sat, sat + timedelta(days=1)
+
+    wd = today.weekday()  # Mon=0 .. Sun=6
+    sat = today + timedelta(days=(5 - wd)) if wd <= 5 else today + timedelta(days=6)
+    return sat, sat + timedelta(days=1)
 
 def _normalize_space(txt: str) -> str:
     return re.sub(r"\s+", " ", (txt or "")).strip()
@@ -333,6 +350,8 @@ desired = [
         source = self._patched_source()
         ast.parse(source)
         self.assertIn("lookup_literal_targets = [", source)
+        self.assertIn("next two weekend calendar days after today", source)
+        self.assertIn("cursor = today + timedelta(days=1)", source)
         self.assertIn("metadata_release_year_hint", source)
         self.assertIn("lookup_year_hint", source)
         self.assertIn("year_match", source)
@@ -376,6 +395,58 @@ desired = [
             node.id for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Name)
         }
         self.assertNotIn("targets", identifiers)
+
+    def test_next_two_weekend_days_are_strictly_after_today(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        real_datetime = datetime
+
+        cases = {
+            # Monday-Friday all target the immediately upcoming weekend.
+            "2026-10-05": ("2026-10-10", "2026-10-11"),
+            "2026-10-06": ("2026-10-10", "2026-10-11"),
+            "2026-10-07": ("2026-10-10", "2026-10-11"),
+            "2026-10-08": ("2026-10-10", "2026-10-11"),
+            "2026-10-09": ("2026-10-10", "2026-10-11"),
+            # Saturday skips today: Sunday, then the following Saturday.
+            "2026-10-10": ("2026-10-11", "2026-10-17"),
+            # Sunday skips today and targets the following weekend.
+            "2026-10-11": ("2026-10-17", "2026-10-18"),
+        }
+
+        for today_text, expected in cases.items():
+            with self.subTest(today=today_text):
+                fixed = real_datetime.strptime(today_text, "%Y-%m-%d")
+
+                class FakeDateTime(real_datetime):
+                    @classmethod
+                    def now(cls, tz=None):
+                        if tz is None:
+                            return cls(
+                                fixed.year, fixed.month, fixed.day, 12, 0, 0
+                            )
+                        return cls(
+                            fixed.year, fixed.month, fixed.day, 12, 0, 0, tzinfo=tz
+                        )
+
+                ns["datetime"] = FakeDateTime
+                ns["OVERRIDE_SATURDAY"] = ""
+                first, second = ns["upcoming_weekend_pacific"]()
+                self.assertEqual(
+                    (first.isoformat(), second.isoformat()), expected
+                )
+
+    def test_weekend_override_keeps_explicit_saturday_sunday_pair(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        ns["OVERRIDE_SATURDAY"] = "2026-12-19"
+        first, second = ns["upcoming_weekend_pacific"]()
+        self.assertEqual(
+            (first.isoformat(), second.isoformat()),
+            ("2026-12-19", "2026-12-20"),
+        )
 
     def test_imdb_final_ranking_preserves_leading_articles(self):
         source = self._patched_source()

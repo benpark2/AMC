@@ -3,36 +3,38 @@
 Patch the AMC notebook into build/ before Papermill executes it.
 
 This patcher is intentionally conservative:
-1. Replace the notebook's candidate_title_variants() with the shared generic
+1. Select the next two Saturday/Sunday calendar days strictly after the run
+   date, so a Saturday run targets Sunday plus the following Saturday.
+2. Replace the notebook's candidate_title_variants() with the shared generic
    implementation in scripts/movie_titles.py.
-2. Remove non-film AMC inventory before ratings/numbering/planner generation.
-3. Improve IMDb candidate scoring so it considers every canonical lookup
+3. Remove non-film AMC inventory before ratings/numbering/planner generation.
+4. Improve IMDb candidate scoring so it considers every canonical lookup
    variant while preserving leading articles for final identity ranking.
-4. Keep Rotten Tomatoes on its existing direct-page method, but add the
+5. Keep Rotten Tomatoes on its existing direct-page method, but add the
    original release-year hint for anniversary/repertory titles and parse scores
    only when critic/audience labels are explicit.
-5. Emit an explicit RT_C/A display column so a missing side renders as "-".
-6. Parse AMC's current escaped React/Next showtime payload without relying on
+6. Emit an explicit RT_C/A display column so a missing side renders as "-".
+7. Parse AMC's current escaped React/Next showtime payload without relying on
    brittle field ordering.
-7. Merge server-rendered, browser-rendered, and retry/cache discoveries for
+8. Merge server-rendered, browser-rendered, and retry/cache discoveries for
    every theatre/date without inferring inventory from screen count.
-8. Measure what each AMC response exposes using stable semantic evidence
+9. Measure what each AMC response exposes using stable semantic evidence
    (movie identity + visible local showtime), and compare that snapshot with
    parsed rows. Raw AMC showtime IDs remain diagnostic only because they can
    change or duplicate across SSR/browser hydration.
-9. Persist rich source snapshots and parsed rows across Papermill retries so
-   complementary attempts are merged without unioning unstable IDs.
-10. Let the Playwright fallback wait for AMC's dynamically rendered showtime
+10. Persist rich source snapshots and parsed rows across Papermill retries so
+    complementary attempts are merged without unioning unstable IDs.
+11. Let the Playwright fallback wait for AMC's dynamically rendered showtime
     DOM to stabilize instead of taking a fixed-delay snapshot.
-11. If live sources remain incomplete, allow only a recent, same-weekend prior
+12. If live sources remain incomplete, allow only a recent, same-weekend prior
     successful report to act as a transparent last-good showtime cache;
     preserve per-showtime A-List exclusions while doing so.
-12. Reject structural aggregate failures and unresolved source/parser coverage
+13. Reject structural aggregate failures and unresolved source/parser coverage
     gaps, while accepting genuinely small schedules when AMC itself exposes
     only a small schedule.
-13. Preserve AMC's explicit A-List exclusion metadata (NOALIST) through SSR and
+14. Preserve AMC's explicit A-List exclusion metadata (NOALIST) through SSR and
     rendered-DOM recovery paths.
-14. Keep scraper INFO/WARN diagnostics out of the public HTML while leaving
+15. Keep scraper INFO/WARN diagnostics out of the public HTML while leaving
     them available in the GitHub Actions execution log.
 
 Important safety property
@@ -54,6 +56,41 @@ import json
 from pathlib import Path
 import sys
 
+
+
+UPCOMING_WEEKEND_REPLACEMENT = r'''def upcoming_weekend_pacific() -> Tuple[date, date]:
+    """Return the next two weekend calendar days after today (Pacific time).
+
+    "Next" is intentionally strict: today itself is never returned.  This
+    keeps a Saturday run useful for planning by selecting Sunday plus the
+    following Saturday; a Sunday run selects the following Saturday/Sunday.
+    Weekday runs select the upcoming Saturday/Sunday.
+
+    OVERRIDE_SATURDAY keeps its historical meaning: when explicitly supplied,
+    it names the first day of a forced Saturday/Sunday pair.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    except Exception:
+        today = date.today()
+
+    if OVERRIDE_SATURDAY:
+        sat = datetime.strptime(OVERRIDE_SATURDAY, "%Y-%m-%d").date()
+        return sat, sat + timedelta(days=1)
+
+    weekend_days = []
+    cursor = today + timedelta(days=1)
+    while len(weekend_days) < 2:
+        if cursor.weekday() in (5, 6):  # Saturday=5, Sunday=6
+            weekend_days.append(cursor)
+        cursor += timedelta(days=1)
+
+    return weekend_days[0], weekend_days[1]
+'''
+
+WEEKEND_PRINT_OLD = 'print(f"Upcoming weekend (Pacific): {sat.isoformat()} (Sat), {sun.isoformat()} (Sun)")'
+WEEKEND_PRINT_NEW = 'print(f"Upcoming weekend days (Pacific): {sat.isoformat()} ({sat.strftime(\'%a\')}), {sun.isoformat()} ({sun.strftime(\'%a\')})")'
 
 FUNCTION_WRAPPER = """def candidate_title_variants(title: str) -> List[str]:
     \"\"\"Use the shared generic AMC-title normalizer for metadata lookup.\"\"\"
@@ -1993,6 +2030,8 @@ def _validate_imdb_patch(source: str) -> None:
 
 
 def patch_notebook(notebook: dict) -> dict:
+    upcoming_weekend_replacements = 0
+    weekend_print_replacements = 0
     candidate_function_replacements = 0
     df_show_insertions = 0
     imdb_function_patches = 0
@@ -2010,6 +2049,22 @@ def patch_notebook(notebook: dict) -> dict:
             continue
 
         source = _source_text(cell)
+
+        source, did_patch_weekend = _replace_function(
+            source,
+            "upcoming_weekend_pacific",
+            UPCOMING_WEEKEND_REPLACEMENT,
+        )
+        upcoming_weekend_replacements += int(did_patch_weekend)
+
+        print_count = source.count(WEEKEND_PRINT_OLD)
+        if print_count > 1:
+            raise RuntimeError(
+                f"Expected at most one weekend summary print in a cell; found {print_count}."
+            )
+        if print_count == 1:
+            source = source.replace(WEEKEND_PRINT_OLD, WEEKEND_PRINT_NEW, 1)
+            weekend_print_replacements += 1
 
         source, did_replace = _replace_function(
             source,
@@ -2088,6 +2143,7 @@ def patch_notebook(notebook: dict) -> dict:
         _set_source(cell, source)
 
     expected = {
+        "upcoming_weekend_pacific replacement": upcoming_weekend_replacements,
         "candidate_title_variants replacement": candidate_function_replacements,
         "df_show non-movie filter": df_show_insertions,
         "build_imdb_lookup patch": imdb_function_patches,
@@ -2140,7 +2196,7 @@ def main() -> int:
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
         "non-movie filtering, original-film metadata lookup, stabilized AMC browser fetch, "
-        "AMC A-List metadata + clean public logs v25 -> "
+        "AMC A-List metadata + clean public logs v26 -> "
         f"{args.output_notebook}"
     )
     return 0
