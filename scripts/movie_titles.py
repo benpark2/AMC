@@ -90,6 +90,19 @@ _SUFFIX_PATTERNS = (
         re.IGNORECASE,
     ),
 
+    # Year-tagged event wrappers are presentation metadata, not part of the
+    # underlying film title.  AMC/Fathom-style repertory listings commonly use
+    # forms such as "<movie> (2026 Event)".  Require a four-digit year so an
+    # actual title ending in the ordinary word "Event" is left untouched.
+    re.compile(
+        r"\s*(?:[-–—:]\s*)?"
+        r"(?:\(\s*)?"
+        r"(?:\d{4}\s+(?:event|presentation|screening)|"
+        r"(?:event|presentation|screening)\s+\d{4})"
+        r"(?:\s*\))?\s*$",
+        re.IGNORECASE,
+    ),
+
     # Alternate-cut / repertory presentation labels.  These are intentionally
     # generic suffix rules: the visible AMC wording is preserved, but metadata
     # providers should receive the underlying feature title.
@@ -119,12 +132,70 @@ _ANNIVERSARY_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Capture an explicit year from a trailing "Fest 2026"-style program label.
-# This is intentionally generic enough to be reused for future festival names.
-_EVENT_YEAR_RE = re.compile(
-    r"(?:fest|festival|series|showcase)\s+(\d{4})\b",
-    re.IGNORECASE,
+# Capture a presentation year from generic program/event wording.  This is
+# deliberately separate from ``_EXPLICIT_YEAR_RE``: a year in "(2026 Event)"
+# describes the screening, not the original film release.  It becomes useful
+# only when paired with an anniversary count (2026 - 20 -> 2006).
+_EVENT_YEAR_PATTERNS = (
+    re.compile(
+        r"(?:fest|festival|series|showcase)\s+(\d{4})\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:\(\s*)?(?:event|presentation|screening)\s+(\d{4})(?:\s*\))?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:\(\s*)?(\d{4})\s+(?:event|presentation|screening)(?:\s*\))?",
+        re.IGNORECASE,
+    ),
 )
+
+
+def _presentation_year(value: str) -> int | None:
+    """Return a year that belongs to a screening/program wrapper, if any."""
+    for pattern in _EVENT_YEAR_PATTERNS:
+        match = pattern.search(value or "")
+        if match:
+            try:
+                return int(match.group(1))
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _presenter_possessive_variant(display: str, canonical: str) -> str | None:
+    """Return an underlying-title candidate for creator-branded presentations.
+
+    This intentionally does *not* change the canonical/display title.  It only
+    adds a secondary metadata candidate for special presentations such as
+    ``<multi-word creator>'s <film> 20th Anniversary``.  Requiring a known
+    anniversary or year-tagged event wrapper plus a multi-word possessive
+    prefix avoids treating ordinary one-word contractions/possessives as a
+    generic prefix.  Provider validation/ranking still decides whether the
+    candidate is a real film match.
+    """
+    if not (
+        _ANNIVERSARY_RE.search(display or "")
+        or _presentation_year(display or "") is not None
+    ):
+        return None
+
+    match = re.match(
+        r"^(?P<prefix>.+?[’']s)\s+(?P<title>.+)$",
+        canonical or "",
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+
+    prefix = re.sub(r"[’']s$", "", match.group("prefix"), flags=re.IGNORECASE)
+    prefix_words = re.findall(r"[A-Za-z0-9]+", prefix)
+    if len(prefix_words) < 2:
+        return None
+
+    tail = clean_amc_title(match.group("title"))
+    return tail or None
 
 
 def clean_amc_title(title: str) -> str:
@@ -206,8 +277,7 @@ def analyze_movie_title(
         int(anniversary_match.group(1)) if anniversary_match else None
     )
 
-    event_match = _EVENT_YEAR_RE.search(display)
-    event_year = int(event_match.group(1)) if event_match else None
+    event_year = _presentation_year(display)
 
     explicit_match = _EXPLICIT_YEAR_RE.search(display)
     explicit_year = int(explicit_match.group(1)) if explicit_match else None
@@ -290,6 +360,14 @@ def candidate_title_variants(title: str) -> list[str]:
     values: list[str] = []
     values.extend(_generic_spelling_variants(canonical))
 
+    # Creator/presenter branding can be added by the exhibition event rather
+    # than belonging to the underlying film's provider title.  Keep the
+    # canonical branded form first for safety, then try the unbranded form as
+    # a secondary candidate only for a recognized special-presentation shape.
+    presenter_variant = _presenter_possessive_variant(display, canonical)
+    if presenter_variant:
+        values.extend(_generic_spelling_variants(presenter_variant))
+
     # A parenthetical four-digit year is useful disambiguation in the AMC
     # display title, but metadata providers usually store it as a page suffix
     # rather than part of the base movie name.
@@ -324,7 +402,11 @@ def wikipedia_title_candidates(
 
     # Exact Wikipedia titles are most likely to use the canonical wording.
     # Mechanical variants are included only after that.
-    names = candidate_title_variants(info.canonical_title)
+    # Pass the original AMC title here, not only the canonical form, so generic
+    # special-presentation alternatives (for example a creator-branded
+    # anniversary) remain available to Wikipedia while the canonical candidate
+    # still stays first.
+    names = candidate_title_variants(title)
     values: list[str] = []
 
     for name in names:

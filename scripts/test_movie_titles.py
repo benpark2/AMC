@@ -116,6 +116,51 @@ class MovieTitleTests(unittest.TestCase):
             2016,
         )
 
+    def test_year_tagged_event_wrapper_is_presentation_not_release_year(self):
+        info = analyze_movie_title(
+            "Example Classic (2026 Event)",
+            reference_year=2026,
+        )
+        self.assertEqual(info.canonical_title, "Example Classic")
+        self.assertEqual(info.event_year, 2026)
+        self.assertIsNone(info.explicit_year)
+        self.assertIsNone(info.inferred_release_year)
+        self.assertIsNone(
+            metadata_release_year_hint(
+                "Example Classic (2026 Event)",
+                reference_year=2026,
+            )
+        )
+
+    def test_event_year_can_anchor_a_stacked_anniversary(self):
+        info = analyze_movie_title(
+            "Example Classic 20th Anniversary (2026 Event)",
+            reference_year=2025,
+        )
+        self.assertEqual(info.canonical_title, "Example Classic")
+        self.assertEqual(info.event_year, 2026)
+        self.assertEqual(info.inferred_release_year, 2006)
+
+    def test_creator_branded_anniversary_adds_underlying_metadata_candidate(self):
+        display = "Alex Morgan's The Hidden Garden 20th Anniversary"
+        variants = candidate_title_variants(display)
+        self.assertEqual(variants[0], "Alex Morgan's The Hidden Garden")
+        self.assertIn("The Hidden Garden", variants)
+        self.assertIn(
+            "The Hidden Garden (2006 film)",
+            wikipedia_title_candidates(display, reference_year=2026),
+        )
+        self.assertEqual(metadata_release_year_hint(display, reference_year=2026), 2006)
+
+    def test_ordinary_possessive_title_is_not_unbranded_without_event_shape(self):
+        display = "Alex Morgan's The Hidden Garden"
+        self.assertEqual(candidate_title_variants(display), [display, "Alex Morgan’s The Hidden Garden"])
+
+    def test_one_word_possessive_prefix_is_not_treated_as_presenter(self):
+        display = "Someone's Story 20th Anniversary"
+        variants = candidate_title_variants(display)
+        self.assertNotIn("Story", variants)
+
 
 class NotebookPatcherTests(unittest.TestCase):
     def setUp(self):
