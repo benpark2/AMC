@@ -796,9 +796,37 @@ def _entity_english_names(entity: dict) -> list[str]:
     return values
 
 
+def _context_title_variants(context: MovieContext) -> list[str]:
+    """Return generic metadata identity candidates for an AMC presentation.
+
+    AMC can wrap an existing feature in generic event wording or presenter
+    branding that metadata providers do not use.  Reuse the shared title
+    candidate generator so poster validation and Audience Focus agree about the
+    underlying film.  The canonical form stays first, and no movie/person
+    aliases are encoded here.
+    """
+    values = [context.canonical_title]
+    values.extend(candidate_title_variants(context.display_title))
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        cleaned = clean_amc_title(value)
+        key = cleaned.casefold()
+        if cleaned and key not in seen:
+            seen.add(key)
+            out.append(cleaned)
+    return out
+
+
 def _entity_title_score(entity: dict, context: MovieContext) -> float:
+    variants = _context_title_variants(context)
     return max(
-        (_title_similarity(name, context.canonical_title) for name in _entity_english_names(entity)),
+        (
+            _title_similarity(name, variant)
+            for name in _entity_english_names(entity)
+            for variant in variants
+        ),
         default=0.0,
     )
 
@@ -1207,11 +1235,17 @@ def _audience_entity_for_context(
         if entity is not None:
             return entity
 
-    title_entities = _wikidata_entities(
-        _wikidata_qids_for_title(context.canonical_title)
-    )
-    entity, _ = _best_entity_for_context(title_entities, context, None)
-    return entity
+    # Use the same generic metadata candidates as the rest of the lookup
+    # pipeline.  Audience Focus should not depend on poster resolution having
+    # succeeded first; a presentation wrapper may be absent from Wikidata even
+    # when the underlying film has complete language/country metadata.
+    for candidate in _context_title_variants(context):
+        title_entities = _wikidata_entities(_wikidata_qids_for_title(candidate))
+        entity, _ = _best_entity_for_context(title_entities, context, None)
+        if entity is not None:
+            return entity
+
+    return None
 
 
 def _ensure_audience_focus_style(soup: BeautifulSoup) -> None:

@@ -1996,6 +1996,62 @@ class AudienceFocusTests(unittest.TestCase):
         self.assertEqual(result.tags, ("Spanish-language",))
         self.assertNotIn("Latino/Hispanic-focused", result.tags)
 
+    def test_audience_entity_uses_generic_special_presentation_candidates(self):
+        """Presenter branding must not hide the underlying film's language."""
+        context = posters.MovieContext(
+            display_title="Alex Rivera's Night Garden 20th Anniversary",
+            canonical_title="Alex Rivera's Night Garden",
+            expected_year=None,
+            runtime_min=100,
+            spoken_languages=frozenset(),
+            relax_runtime=True,
+        )
+        entity = self.entity(
+            claims={
+                "P364": [
+                    {"mainsnak": {"datavalue": {"value": {"id": "Q2003"}}}}
+                ],
+            }
+        )
+        entity["labels"] = {"en": {"value": "Night Garden"}}
+
+        searched: list[str] = []
+
+        def qids_for_title(title: str, limit: int = 12):
+            searched.append(title)
+            return ["QMovie"] if title == "Night Garden" else []
+
+        with patch.object(posters, "_wikidata_qids_for_title", side_effect=qids_for_title), \
+             patch.object(
+                 posters,
+                 "_wikidata_entities",
+                 side_effect=lambda qids: [entity] if qids else [],
+             ):
+            resolved = posters._audience_entity_for_context(
+                context,
+                imdb_id=None,
+                wikipedia_page=None,
+            )
+
+        self.assertIs(resolved, entity)
+        self.assertIn("Night Garden", searched)
+        self.assertEqual(
+            posters.classify_audience_focus(context, resolved).tags,
+            ("Spanish-language",),
+        )
+
+    def test_plain_possessive_title_does_not_gain_unbranded_audience_candidate(self):
+        """Ordinary possessive film titles stay intact outside event shapes."""
+        context = posters.MovieContext(
+            display_title="Alex Rivera's Night Garden",
+            canonical_title="Alex Rivera's Night Garden",
+            expected_year=None,
+            runtime_min=100,
+            spoken_languages=frozenset(),
+            relax_runtime=False,
+        )
+        self.assertNotIn("Night Garden", posters._context_title_variants(context))
+
     def test_wikipedia_african_american_category_can_add_black_focus(self):
         entity = self.entity()
         result = posters.classify_audience_focus(
