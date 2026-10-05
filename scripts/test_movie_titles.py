@@ -830,9 +830,12 @@ desired = [
 
         self.assertEqual(len({r["movie_title"] for r in rows}), 1)
         self.assertTrue(status["complete"])
-        self.assertEqual(status["source_showtime_slots"], 1)
+        # Serialized React slots are diagnostic only in v27.
+        self.assertEqual(status["source_showtime_slots"], 0)
+        self.assertEqual(status["source_serialized_showtime_slots"], 1)
         self.assertEqual(status["parsed_showtime_slots"], 1)
         self.assertGreaterEqual(len(status["unmatched_source_showtime_ids"]), 1)
+
 
     def test_full_movie_coverage_with_one_extra_raw_id_is_complete(self):
         source = self._patched_source()
@@ -871,12 +874,13 @@ desired = [
         self.assertTrue(status["complete"])
         self.assertEqual(status["source_titles"], 13)
         self.assertEqual(status["parsed_titles"], 13)
-        self.assertEqual(status["source_showtime_slots"], 13)
+        self.assertEqual(status["source_showtime_slots"], 0)
+        self.assertEqual(status["source_serialized_showtime_slots"], 13)
         self.assertEqual(status["parsed_showtime_slots"], 13)
         self.assertEqual(len(status["unmatched_source_showtime_ids"]), 1)
 
 
-    def test_missing_distinct_visible_showtime_slot_remains_fatal(self):
+    def test_serialized_slot_surplus_is_diagnostic_not_fatal(self):
         source = self._patched_source()
         ns = {}
         exec(compile(source, "<patched-notebook-test>", "exec"), ns)
@@ -900,12 +904,127 @@ desired = [
             finally:
                 os.chdir(old_cwd)
 
+        self.assertTrue(status["complete"])
+        self.assertEqual(status["source_titles"], 1)
+        self.assertEqual(status["parsed_titles"], 1)
+        self.assertEqual(status["source_showtime_slots"], 0)
+        self.assertEqual(status["source_serialized_showtime_slots"], 2)
+        self.assertEqual(status["parsed_showtime_slots"], 1)
+        self.assertEqual(status["missing_showtime_slots"], [])
+
+    def test_missing_distinct_direct_dom_showtime_slot_remains_fatal(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+        # Same internal ID on two directly rendered clock links forces the row
+        # deduper to retain one row. The independent DOM evidence must still
+        # detect that a genuinely different visible clock time was dropped.
+        rendered = (
+            '<div aria-label="Showtimes for Stable Feature">'
+            '<a href="/showtimes/501">7:00 PM</a>'
+            '<a href="/showtimes/501">9:00 PM</a>'
+            '</div>'
+        )
+        ns["fetch_amc_html"] = lambda session, url, params=None: (200, rendered)
+        ns["fetch_html_with_browser"] = lambda url, params=None, timeout_ms=30000: (200, rendered)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                scraper(None, "AMC Example 10", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                status = json.loads(Path(
+                    "build/amc_combo_status/amc-example-10-2026-09-26.json"
+                ).read_text(encoding="utf-8"))
+            finally:
+                os.chdir(old_cwd)
+
         self.assertFalse(status["complete"])
         self.assertEqual(status["source_titles"], 1)
         self.assertEqual(status["parsed_titles"], 1)
         self.assertEqual(status["source_showtime_slots"], 2)
         self.assertEqual(status["parsed_showtime_slots"], 1)
         self.assertEqual(len(status["missing_showtime_slots"]), 1)
+
+
+    def test_embedded_react_slot_surplus_does_not_outvote_complete_rendered_dom(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+
+        # Reproduce the v26 production shape with two independent snapshots:
+        # static React data contains many serialized records, while the browser
+        # DOM exposes the smaller set of actually clickable time links. The
+        # serialized surplus must be diagnostic, not a fatal completeness gate.
+        dom_parts = []
+        sid = 1000
+        for i in range(1, 14):
+            times = [f"5:{i:02d} PM"]
+            if i <= 10:  # 10*2 + 3*1 = 23 directly rendered slots.
+                times.append(f"8:{i:02d} PM")
+            links = []
+            for tm in times:
+                sid += 1
+                links.append(f'<a href="/showtimes/{sid}">{tm}</a>')
+            dom_parts.append(
+                f'<div aria-label="Showtimes for Coverage Movie {i}">' + "".join(links) + "</div>"
+            )
+        rendered = "".join(dom_parts)
+
+        serialized = []
+        serial_id = 5000
+        total_serialized = 0
+        for i in range(1, 14):
+            per_movie = 4 if i <= 3 else 3  # 3*4 + 10*3 = 42 serialized slots.
+            for j in range(per_movie):
+                total_serialized += 1
+                serial_id += 1
+                minute = (i * 4 + j) % 60
+                hour = 7 + (j % 4)
+                # Repeating the movie anchor per record mirrors how fragmented
+                # Next-flight chunks can restate a movie region during hydration.
+                serialized.append(f'aria-label\\":\\"Showtimes for Coverage Movie {i}\\"')
+                serialized.append(
+                    f'\\"showtimeId\\":{serial_id},'
+                    f'\\"display\\":{{\\"time\\":\\"{hour}:{minute:02d}\\",\\"amPm\\":\\"PM\\"}},'
+                    f'\\"showDateTimeUtc\\":\\"2026-09-27T0{2+j}:{minute:02d}:00Z\\",'
+                    f'\\"status\\":\\"AVAILABLE\\"'
+                )
+        self.assertEqual(total_serialized, 42)
+        static_payload = '<script>self.__next_f.push([1,"' + " ".join(serialized) + '"])</script>'
+
+        ns["fetch_amc_html"] = lambda session, url, params=None: (200, static_payload)
+        ns["fetch_html_with_browser"] = lambda url, params=None, timeout_ms=30000: (200, rendered)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                rows = scraper(None, "AMC Example 30", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                status = json.loads(Path(
+                    "build/amc_combo_status/amc-example-30-2026-09-26.json"
+                ).read_text(encoding="utf-8"))
+                evidence = json.loads(Path(
+                    "build/amc_combo_cache/amc-example-30-2026-09-26.evidence.json"
+                ).read_text(encoding="utf-8"))
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertEqual(len({r["movie_title"] for r in rows}), 13)
+        self.assertTrue(status["complete"])
+        self.assertEqual(status["source_titles"], 13)
+        self.assertEqual(status["parsed_titles"], 13)
+        self.assertEqual(status["source_showtime_slots"], 23)
+        self.assertEqual(status["parsed_showtime_slots"], 23)
+        self.assertEqual(status["missing_showtime_slots"], [])
+        # At least one saved snapshot contains the richer serialized-only view;
+        # it does not outvote the trusted rendered snapshot.
+        self.assertGreaterEqual(
+            max(len(snap.get("serialized_slots") or []) for snap in evidence["snapshots"]),
+            40,
+        )
 
 
     def test_aggregate_guard_rejects_recorded_source_parser_gap(self):
