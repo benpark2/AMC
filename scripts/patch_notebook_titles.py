@@ -16,11 +16,12 @@ This patcher is intentionally conservative:
    brittle field ordering.
 7. Merge server-rendered, browser-rendered, and retry/cache discoveries for
    every theatre/date without inferring inventory from screen count.
-8. Measure what each AMC source actually exposes (actionable movie regions and
-   showtime IDs) and compare that evidence with parsed rows. Retry when the
-   parser has not covered the source rather than relying on arbitrary counts.
-9. Persist source evidence and parsed rows across Papermill retries so
-   complementary attempts are merged instead of discarded.
+8. Measure what each AMC response exposes using stable semantic evidence
+   (movie identity + visible local showtime), and compare that snapshot with
+   parsed rows. Raw AMC showtime IDs remain diagnostic only because they can
+   change or duplicate across SSR/browser hydration.
+9. Persist rich source snapshots and parsed rows across Papermill retries so
+   complementary attempts are merged without unioning unstable IDs.
 10. Let the Playwright fallback wait for AMC's dynamically rendered showtime
     DOM to stabilize instead of taking a fixed-delay snapshot.
 11. If live sources remain incomplete, allow only a recent, same-weekend prior
@@ -757,20 +758,39 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
     _status_dir.mkdir(parents=True, exist_ok=True)
     _status_path = _status_dir / f"{_cache_slug}-{wanted}.json"
 
-    _source_title_keys = set()
-    _source_showtime_ids = set()
-    _source_samples = 0
+    # Completeness evidence is snapshot-based. Do not union AMC's raw
+    # showtime IDs across requests: AMC can replace/duplicate internal IDs for
+    # the same visible screening between SSR, browser hydration, and retries.
+    # Instead keep each response as an independent snapshot and compare the
+    # parser with the richest snapshot using stable semantic keys
+    # (movie identity + local visible clock time).
+    _source_snapshots = []
+    _source_observations = 0
 
-    # Evidence is runner-local, just like the row cache. Keeping it across the
-    # workflow's Papermill retries prevents a later, smaller anti-bot response
-    # from erasing proof that an earlier response exposed more inventory.
     if _evidence_path.exists():
         try:
             _saved_evidence = json.loads(_evidence_path.read_text(encoding="utf-8"))
             if isinstance(_saved_evidence, dict):
-                _source_title_keys.update(str(x) for x in (_saved_evidence.get("titles") or []) if x)
-                _source_showtime_ids.update(str(x) for x in (_saved_evidence.get("showtime_ids") or []) if x)
-                _source_samples = int(_saved_evidence.get("samples") or 0)
+                _source_observations = int(_saved_evidence.get("observations") or 0)
+                for _snap in (_saved_evidence.get("snapshots") or []):
+                    if not isinstance(_snap, dict):
+                        continue
+                    _source_snapshots.append({
+                        "source": str(_snap.get("source") or "saved"),
+                        "titles": {str(x) for x in (_snap.get("titles") or []) if x},
+                        "slots": {str(x) for x in (_snap.get("slots") or []) if x},
+                        "showtime_ids": {str(x) for x in (_snap.get("showtime_ids") or []) if x},
+                    })
+                # Backward compatibility with v24 evidence files. Preserve only
+                # stable movie identities; intentionally discard the old union
+                # of raw showtime IDs that caused false fatal gaps.
+                if not _source_snapshots and (_saved_evidence.get("titles") or []):
+                    _source_snapshots.append({
+                        "source": "legacy-v24",
+                        "titles": {str(x) for x in (_saved_evidence.get("titles") or []) if x},
+                        "slots": set(),
+                        "showtime_ids": set(),
+                    })
         except Exception as e:
             print(f"[WARN] Ignoring unreadable AMC source-evidence cache for {theatre_name} {wanted}: {e}")
 
@@ -883,6 +903,19 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         # Compare identity rather than punctuation/HTML-entity spelling.
         return re.sub(r"[^a-z0-9]+", " ", _normalize_space(str(value or "")).casefold()).strip()
 
+    def _clock_evidence_key(value: str) -> str:
+        """Normalize a visible 12-hour clock time to a stable semantic key."""
+        text = _normalize_space(str(value or "")).lower()
+        m = re.search(r"\b(1[0-2]|0?[1-9]):([0-5]\d)\s*([ap])\.?m\.?\b", text, re.I)
+        if not m:
+            return ""
+        return f"{int(m.group(1))}:{m.group(2)} {m.group(3).lower()}m"
+
+    def _slot_evidence_key(title_key: str, clock_key: str) -> str:
+        if not title_key or not clock_key:
+            return ""
+        return f"{title_key}\t{clock_key}"
+
     def _decode_amc_source_text(value: str) -> str:
         def _unicode_repl(match):
             try:
@@ -895,31 +928,29 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         except Exception:
             return value
 
-    def _inspect_source_evidence(page_html: str) -> Tuple[set, set]:
+    def _inspect_source_evidence(page_html: str) -> Tuple[set, set, set]:
         """
-        Return actionable movie identities and AMC showtime IDs exposed by one
-        response, independently of the normal row parser.
+        Return movie identities, semantic showtime slots, and raw AMC IDs from
+        one response, independently of the production row parser.
 
-        DOM evidence is counted only when a `Showtimes for ...` region contains
-        a numeric showtime link with a recognizable clock time. For escaped
-        React/Next payloads, the scanner deliberately does *not* depend on the
-        production parser's field order: it associates showtime IDs with the
-        nearest title region and checks for the requested UTC/local date. This
-        is what catches a source/parser regression instead of merely counting
-        whatever the parser happened to understand.
+        Completeness decisions use titles + semantic slots. Raw AMC IDs are
+        retained only for diagnostics because they are not stable identifiers
+        across SSR/browser hydration and retries.
         """
         titles = set()
+        slots = set()
         showtime_ids = set()
         if not page_html:
-            return titles, showtime_ids
+            return titles, slots, showtime_ids
 
-        # Rendered DOM: every counted item is directly actionable.
+        # Rendered DOM: count only directly actionable time links.
         try:
             soup = BeautifulSoup(page_html, "html.parser")
             for region in soup.find_all(attrs={"aria-label": re.compile(r"^Showtimes for\s+", re.I)}):
                 aria = str(region.get("aria-label") or "")
                 title = _normalize_space(re.sub(r"^Showtimes for\s+", "", aria, flags=re.I))
                 title_key = _title_evidence_key(title)
+                local_slots = set()
                 local_ids = set()
                 if not title_key or not looks_like_title_text(title):
                     continue
@@ -929,19 +960,21 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
                         continue
                     visible = _normalize_space(a.get_text(" ", strip=True))
                     labelled = _normalize_space(str(a.get("aria-label") or ""))
-                    if not (TIME_RE.search(visible) or TIME_RE.search(labelled)):
+                    clock = _clock_evidence_key(visible) or _clock_evidence_key(labelled)
+                    if not clock:
                         continue
                     local_ids.add(sid_m.group(1))
-                if local_ids:
+                    local_slots.add(_slot_evidence_key(title_key, clock))
+                if local_slots:
                     titles.add(title_key)
+                    slots.update(local_slots)
                     showtime_ids.update(local_ids)
         except Exception:
             pass
 
-        # Escaped React/Next flight data: use a looser, order-independent scan
-        # than extract_showtimes_from_json_scripts(). The requested date page
-        # can carry UTC timestamps, so verify that at least one timestamp in a
-        # title region resolves to this requested Pacific date before counting.
+        # Escaped React/Next flight data: pair IDs to nearby UTC timestamps,
+        # but convert the timestamp to a semantic local clock slot. Different
+        # internal IDs for the same movie/time therefore collapse naturally.
         text = page_html or ""
         for _ in range(2):
             newer = text.replace(r'\\"', '"').replace(r'\"', '"')
@@ -975,14 +1008,12 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
                 if not sid_matches or not utc_matches:
                     continue
 
+                local_slots = set()
                 local_ids = set()
                 for sid_match in sid_matches:
                     sid = sid_match.group(1) or sid_match.group(2) or ""
                     if not sid:
                         continue
-                    # Pair by proximity rather than field order. This is
-                    # intentionally different from the strict production row
-                    # parser and therefore catches reordered/changed payloads.
                     nearest_utc = min(
                         utc_matches,
                         key=lambda utc_match: abs(utc_match.start() - sid_match.start()),
@@ -996,59 +1027,119 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
                         )
                         if local_dt.tzinfo is not None and _pacific is not None:
                             local_dt = local_dt.astimezone(_pacific)
-                        if local_dt.date().isoformat() == wanted:
-                            local_ids.add(sid)
+                        if local_dt.date().isoformat() != wanted:
+                            continue
+                        try:
+                            clock_txt = local_dt.strftime("%-I:%M %p")
+                        except Exception:
+                            clock_txt = local_dt.strftime("%I:%M %p").lstrip("0")
+                        clock = _clock_evidence_key(clock_txt)
+                        if not clock:
+                            continue
+                        local_ids.add(sid)
+                        local_slots.add(_slot_evidence_key(title_key, clock))
                     except Exception:
                         continue
-                if local_ids:
+                if local_slots:
                     titles.add(title_key)
+                    slots.update(local_slots)
                     showtime_ids.update(local_ids)
 
-        return titles, showtime_ids
+        return titles, slots, showtime_ids
+
+    def _snapshot_to_json(snapshot: dict) -> dict:
+        return {
+            "source": str(snapshot.get("source") or "source"),
+            "titles": sorted(snapshot.get("titles") or []),
+            "slots": sorted(snapshot.get("slots") or []),
+            "showtime_ids": sorted(snapshot.get("showtime_ids") or []),
+        }
 
     def _save_source_evidence() -> None:
         try:
+            # Bound runner-local diagnostics while preserving the richest
+            # observations. Sorting by richness keeps useful evidence if AMC is
+            # noisy over many retries.
+            ranked = sorted(
+                _source_snapshots,
+                key=lambda snap: (len(snap.get("titles") or []), len(snap.get("slots") or [])),
+                reverse=True,
+            )[:12]
             _evidence_path.write_text(json.dumps({
-                "titles": sorted(_source_title_keys),
-                "showtime_ids": sorted(_source_showtime_ids),
-                "samples": int(_source_samples),
+                "observations": int(_source_observations),
+                "snapshots": [_snapshot_to_json(snap) for snap in ranked],
             }, ensure_ascii=False), encoding="utf-8")
         except Exception as e:
             print(f"[WARN] Could not save AMC source evidence for {theatre_name} {wanted}: {e}")
 
     def _record_source_evidence(page_html: str, source_label: str) -> None:
-        nonlocal _source_samples
-        titles, showtime_ids = _inspect_source_evidence(page_html)
-        if not titles and not showtime_ids:
+        nonlocal _source_observations
+        titles, slots, showtime_ids = _inspect_source_evidence(page_html)
+        if not titles and not slots and not showtime_ids:
             return
-        _source_samples += 1
-        _source_title_keys.update(titles)
-        _source_showtime_ids.update(showtime_ids)
+        _source_observations += 1
+        snapshot = {
+            "source": source_label,
+            "titles": set(titles),
+            "slots": set(slots),
+            "showtime_ids": set(showtime_ids),
+        }
+        _source_snapshots.append(snapshot)
         _save_source_evidence()
         print(
             f"[INFO] AMC source evidence {theatre_name} {wanted} {source_label}: "
-            f"{len(titles)} movie(s), {len(showtime_ids)} showtime id(s)"
+            f"{len(titles)} movie(s), {len(slots)} visible movie/time slot(s), "
+            f"{len(showtime_ids)} raw showtime id(s)"
+        )
+
+    def _best_source_snapshot() -> dict:
+        if not _source_snapshots:
+            return {"source": "none", "titles": set(), "slots": set(), "showtime_ids": set()}
+        # Movie coverage is primary; among equally broad movie snapshots, use
+        # the one with the most distinct visible movie/time slots. Crucially we
+        # do not union unrelated snapshots together.
+        return max(
+            _source_snapshots,
+            key=lambda snap: (len(snap.get("titles") or []), len(snap.get("slots") or [])),
         )
 
     def _coverage_state() -> dict:
         parsed_title_keys = {
             _title_evidence_key(r.get("movie_title")) for r in out if _title_evidence_key(r.get("movie_title"))
         }
-        parsed_ids = {
-            _normalize_space(str(r.get("showtime_id") or "")) for r in out
-            if _normalize_space(str(r.get("showtime_id") or ""))
-        }
-        missing_titles = sorted(_source_title_keys - parsed_title_keys)
-        missing_ids = sorted(_source_showtime_ids - parsed_ids)
+        parsed_slots = set()
+        parsed_ids = set()
+        for row in out:
+            title_key = _title_evidence_key(row.get("movie_title"))
+            clock_key = _clock_evidence_key(row.get("show_time"))
+            slot = _slot_evidence_key(title_key, clock_key)
+            if slot:
+                parsed_slots.add(slot)
+            sid = _normalize_space(str(row.get("showtime_id") or ""))
+            if sid:
+                parsed_ids.add(sid)
+
+        best = _best_source_snapshot()
+        source_titles = set(best.get("titles") or [])
+        source_slots = set(best.get("slots") or [])
+        source_ids = set(best.get("showtime_ids") or [])
+        missing_titles = sorted(source_titles - parsed_title_keys)
+        missing_slots = sorted(source_slots - parsed_slots)
+        unmatched_ids = sorted(source_ids - parsed_ids)
         return {
-            "source_titles": len(_source_title_keys),
-            "source_showtime_ids": len(_source_showtime_ids),
+            "source_snapshot": str(best.get("source") or "source"),
+            "source_titles": len(source_titles),
+            "source_showtime_slots": len(source_slots),
+            "source_showtime_ids": len(source_ids),
             "parsed_titles": len(parsed_title_keys),
+            "parsed_showtime_slots": len(parsed_slots),
             "parsed_showtime_ids": len(parsed_ids),
             "missing_titles": missing_titles,
-            "missing_showtime_ids": missing_ids,
-            "source_samples": int(_source_samples),
-            "complete": not missing_titles and not missing_ids,
+            "missing_showtime_slots": missing_slots,
+            # Diagnostic only. Raw ID mismatch never decides completeness.
+            "unmatched_source_showtime_ids": unmatched_ids,
+            "source_samples": int(_source_observations),
+            "complete": not missing_titles and not missing_slots,
         }
 
     def _write_combo_status(complete: bool, reason: str = "", fallback: bool = False) -> None:
@@ -1363,7 +1454,7 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
             print(
                 f"[INFO] Targeted AMC coverage retry {_round}/{_max_rounds} for {theatre_name} {wanted}: "
                 f"parsed {_before['parsed_titles']}/{_before['source_titles']} source movie(s), "
-                f"{_before['parsed_showtime_ids']}/{_before['source_showtime_ids']} source showtime id(s), "
+                f"{_before['parsed_showtime_slots']}/{_before['source_showtime_slots']} source movie/time slot(s), "
                 f"source samples={_before['source_samples']}"
             )
         try:
@@ -1391,7 +1482,7 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
 
     final_rows = _clean_rows()
     _state = _coverage_state()
-    _coverage_problem = bool(_state["missing_titles"] or _state["missing_showtime_ids"])
+    _coverage_problem = bool(_state["missing_titles"] or _state["missing_showtime_slots"])
     _no_rows = not final_rows
 
     if _coverage_problem or _no_rows:
@@ -1422,11 +1513,18 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
 
         if _coverage_problem:
             reason = (
-                f"source exposed {_state['source_titles']} movie(s)/{_state['source_showtime_ids']} showtime id(s), "
-                f"but parser covered {_state['parsed_titles']} movie(s)/{_state['parsed_showtime_ids']} showtime id(s); "
+                f"source snapshot {_state['source_snapshot']} exposed "
+                f"{_state['source_titles']} movie(s)/{_state['source_showtime_slots']} visible movie/time slot(s), "
+                f"but parser covered {_state['parsed_titles']} movie(s)/{_state['parsed_showtime_slots']} slot(s); "
                 f"missing {len(_state['missing_titles'])} movie(s) and "
-                f"{len(_state['missing_showtime_ids'])} showtime id(s)"
+                f"{len(_state['missing_showtime_slots'])} visible slot(s)"
             )
+            if _state.get("unmatched_source_showtime_ids"):
+                print(
+                    f"[INFO] AMC raw-ID diagnostic for {theatre_name} {wanted}: "
+                    f"{len(_state['unmatched_source_showtime_ids'])} source ID(s) were not present in parsed rows; "
+                    "raw IDs are intentionally non-fatal because AMC may replace/duplicate them across snapshots"
+                )
             _write_combo_status(False, reason=reason)
             print(f"[WARN] AMC source/parser completeness failure for {theatre_name} {wanted}: {reason}")
         else:
@@ -2042,7 +2140,7 @@ def main() -> int:
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
         "non-movie filtering, original-film metadata lookup, stabilized AMC browser fetch, "
-        "AMC A-List metadata + clean public logs v24 -> "
+        "AMC A-List metadata + clean public logs v25 -> "
         f"{args.output_notebook}"
     )
     return 0

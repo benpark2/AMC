@@ -358,6 +358,10 @@ desired = [
         self.assertIn('_max_rounds = 2', source)
         self.assertIn('_inspect_source_evidence', source)
         self.assertIn('_coverage_state', source)
+        self.assertIn('_clock_evidence_key', source)
+        self.assertIn('_best_source_snapshot', source)
+        self.assertIn('missing_showtime_slots', source)
+        self.assertIn('unmatched_source_showtime_ids', source)
         self.assertIn('amc_combo_status', source)
         self.assertIn('.evidence.json', source)
         self.assertNotIn('_usable_threshold', source)
@@ -665,7 +669,7 @@ desired = [
         self.assertEqual(len({r["movie_title"] for r in rows}), 4)
         self.assertTrue(status["complete"])
         self.assertEqual(status["missing_titles"], [])
-        self.assertEqual(status["missing_showtime_ids"], [])
+        self.assertEqual(status["missing_showtime_slots"], [])
 
     def test_persisted_source_evidence_survives_a_later_smaller_response(self):
         source = self._patched_source()
@@ -724,6 +728,114 @@ desired = [
         self.assertEqual(len(browser_calls), 1)
         self.assertEqual(len({r["movie_title"] for r in rows}), 1)
         self.assertTrue(status["complete"])
+
+    def _duplicate_id_same_slot_payload(self):
+        """Two AMC IDs that describe the same visible movie/time slot."""
+        return (
+            r'aria-label\":\"Showtimes for Stable Feature\" '
+            r'\"showtimeId\":501,\"status\":\"AVAILABLE\",\"showDateTimeUtc\":\"2026-09-27T02:00:00Z\",\"display\":{\"time\":\"7:00\",\"amPm\":\"PM\"} '
+            r'\"showtimeId\":999,\"display\":{\"time\":\"7:00\",\"amPm\":\"PM\"},\"showDateTimeUtc\":\"2026-09-27T02:00:00Z\",\"status\":\"AVAILABLE\"'
+        )
+
+    def test_raw_showtime_id_mismatch_for_same_visible_slot_is_not_fatal(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+        payload = self._duplicate_id_same_slot_payload()
+        ns["fetch_amc_html"] = lambda session, url, params=None: (200, payload)
+        ns["fetch_html_with_browser"] = lambda url, params=None, timeout_ms=30000: (200, payload)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                rows = scraper(None, "AMC Example 10", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                status = json.loads(Path(
+                    "build/amc_combo_status/amc-example-10-2026-09-26.json"
+                ).read_text(encoding="utf-8"))
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertEqual(len({r["movie_title"] for r in rows}), 1)
+        self.assertTrue(status["complete"])
+        self.assertEqual(status["source_showtime_slots"], 1)
+        self.assertEqual(status["parsed_showtime_slots"], 1)
+        self.assertGreaterEqual(len(status["unmatched_source_showtime_ids"]), 1)
+
+    def test_full_movie_coverage_with_one_extra_raw_id_is_complete(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+        chunks = []
+        for i in range(1, 14):
+            chunks.append(f'aria-label\":\"Showtimes for Coverage Movie {i}\"')
+            chunks.append(
+                f'\"showtimeId\":{600+i},\"status\":\"AVAILABLE\",'
+                f'\"showDateTimeUtc\":\"2026-09-27T02:{i:02d}:00Z\",'
+                f'\"display\":{{\"time\":\"7:{i:02d}\",\"amPm\":\"PM\"}}'
+            )
+            if i == 1:
+                chunks.append(
+                    f'\"showtimeId\":9999,\"display\":{{\"time\":\"7:{i:02d}\",\"amPm\":\"PM\"}},'
+                    f'\"showDateTimeUtc\":\"2026-09-27T02:{i:02d}:00Z\",\"status\":\"AVAILABLE\"'
+                )
+        payload = " ".join(chunks)
+        ns["fetch_amc_html"] = lambda session, url, params=None: (200, payload)
+        ns["fetch_html_with_browser"] = lambda url, params=None, timeout_ms=30000: (200, payload)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                rows = scraper(None, "AMC Example 30", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                status = json.loads(Path(
+                    "build/amc_combo_status/amc-example-30-2026-09-26.json"
+                ).read_text(encoding="utf-8"))
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertEqual(len({r["movie_title"] for r in rows}), 13)
+        self.assertTrue(status["complete"])
+        self.assertEqual(status["source_titles"], 13)
+        self.assertEqual(status["parsed_titles"], 13)
+        self.assertEqual(status["source_showtime_slots"], 13)
+        self.assertEqual(status["parsed_showtime_slots"], 13)
+        self.assertEqual(len(status["unmatched_source_showtime_ids"]), 1)
+
+
+    def test_missing_distinct_visible_showtime_slot_remains_fatal(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+        payload = (
+            r'aria-label\":\"Showtimes for Stable Feature\" '
+            r'\"showtimeId\":501,\"status\":\"AVAILABLE\",\"showDateTimeUtc\":\"2026-09-27T02:00:00Z\",\"display\":{\"time\":\"7:00\",\"amPm\":\"PM\"} '
+            r'\"showtimeId\":999,\"display\":{\"time\":\"9:00\",\"amPm\":\"PM\"},\"showDateTimeUtc\":\"2026-09-27T04:00:00Z\",\"status\":\"AVAILABLE\"'
+        )
+        ns["fetch_amc_html"] = lambda session, url, params=None: (200, payload)
+        ns["fetch_html_with_browser"] = lambda url, params=None, timeout_ms=30000: (200, payload)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                scraper(None, "AMC Example 10", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                status = json.loads(Path(
+                    "build/amc_combo_status/amc-example-10-2026-09-26.json"
+                ).read_text(encoding="utf-8"))
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertFalse(status["complete"])
+        self.assertEqual(status["source_titles"], 1)
+        self.assertEqual(status["parsed_titles"], 1)
+        self.assertEqual(status["source_showtime_slots"], 2)
+        self.assertEqual(status["parsed_showtime_slots"], 1)
+        self.assertEqual(len(status["missing_showtime_slots"]), 1)
+
 
     def test_aggregate_guard_rejects_recorded_source_parser_gap(self):
         source = self._patched_source()
