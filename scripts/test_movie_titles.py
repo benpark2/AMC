@@ -723,17 +723,20 @@ desired = [
                 )
         return '<script>self.__next_f.push([1,"' + ' '.join(chunks) + '"])</script>'
 
-    def test_source_parser_gap_is_recorded_and_not_accepted_as_complete(self):
+    def test_serialized_only_title_surplus_is_diagnostic_not_fatal(self):
         source = self._patched_source()
         ns = {}
         exec(compile(source, "<patched-notebook-test>", "exec"), ns)
         scraper = ns["scrape_amc_showtimes_for_date"]
-        partial_source = self._reordered_flight_payload(total=4)
-        ns["fetch_amc_html"] = lambda session, url, params=None: (200, partial_source)
+        # React/Next payloads can contain title shells/records that never become
+        # clickable showtimes. They are useful diagnostics, but not hard proof
+        # that the row parser missed a bookable film.
+        payload = self._reordered_flight_payload(total=4)
+        ns["fetch_amc_html"] = lambda session, url, params=None: (200, payload)
         browser_calls = []
         def browser(url, params=None, timeout_ms=30000):
             browser_calls.append(1)
-            return 200, partial_source
+            return 200, payload
         ns["fetch_html_with_browser"] = browser
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -741,33 +744,43 @@ desired = [
             os.chdir(tmp)
             try:
                 rows = scraper(None, "AMC Example 10", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
-                status_path = Path("build/amc_combo_status/amc-example-10-2026-09-26.json")
-                status = json.loads(status_path.read_text(encoding="utf-8"))
+                status = json.loads(Path(
+                    "build/amc_combo_status/amc-example-10-2026-09-26.json"
+                ).read_text(encoding="utf-8"))
             finally:
                 os.chdir(old_cwd)
 
-        self.assertEqual(len(browser_calls), 2)
+        self.assertEqual(len(browser_calls), 1)
         self.assertEqual(len({r["movie_title"] for r in rows}), 1)
-        self.assertFalse(status["complete"])
-        self.assertEqual(status["source_titles"], 4)
+        self.assertTrue(status["complete"])
+        self.assertEqual(status["source_titles"], 0)
+        self.assertEqual(status["source_detected_titles"], 4)
         self.assertEqual(status["parsed_titles"], 1)
-        self.assertGreaterEqual(len(status["missing_titles"]), 3)
+        self.assertEqual(status["missing_titles"], [])
 
-    def test_source_parser_gap_can_be_recovered_by_second_rendered_round(self):
+    def test_actionable_source_parser_gap_can_be_recovered_by_second_rendered_round(self):
         source = self._patched_source()
         ns = {}
         exec(compile(source, "<patched-notebook-test>", "exec"), ns)
         scraper = ns["scrape_amc_showtimes_for_date"]
-        partial_source = self._reordered_flight_payload(total=4)
-        rendered_full = "".join(
-            f'<div aria-label="Showtimes for Source Movie {i}"><a href="/showtimes/{100+i}">7:{i:02d} PM</a></div>'
+
+        # Four rendered movie regions intentionally reuse one AMC showtime ID.
+        # The independent evidence scanner sees four actionable movie/time
+        # pairs, while add_row() retains only the last title for that shared ID.
+        # This is a genuine hard coverage gap and must force round 2.
+        partial_rendered = "".join(
+            f'<div aria-label="Showtimes for Source Movie {i}"><a href="/showtimes/501">7:{i:02d} PM</a></div>'
             for i in range(1, 5)
         )
-        ns["fetch_amc_html"] = lambda session, url, params=None: (200, partial_source)
+        rendered_full = "".join(
+            f'<div aria-label="Showtimes for Source Movie {i}"><a href="/showtimes/{600+i}">7:{i:02d} PM</a></div>'
+            for i in range(1, 5)
+        )
+        ns["fetch_amc_html"] = lambda session, url, params=None: (200, partial_rendered)
         calls = []
         def browser(url, params=None, timeout_ms=30000):
             calls.append(1)
-            return (200, partial_source) if len(calls) == 1 else (200, rendered_full)
+            return (200, partial_rendered) if len(calls) == 1 else (200, rendered_full)
         ns["fetch_html_with_browser"] = browser
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -784,16 +797,20 @@ desired = [
         self.assertEqual(len(calls), 2)
         self.assertEqual(len({r["movie_title"] for r in rows}), 4)
         self.assertTrue(status["complete"])
+        self.assertEqual(status["source_titles"], 4)
         self.assertEqual(status["missing_titles"], [])
         self.assertEqual(status["missing_showtime_slots"], [])
 
-    def test_persisted_source_evidence_survives_a_later_smaller_response(self):
+    def test_persisted_actionable_evidence_survives_a_later_smaller_response(self):
         source = self._patched_source()
         ns = {}
         exec(compile(source, "<patched-notebook-test>", "exec"), ns)
         scraper = ns["scrape_amc_showtimes_for_date"]
-        rich_source = self._reordered_flight_payload(total=4)
-        tiny_source = self._reordered_flight_payload(total=1)
+        rich_source = "".join(
+            f'<div aria-label="Showtimes for Source Movie {i}"><a href="/showtimes/501">7:{i:02d} PM</a></div>'
+            for i in range(1, 5)
+        )
+        tiny_source = '<div aria-label="Showtimes for Source Movie 1"><a href="/showtimes/701">7:01 PM</a></div>'
 
         with tempfile.TemporaryDirectory() as tmp:
             old_cwd = os.getcwd()
@@ -804,6 +821,8 @@ desired = [
                 scraper(None, "AMC Example 10", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
 
                 # Simulate the next Papermill attempt getting a smaller source.
+                # The earlier richer *actionable* snapshot must remain the hard
+                # comparison target rather than being erased by the tiny page.
                 ns["fetch_amc_html"] = lambda session, url, params=None: (200, tiny_source)
                 ns["fetch_html_with_browser"] = lambda url, params=None, timeout_ms=30000: (200, tiny_source)
                 scraper(None, "AMC Example 10", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
@@ -815,7 +834,8 @@ desired = [
 
         self.assertFalse(status["complete"])
         self.assertEqual(status["source_titles"], 4)
-        self.assertEqual(status["parsed_titles"], 1)
+        self.assertEqual(status["source_showtime_slots"], 4)
+        self.assertLess(status["parsed_titles"], 4)
 
     def test_one_movie_schedule_is_valid_when_static_and_browser_both_expose_one(self):
         source = self._patched_source()
@@ -875,7 +895,9 @@ desired = [
 
         self.assertEqual(len({r["movie_title"] for r in rows}), 1)
         self.assertTrue(status["complete"])
-        # Serialized React slots are diagnostic only in v27.
+        # Serialized React slots and title shells are diagnostic only.
+        self.assertEqual(status["source_titles"], 0)
+        self.assertEqual(status["source_detected_titles"], 1)
         self.assertEqual(status["source_showtime_slots"], 0)
         self.assertEqual(status["source_serialized_showtime_slots"], 1)
         self.assertEqual(status["parsed_showtime_slots"], 1)
@@ -917,7 +939,8 @@ desired = [
 
         self.assertEqual(len({r["movie_title"] for r in rows}), 13)
         self.assertTrue(status["complete"])
-        self.assertEqual(status["source_titles"], 13)
+        self.assertEqual(status["source_titles"], 0)
+        self.assertEqual(status["source_detected_titles"], 13)
         self.assertEqual(status["parsed_titles"], 13)
         self.assertEqual(status["source_showtime_slots"], 0)
         self.assertEqual(status["source_serialized_showtime_slots"], 13)
@@ -950,11 +973,66 @@ desired = [
                 os.chdir(old_cwd)
 
         self.assertTrue(status["complete"])
-        self.assertEqual(status["source_titles"], 1)
+        self.assertEqual(status["source_titles"], 0)
+        self.assertEqual(status["source_detected_titles"], 1)
         self.assertEqual(status["parsed_titles"], 1)
         self.assertEqual(status["source_showtime_slots"], 0)
         self.assertEqual(status["source_serialized_showtime_slots"], 2)
         self.assertEqual(status["parsed_showtime_slots"], 1)
+        self.assertEqual(status["missing_showtime_slots"], [])
+
+    def test_orphan_title_shell_with_no_rendered_showtime_is_nonfatal(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+
+        # Reproduce the production failure numerically: AMC exposes 15
+        # aria-labelled title shells, but only 14 are attached to clickable
+        # rendered showtimes. Those 14 actionable movies contain 58 trusted
+        # movie/time slots, and the parser recovers all 58. The orphan title
+        # shell must therefore be diagnostic, not a fatal "missing movie".
+        actionable = []
+        sid = 800
+        expected_slots = 0
+        for i in range(1, 15):
+            per_movie = 5 if i <= 2 else 4  # 2*5 + 12*4 = 58
+            links = []
+            for j in range(per_movie):
+                sid += 1
+                hour = 1 + j
+                minute = (i * 3) % 60
+                links.append(f'<a href="/showtimes/{sid}">{hour}:{minute:02d} PM</a>')
+                expected_slots += 1
+            actionable.append(
+                f'<div aria-label="Showtimes for Actionable Movie {i}">' + "".join(links) + '</div>'
+            )
+        self.assertEqual(expected_slots, 58)
+        orphan = '<div aria-label="Showtimes for Placeholder Card"></div>'
+        rendered = "".join(actionable) + orphan
+        ns["fetch_amc_html"] = lambda session, url, params=None: (200, rendered)
+        ns["fetch_html_with_browser"] = lambda url, params=None, timeout_ms=30000: (200, rendered)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                rows = scraper(None, "AMC Example 14", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                status = json.loads(Path(
+                    "build/amc_combo_status/amc-example-14-2026-09-26.json"
+                ).read_text(encoding="utf-8"))
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertEqual(len({r["movie_title"] for r in rows}), 14)
+        self.assertEqual(len(rows), 58)
+        self.assertTrue(status["complete"])
+        self.assertEqual(status["source_detected_titles"], 15)
+        self.assertEqual(status["source_titles"], 14)
+        self.assertEqual(status["source_showtime_slots"], 58)
+        self.assertEqual(status["parsed_showtime_slots"], 58)
+        self.assertEqual(len(status["source_diagnostic_only_titles"]), 1)
+        self.assertEqual(status["missing_titles"], [])
         self.assertEqual(status["missing_showtime_slots"], [])
 
     def test_missing_distinct_direct_dom_showtime_slot_remains_fatal(self):

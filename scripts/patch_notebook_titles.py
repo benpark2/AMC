@@ -20,8 +20,10 @@ This patcher is intentionally conservative:
    every theatre/date without inferring inventory from screen count.
 9. Measure movie identity independently from the row parser. Treat only
    directly rendered, clickable movie/time links as hard showtime-completeness
-   evidence; embedded React/Next time records are diagnostic because AMC can
-   duplicate or supersede them during SSR/browser hydration.
+   evidence; a title/card with no trusted rendered showtime is diagnostic only,
+   because AMC can render placeholder/orphan/duplicate movie shells. Embedded
+   React/Next time records are likewise diagnostic because AMC can duplicate or
+   supersede them during SSR/browser hydration.
 10. Persist versioned source snapshots and parsed rows across Papermill retries
     so complementary attempts are merged without carrying forward obsolete
     raw-ID or serialized-slot assumptions.
@@ -800,8 +802,10 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
     # showtime IDs across requests: AMC can replace/duplicate internal IDs for
     # the same visible screening between SSR, browser hydration, and retries.
     # Instead keep each response as an independent snapshot and compare the
-    # parser with the richest snapshot using stable semantic keys
-    # (movie identity + local visible clock time).
+    # parser with the richest *actionable* snapshot using stable semantic keys
+    # (movie identity + local visible clock time). Movie headings/cards that are
+    # not tied to a trusted rendered time are diagnostic only: AMC sometimes
+    # emits placeholder, duplicate, or not-yet-bookable title shells.
     _source_snapshots = []
     _source_observations = 0
 
@@ -1134,7 +1138,7 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
                 reverse=True,
             )[:12]
             _evidence_path.write_text(json.dumps({
-                "evidence_version": 27,
+                "evidence_version": 30,
                 "observations": int(_source_observations),
                 "snapshots": [_snapshot_to_json(snap) for snap in ranked],
             }, ensure_ascii=False), encoding="utf-8")
@@ -1163,20 +1167,41 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
             f"{len(showtime_ids)} raw showtime id(s)"
         )
 
+    def _trusted_title_keys(snapshot: dict) -> set:
+        """Return movie identities backed by a trusted rendered showtime.
+
+        AMC sometimes emits aria-labelled movie shells for placeholders,
+        responsive duplicates, or not-yet-bookable cards. Those headings are
+        useful diagnostics, but they are not proof that the row parser missed
+        a real screening. A title becomes hard completeness evidence only when
+        the same source snapshot exposes a directly rendered clickable time.
+        """
+        keys = set()
+        for slot in (snapshot.get("trusted_slots") or []):
+            text = str(slot or "")
+            if "\t" not in text:
+                continue
+            title_key, _clock = text.split("\t", 1)
+            if title_key:
+                keys.add(title_key)
+        return keys
+
     def _best_source_snapshot() -> dict:
         if not _source_snapshots:
             return {
                 "source": "none", "titles": set(), "trusted_slots": set(),
                 "serialized_slots": set(), "showtime_ids": set()
             }
-        # Movie coverage is primary; among equally broad movie snapshots, use
-        # the one with the most distinct visible movie/time slots. Crucially we
-        # do not union unrelated snapshots together.
+        # Rank by actionable rendered coverage first. Raw title shells and
+        # serialized payload records are secondary diagnostics and must not
+        # outvote a snapshot whose clickable schedule is fully represented.
+        # Crucially, do not union unrelated snapshots together.
         return max(
             _source_snapshots,
             key=lambda snap: (
-                len(snap.get("titles") or []),
+                len(_trusted_title_keys(snap)),
                 len(snap.get("trusted_slots") or []),
+                len(snap.get("titles") or []),
                 len(snap.get("serialized_slots") or []),
             ),
         )
@@ -1198,18 +1223,25 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
                 parsed_ids.add(sid)
 
         best = _best_source_snapshot()
-        source_titles = set(best.get("titles") or [])
-        # Only directly rendered DOM slots are trusted enough to be fatal.
-        # Serialized payload slots remain diagnostic and never create a gap.
+        detected_titles = set(best.get("titles") or [])
+        # Only directly rendered DOM slots are trusted enough to be fatal. A
+        # hard source-title set is derived from those slots rather than from
+        # every aria-labelled/serialized title shell AMC happens to emit. This
+        # prevents a placeholder card with no bookable time from creating a
+        # permanent false "missing movie" failure.
         source_slots = set(best.get("trusted_slots") or [])
+        source_titles = _trusted_title_keys(best)
         serialized_slots = set(best.get("serialized_slots") or [])
         source_ids = set(best.get("showtime_ids") or [])
+        diagnostic_only_titles = sorted(detected_titles - source_titles)
         missing_titles = sorted(source_titles - parsed_title_keys)
         missing_slots = sorted(source_slots - parsed_slots)
         unmatched_ids = sorted(source_ids - parsed_ids)
         return {
             "source_snapshot": str(best.get("source") or "source"),
             "source_titles": len(source_titles),
+            "source_detected_titles": len(detected_titles),
+            "source_diagnostic_only_titles": diagnostic_only_titles,
             "source_showtime_slots": len(source_slots),
             "source_serialized_showtime_slots": len(serialized_slots),
             "source_showtime_ids": len(source_ids),
@@ -1596,12 +1628,18 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         if _coverage_problem:
             reason = (
                 f"source snapshot {_state['source_snapshot']} exposed "
-                f"{_state['source_titles']} movie(s)/{_state['source_showtime_slots']} trusted rendered slot(s), "
+                f"{_state['source_titles']} actionable movie(s)/{_state['source_showtime_slots']} trusted rendered slot(s), "
                 f"but parser covered {_state['parsed_titles']} movie(s)/{_state['parsed_showtime_slots']} slot(s); "
                 f"missing {len(_state['missing_titles'])} movie(s) and "
                 f"{len(_state['missing_showtime_slots'])} trusted rendered slot(s). "
                 f"Serialized payload exposed {_state.get('source_serialized_showtime_slots', 0)} slot(s) diagnostically."
             )
+            if _state.get("source_diagnostic_only_titles"):
+                print(
+                    f"[INFO] AMC title-shell diagnostic for {theatre_name} {wanted}: "
+                    f"{len(_state['source_diagnostic_only_titles'])} detected title(s) had no trusted rendered "
+                    "showtime and were intentionally non-fatal"
+                )
             if _state.get("unmatched_source_showtime_ids"):
                 print(
                     f"[INFO] AMC raw-ID diagnostic for {theatre_name} {wanted}: "
@@ -2242,7 +2280,7 @@ def main() -> int:
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
         "non-movie filtering, original-film metadata lookup, stabilized AMC browser fetch, "
-        "AMC A-List metadata + clean public logs v27 -> "
+        "AMC A-List metadata + clean public logs v30 -> "
         f"{args.output_notebook}"
     )
     return 0
