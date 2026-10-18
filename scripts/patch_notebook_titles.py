@@ -3,8 +3,8 @@
 Patch the AMC notebook into build/ before Papermill executes it.
 
 This patcher is intentionally conservative:
-1. Select the next two Saturday/Sunday calendar days strictly after the run
-   date, so a Saturday run targets Sunday plus the following Saturday.
+1. Include the current Pacific calendar date plus the next two Saturday/Sunday
+   calendar days strictly after it, so today's listings are never omitted.
 2. Replace the notebook's candidate_title_variants() with the shared generic
    implementation in scripts/movie_titles.py.
 3. Remove non-film AMC inventory before ratings/numbering/planner generation.
@@ -61,22 +61,26 @@ import sys
 
 
 
-UPCOMING_WEEKEND_REPLACEMENT = r'''def upcoming_weekend_pacific() -> Tuple[date, date]:
+UPCOMING_WEEKEND_REPLACEMENT = r'''def current_pacific_date() -> date:
+    """Return today's calendar date in America/Los_Angeles."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    except Exception:
+        return date.today()
+
+
+def upcoming_weekend_pacific() -> Tuple[date, date]:
     """Return the next two weekend calendar days after today (Pacific time).
 
-    "Next" is intentionally strict: today itself is never returned.  This
-    keeps a Saturday run useful for planning by selecting Sunday plus the
-    following Saturday; a Sunday run selects the following Saturday/Sunday.
-    Weekday runs select the upcoming Saturday/Sunday.
+    "Next" is intentionally strict: today itself is never returned. The
+    caller separately includes ``current_pacific_date()`` so every report has
+    today's schedule plus the two future weekend days used for planning.
 
     OVERRIDE_SATURDAY keeps its historical meaning: when explicitly supplied,
     it names the first day of a forced Saturday/Sunday pair.
     """
-    try:
-        from zoneinfo import ZoneInfo
-        today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
-    except Exception:
-        today = date.today()
+    today = current_pacific_date()
 
     if OVERRIDE_SATURDAY:
         sat = datetime.strptime(OVERRIDE_SATURDAY, "%Y-%m-%d").date()
@@ -93,7 +97,10 @@ UPCOMING_WEEKEND_REPLACEMENT = r'''def upcoming_weekend_pacific() -> Tuple[date,
 '''
 
 WEEKEND_PRINT_OLD = 'print(f"Upcoming weekend (Pacific): {sat.isoformat()} (Sat), {sun.isoformat()} (Sun)")'
-WEEKEND_PRINT_NEW = 'print(f"Upcoming weekend days (Pacific): {sat.isoformat()} ({sat.strftime(\'%a\')}), {sun.isoformat()} ({sun.strftime(\'%a\')})")'
+WEEKEND_PRINT_NEW = 'print("Requested dates (Pacific): " + ", ".join(f"{d.isoformat()} ({d.strftime(\'%a\')})" for d in dates))'
+
+DATE_LIST_OLD = 'dates = [sat, sun]'
+DATE_LIST_NEW = 'dates = list(dict.fromkeys([current_pacific_date(), sat, sun]))'
 
 FUNCTION_WRAPPER = """def candidate_title_variants(title: str) -> List[str]:
     \"\"\"Use the shared generic AMC-title normalizer for metadata lookup.\"\"\"
@@ -224,64 +231,231 @@ RT_GET_SCORES_REPLACEMENT = r'''def rt_get_scores(
     session: requests.Session,
     title: str,
     cache: Dict[str, Tuple[Optional[int], Optional[int], Optional[str]]],
-    debug: bool = False) -> Tuple[Optional[int], Optional[int], Optional[str]]:
+    debug: bool = False,
+    runtime_min: Optional[int] = None) -> Tuple[Optional[int], Optional[int], Optional[str]]:
     """
-    Fetch Rotten Tomatoes with the same direct-page strategy as the notebook.
+    Resolve the most plausible Rotten Tomatoes movie page, then read scores.
 
-    The only lookup expansion here is evidence already encoded in AMC's title:
-    an explicit year or anniversary-derived original release year is tried
-    before the current-year guesses.  This fixes repertory presentations such
-    as "<film> 10th Anniversary Remastered" without adding another scraper or
-    relying on a search engine that may be blocked in CI.
+    Reused titles are common.  Title identity alone is not enough: when AMC
+    supplies a runtime, it is used as a second independent identity signal, and
+    recent exact-title search results are preferred over an ambiguous yearless
+    page.  A validated page remains useful even before percentages are posted.
     """
+    from urllib.parse import quote as _rt_quote, urljoin as _rt_urljoin
+
     key = (title or "").lower().strip()
-    if key in cache:
-        return cache[key]
+    cache_key = f"{key}\x1f{int(runtime_min) if runtime_min is not None else ''}"
+    if cache_key in cache:
+        return cache[cache_key]
+
+    def _literal_norm(value: str) -> str:
+        value = html_lib.unescape(value or "").casefold()
+        value = value.replace("’", "'").replace("–", "-").replace("—", "-")
+        value = re.sub(r"\s*\|\s*rotten tomatoes\s*$", "", value)
+        value = re.sub(r"[^a-z0-9]+", " ", value)
+        return re.sub(r"\s+", " ", value).strip()
+
+    def _page_title(soup: BeautifulSoup) -> str:
+        heading = soup.find("h1")
+        if heading:
+            value = heading.get_text(" ", strip=True)
+            if value:
+                return value
+        meta = soup.find("meta", attrs={"property": "og:title"})
+        if meta and meta.get("content"):
+            return str(meta.get("content"))
+        if soup.title:
+            return soup.title.get_text(" ", strip=True)
+        return ""
+
+    def _page_text(soup: BeautifulSoup) -> str:
+        return re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
+
+    def _page_release_year(soup: BeautifulSoup) -> Optional[int]:
+        text = _page_text(soup)
+        # Prefer explicit film-level release metadata.
+        for pattern in (
+            r"Release Date\s*\(Theaters\)\s*[^0-9]{0,80}\b((?:19|20)\d{2})\b",
+            r"Release Date\s*[^0-9]{0,80}\b((?:19|20)\d{2})\b",
+        ):
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+
+        # Current RT pages often expose the year in JSON-LD even when the
+        # visible Movie Info block is client-hydrated.
+        for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+            raw = script.string or script.get_text(" ", strip=True)
+            for match in re.finditer(
+                r'"(?:datePublished|dateCreated)"\s*:\s*"((?:19|20)\d{2})',
+                raw or "",
+                flags=re.IGNORECASE,
+            ):
+                return int(match.group(1))
+
+        # Last resort: RT's title header frequently reads "Title 2026 1h...".
+        page_title = _page_title(soup)
+        if page_title:
+            pos = text.casefold().find(clean_amc_title(page_title).casefold())
+            nearby = text[pos : pos + 280] if pos >= 0 else text[:280]
+            match = re.search(r"\b((?:19|20)\d{2})\b", nearby)
+            if match:
+                return int(match.group(1))
+        return None
+
+    def _page_runtime_min(soup: BeautifulSoup) -> Optional[int]:
+        text = _page_text(soup)
+        snippets = []
+        m = re.search(r"\bRuntime\b(.{0,90})", text, flags=re.IGNORECASE)
+        if m:
+            snippets.append(m.group(1))
+        page_title = _page_title(soup)
+        if page_title:
+            pos = text.casefold().find(clean_amc_title(page_title).casefold())
+            if pos >= 0:
+                snippets.append(text[pos : pos + 320])
+        snippets.append(text[:420])
+        for snippet in snippets:
+            h = re.search(r"\b(\d{1,2})\s*h(?:ours?)?\s*(?:(\d{1,2})\s*m)?", snippet, re.I)
+            if h:
+                return int(h.group(1)) * 60 + int(h.group(2) or 0)
+            m2 = re.search(r"\b(\d{2,3})\s*(?:min|mins|minutes)\b", snippet, re.I)
+            if m2:
+                return int(m2.group(1))
+        return None
+
+    def _identity_matches(
+        soup: BeautifulSoup,
+        query_title: str,
+        expected_year: Optional[int],
+        expected_runtime: Optional[int],
+    ) -> bool:
+        page_norm = _literal_norm(_page_title(soup))
+        target_norms = {
+            _literal_norm(v) for v in candidate_title_variants(query_title) if v
+        }
+        if not page_norm or page_norm not in target_norms:
+            return False
+
+        page_year = _page_release_year(soup)
+        if expected_year is not None and page_year is not None:
+            if abs(int(page_year) - int(expected_year)) > 1:
+                return False
+        elif expected_year is not None and page_year is None and expected_runtime is None:
+            # A year-specific URL that silently redirects to another same-title
+            # movie is unsafe unless another independent signal can validate it.
+            return False
+
+        page_runtime = _page_runtime_min(soup)
+        if expected_runtime is not None and page_runtime is not None:
+            if abs(int(page_runtime) - int(expected_runtime)) > 20:
+                return False
+        return True
+
+    def _fetch_validated(rt_url: str, q: str, expected_year: Optional[int]):
+        status, raw_html = fetch_html(session, rt_url, params=None, tries=2)
+        if debug:
+            print(f"[RT] Testing {rt_url} -> Status: {status}")
+        if status != 200 or not raw_html:
+            return None
+        lower_html = raw_html.lower()
+        if "404 - page not found" in lower_html or "couldn't find the page you're looking for" in lower_html:
+            return None
+        decoded = html_lib.unescape(raw_html)
+        soup = BeautifulSoup(decoded, "html.parser")
+        if not _identity_matches(soup, q, expected_year, runtime_min):
+            if debug:
+                print(f"[RT] Rejected identity mismatch: {rt_url}")
+            return None
+        aud, crit = rt_parse_scores(decoded, soup)
+        return aud, crit, rt_url
 
     current_year = date.today().year
     hinted_year = metadata_release_year_hint(title, reference_year=current_year)
     years_to_check = []
-    for year in (hinted_year, current_year, current_year + 1, current_year - 1):
+    for year in (hinted_year, current_year, current_year + 1, current_year - 1, current_year - 2):
         if year is not None and year not in years_to_check:
             years_to_check.append(year)
 
+    # Year-specific pages first. This prevents a famous older yearless page
+    # from winning merely because it has established ratings.
     for q in candidate_title_variants(title):
         base_slug = rt_slugify(q)
         if not base_slug:
             continue
+        for y in years_to_check:
+            found = _fetch_validated(f"{RT_BASE}/m/{base_slug}_{y}", q, y)
+            if found is not None:
+                cache[cache_key] = found
+                return found
 
-        # Keep the yearless RT slug last because it can be ambiguous for reused
-        # titles.  A known original-feature year should get first chance.
-        url_attempts = [f"{RT_BASE}/m/{base_slug}_{y}" for y in years_to_check]
-        url_attempts.append(f"{RT_BASE}/m/{base_slug}")
+    # Use RT's own search results to arbitrate reused titles.  Exact title is
+    # mandatory; when the AMC title has no encoded year, the result nearest the
+    # current theatrical window wins, then the movie page is revalidated.
+    for q in candidate_title_variants(title):
+        search_url = f"{RT_BASE}/napi/search/?query={_rt_quote(q)}&limit=12"
+        status, payload = fetch_html(session, search_url, params=None, tries=2)
+        if debug:
+            print(f"[RT] Search {search_url} -> Status: {status}")
+        if status != 200 or not payload:
+            continue
+        try:
+            data = json.loads(payload)
+        except Exception:
+            continue
+        movies = data.get("movies", []) if isinstance(data, dict) else []
+        if not isinstance(movies, list):
+            continue
 
-        for rt_url in url_attempts:
-            status, raw_html = fetch_html(session, rt_url, params=None, tries=2)
-            if debug:
-                print(f"[RT] Testing {rt_url} -> Status: {status}")
-            if status != 200 or not raw_html:
+        target_norms = {_literal_norm(v) for v in candidate_title_variants(q) if v}
+        ranked = []
+        for index, item in enumerate(movies):
+            if not isinstance(item, dict):
                 continue
-
-            lower_html = raw_html.lower()
-            if "404 - page not found" in lower_html or "couldn't find the page you're looking for" in lower_html:
+            name = str(item.get("name") or item.get("title") or "")
+            if _literal_norm(name) not in target_norms:
                 continue
-
-            decoded = html_lib.unescape(raw_html)
-            soup = BeautifulSoup(decoded, "html.parser")
-            aud, crit = rt_parse_scores(decoded, soup)
-
-            # A 200 response without either labeled score is not a successful
-            # movie match. Continue to the next canonical/year candidate rather
-            # than caching a blank result too early.
-            if aud is None and crit is None:
+            raw_year = item.get("year") or item.get("releaseYear") or item.get("release_year")
+            try:
+                item_year = int(raw_year) if raw_year not in (None, "") else None
+            except (TypeError, ValueError):
+                item_year = None
+            if hinted_year is not None and item_year is not None and abs(item_year - hinted_year) > 1:
                 continue
+            path = str(item.get("url") or item.get("movieUrl") or "").strip()
+            if not path:
+                continue
+            candidate_url = _rt_urljoin(RT_BASE, path)
+            if "/m/" not in candidate_url:
+                continue
+            target_year = hinted_year if hinted_year is not None else current_year
+            year_rank = -9999 if item_year is None else -abs(item_year - target_year)
+            ranked.append((year_rank, -index, candidate_url, item_year))
 
-            cache[key] = (aud, crit, rt_url)
-            return cache[key]
+        for _, _, rt_url, item_year in sorted(ranked, reverse=True):
+            expected_year = hinted_year if hinted_year is not None else item_year
+            found = _fetch_validated(rt_url, q, expected_year)
+            if found is not None:
+                cache[cache_key] = found
+                return found
 
-    cache[key] = (None, None, None)
-    return cache[key]
+    # Final fallback for provider pages with non-searchable slugs.  This is
+    # intentionally last because yearless pages are ambiguous for reused titles.
+    for q in candidate_title_variants(title):
+        base_slug = rt_slugify(q)
+        if not base_slug:
+            continue
+        found = _fetch_validated(f"{RT_BASE}/m/{base_slug}", q, hinted_year)
+        if found is not None:
+            cache[cache_key] = found
+            return found
+
+    cache[cache_key] = (None, None, None)
+    return cache[cache_key]
 '''
+
+RT_LOOKUP_LOOP_OLD = 'movie_rows = []\nfor title in movie_titles:\n    rt_aud, rt_crit, rt_url = rt_get_scores(session, title, rt_cache, debug=DEBUG_RT)\n    imdb, imdb_runtime_min, imdb_url = imdb_rating_runtime_url(session, title, imdb_cache)\n\n    rank, prim_score, prim_src = pick_primary(rt_aud, imdb, rt_crit)\n\n    # Priority: AMC runtime first, IMDb runtime second\n    amc_rt = df_show[df_show["movie_title"] == title]["runtime_min"].dropna()\n    rt_min = int(amc_rt.iloc[0]) if not amc_rt.empty else imdb_runtime_min\n'
+RT_LOOKUP_LOOP_NEW = 'movie_rows = []\nfor title in movie_titles:\n    # AMC\'s own runtime is a strong generic identity signal for reused movie\n    # titles/remakes. Feed it into RT resolution before scores are accepted.\n    amc_rt = df_show[df_show["movie_title"] == title]["runtime_min"].dropna()\n    amc_runtime_min = int(amc_rt.iloc[0]) if not amc_rt.empty else None\n\n    rt_aud, rt_crit, rt_url = rt_get_scores(\n        session, title, rt_cache, debug=DEBUG_RT, runtime_min=amc_runtime_min\n    )\n    imdb, imdb_runtime_min, imdb_url = imdb_rating_runtime_url(session, title, imdb_cache)\n\n    rank, prim_score, prim_src = pick_primary(rt_aud, imdb, rt_crit)\n\n    # Priority: AMC runtime first, IMDb runtime second\n    rt_min = amc_runtime_min if amc_runtime_min is not None else imdb_runtime_min\n'
 
 
 AMC_BROWSER_CHILD_SCRIPT = r"""
@@ -2116,12 +2290,14 @@ def _validate_imdb_patch(source: str) -> None:
 def patch_notebook(notebook: dict) -> dict:
     upcoming_weekend_replacements = 0
     weekend_print_replacements = 0
+    date_list_replacements = 0
     candidate_function_replacements = 0
     df_show_insertions = 0
     imdb_function_patches = 0
     imdb_year_priority_patches = 0
     rt_parser_replacements = 0
     rt_get_scores_replacements = 0
+    rt_lookup_loop_replacements = 0
     rt_display_insertions = 0
     rt_desired_replacements = 0
     amc_browser_fetch_replacements = 0
@@ -2150,6 +2326,15 @@ def patch_notebook(notebook: dict) -> dict:
             source = source.replace(WEEKEND_PRINT_OLD, WEEKEND_PRINT_NEW, 1)
             weekend_print_replacements += 1
 
+        date_list_count = source.count(DATE_LIST_OLD)
+        if date_list_count > 1:
+            raise RuntimeError(
+                f"Expected at most one requested-date list in a cell; found {date_list_count}."
+            )
+        if date_list_count == 1:
+            source = source.replace(DATE_LIST_OLD, DATE_LIST_NEW, 1)
+            date_list_replacements += 1
+
         source, did_replace = _replace_function(
             source,
             "candidate_title_variants",
@@ -2175,6 +2360,15 @@ def patch_notebook(notebook: dict) -> dict:
             RT_GET_SCORES_REPLACEMENT,
         )
         rt_get_scores_replacements += int(did_patch_rt_get_scores)
+
+        rt_loop_count = source.count(RT_LOOKUP_LOOP_OLD)
+        if rt_loop_count > 1:
+            raise RuntimeError(
+                f"Expected at most one RT movie lookup loop in a cell; found {rt_loop_count}."
+            )
+        if rt_loop_count == 1:
+            source = source.replace(RT_LOOKUP_LOOP_OLD, RT_LOOKUP_LOOP_NEW, 1)
+            rt_lookup_loop_replacements += 1
 
         source, did_patch_amc_browser = _replace_function(
             source,
@@ -2228,12 +2422,14 @@ def patch_notebook(notebook: dict) -> dict:
 
     expected = {
         "upcoming_weekend_pacific replacement": upcoming_weekend_replacements,
+        "current-date request-list replacement": date_list_replacements,
         "candidate_title_variants replacement": candidate_function_replacements,
         "df_show non-movie filter": df_show_insertions,
         "build_imdb_lookup patch": imdb_function_patches,
         "IMDb original-year priority patch": imdb_year_priority_patches,
         "rt_parse_scores replacement": rt_parser_replacements,
         "rt_get_scores replacement": rt_get_scores_replacements,
+        "RT runtime-aware lookup loop": rt_lookup_loop_replacements,
         "RT display column insertion": rt_display_insertions,
         "RT desired-column replacement": rt_desired_replacements,
         "AMC stabilized browser fetch replacement": amc_browser_fetch_replacements,
@@ -2280,7 +2476,7 @@ def main() -> int:
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
         "non-movie filtering, original-film metadata lookup, stabilized AMC browser fetch, "
-        "AMC A-List metadata + clean public logs v30 -> "
+        "AMC A-List metadata + clean public logs v32 -> "
         f"{args.output_notebook}"
     )
     return 0

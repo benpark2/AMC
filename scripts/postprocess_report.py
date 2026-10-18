@@ -713,8 +713,11 @@ def runtime_to_minutes(text: str | None) -> int | None:
     return int(nums[0]) if nums else None
 
 def score_show_blob(text: str) -> int:
-    low = (text or "").lower()
-    return low.count("amc ") * 10 + low.count("2026-") * 5 + text.count("•") * 3
+    """Score likely showtime-table blobs without assuming a calendar year."""
+    raw = text or ""
+    low = raw.lower()
+    iso_date_count = len(re.findall(r"\b\d{4}-\d{2}-\d{2}\b", raw))
+    return low.count("amc ") * 10 + iso_date_count * 5 + raw.count("•") * 3
 
 def parse_showtimes_blob(blob: str) -> list[dict]:
     """
@@ -826,9 +829,19 @@ def _clone_cell_as_td(soup: BeautifulSoup, cell) -> "bs4.element.Tag":
 
 
 def _linked_score_td(soup: BeautifulSoup, text: str, url: str | None) -> "bs4.element.Tag":
+    """Render a score while preserving a resolved provider identity URL.
+
+    New/repertory titles often have a real provider page before a numeric score
+    is published.  The old report discarded that URL whenever ``label`` was
+    blank, which also deprived the poster/audience enrichment pass of a strong
+    identity bridge.  Keep it as inert metadata without changing the visible
+    table; a clickable link is still shown only when a score exists.
+    """
     td = soup.new_tag("td")
     label = (text or "").strip()
     href = (url or "").strip() if isinstance(url, str) else ""
+    if href.startswith("http"):
+        td["data-source-url"] = href
     if href.startswith("http") and label:
         a = soup.new_tag("a", href=href, target="_blank", rel="noopener noreferrer")
         a.string = label

@@ -2,9 +2,13 @@
 """
 Validate and improve movie posters after postprocess_report.py.
 
-The resolver uses Wikimedia APIs only.  It does not scrape IMDb, Rotten
-Tomatoes, Fandango, or another poster site.  IMDb IDs already present in the
-report are used only as optional identifiers when querying Wikidata.
+The resolver uses an already-validated Rotten Tomatoes movie identity plus
+Wikimedia/Wikidata for primary poster resolution. When those sources cannot
+produce a usable poster for a new/limited/event title, Letterboxd's TMDB-backed
+film catalogue is used as a final, independently validated poster fallback.
+The finalizer never scrapes IMDb/Fandango for discovery. IMDb IDs already
+present in the report are used only as optional identifiers when querying
+Wikidata.
 
 Poster policy
 -------------
@@ -43,7 +47,7 @@ alone is not enough for an identity-focus flag. Missing metadata defaults to
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 import json
@@ -52,7 +56,7 @@ import re
 import sys
 import time
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urljoin
 from urllib.request import Request, urlopen
 
 from bs4 import BeautifulSoup
@@ -85,12 +89,28 @@ QID_RE = re.compile(r"^Q\d+$")
 RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
 MAX_API_ATTEMPTS = 3
 _JSON_CACHE: dict[str, dict | None] = {}
+_TEXT_CACHE: dict[str, str | None] = {}
 _LABEL_CACHE: dict[str, str] = {}
+RT_MOVIE_URL_RE = re.compile(
+    r"^https?://(?:www\.)?rottentomatoes\.com/m/[a-z0-9_%\-]+/?(?:[?#].*)?$",
+    re.IGNORECASE,
+)
+RT_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+LETTERBOXD_BASE = "https://letterboxd.com"
+LETTERBOXD_FILM_RE = re.compile(
+    r"^https?://(?:www\.)?letterboxd\.com/film/[a-z0-9][a-z0-9-]*/?$",
+    re.IGNORECASE,
+)
+LETTERBOXD_POSTER_HOSTS = ("ltrbxd.com", "image.tmdb.org")
 
 # Audience-focus labels are intentionally descriptive and evidence based.  The
 # first four describe an explicit thematic/marketing focus.  The remaining
 # labels describe language/market context for international films.
 AUDIENCE_TAG_ORDER = (
+    "Music/Concert",
     "Faith-oriented",
     "LGBTQ+-focused",
     "Black-focused",
@@ -227,6 +247,21 @@ FAITH_TITLE_PATTERNS = (
     r"\b(?:eucharist|eucharistic|sacrament|sacramental|adoration)\b",
 )
 
+# Cinema event wording that is explicit enough to identify music/concert
+# programming without knowing any artist or current release.  These patterns
+# describe reusable event types, never individual movie titles.
+MUSIC_EVENT_TITLE_PATTERNS = (
+    r"\bworld\s+tour\b",
+    r"\bconcert(?:\s+film)?\b",
+    r"\bcheering\s+party\b",
+)
+MUSIC_EVENT_METADATA_PATTERNS = (
+    r"\bconcert\s+film\b",
+    r"\bmusic\s+(?:film|documentary|special|concert)\b",
+    r"\bconcert\b",
+    r"\bgenre\s*[:=-]?\s*music\b",
+)
+
 # Wikipedia prose is useful as a second source for international-market
 # classification when Wikidata is incomplete.  Patterns describe the film or
 # its language; generic setting/culture references are intentionally excluded.
@@ -294,6 +329,16 @@ class AudienceFocusResult:
 
 
 @dataclass(frozen=True)
+class RtPageMetadata:
+    title: str
+    poster_url: str | None
+    languages: frozenset[str]
+    genres: frozenset[str]
+    release_year: int | None
+    runtime_min: int | None
+
+
+@dataclass(frozen=True)
 class MovieContext:
     display_title: str
     canonical_title: str
@@ -349,6 +394,488 @@ def _fetch_json(url: str, timeout: int = 20) -> dict | None:
 
 def _api_json(base: str, **params: object) -> dict | None:
     return _fetch_json(_api_url(base, params))
+
+
+def _fetch_text(
+    url: str, timeout: int = 20, attempts: int | None = None
+) -> str | None:
+    """Fetch one HTML page with bounded retries.
+
+    Primary metadata providers keep the normal retry policy. Optional final
+    fallbacks can explicitly request one short attempt so a blocked secondary
+    provider never stalls or fails the report.
+    """
+    if url in _TEXT_CACHE:
+        return _TEXT_CACHE[url]
+    max_attempts = MAX_API_ATTEMPTS if attempts is None else max(1, int(attempts))
+    for attempt in range(max_attempts):
+        try:
+            request = Request(
+                url,
+                headers={
+                    "User-Agent": RT_USER_AGENT,
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                },
+            )
+            with urlopen(request, timeout=timeout) as response:
+                text = response.read().decode("utf-8", errors="replace")
+                _TEXT_CACHE[url] = text
+                return text
+        except HTTPError as exc:
+            if exc.code not in RETRYABLE_HTTP_CODES:
+                break
+        except (URLError, TimeoutError, ValueError):
+            pass
+        if attempt + 1 < max_attempts:
+            time.sleep(0.5 * (attempt + 1))
+    _TEXT_CACHE[url] = None
+    return None
+
+
+def _extract_rt_url(row) -> str | None:
+    """Return a validated RT movie URL from visible or hidden report metadata."""
+    link = row.select_one('a[href*="rottentomatoes.com/m/"]')
+    candidates: list[str] = []
+    if link is not None:
+        candidates.append(str(link.get("href", "")))
+    for cell in row.find_all(["td", "th"], recursive=False):
+        value = cell.get("data-source-url")
+        if isinstance(value, str):
+            candidates.append(value)
+    for value in candidates:
+        value = value.strip()
+        if RT_MOVIE_URL_RE.match(value):
+            return value
+    return None
+
+
+def _rt_flat_strings(soup: BeautifulSoup) -> list[str]:
+    return [clean_amc_title(x) for x in soup.stripped_strings if clean_amc_title(x)]
+
+
+def _rt_labeled_value(strings: list[str], label: str) -> str | None:
+    label_cf = label.casefold()
+    known_labels = {
+        "director", "producer", "screenwriter", "distributor", "production co",
+        "rating", "genre", "original language", "release date (theaters)",
+        "release date", "runtime", "sound mix", "aspect ratio",
+    }
+    for i, value in enumerate(strings):
+        if value.casefold().rstrip(":") != label_cf:
+            continue
+        for candidate in strings[i + 1 : i + 5]:
+            cleaned = clean_amc_title(candidate)
+            if not cleaned:
+                continue
+            if cleaned.casefold().rstrip(":") in known_labels:
+                break
+            return cleaned
+    return None
+
+
+def _rt_poster_url(soup: BeautifulSoup) -> str | None:
+    """Return the poster image only; avoid arbitrary RT photos/social cards."""
+    for tag in soup.find_all(attrs={"alt": re.compile(r"^\s*Poster for\b", re.I)}):
+        # Prefer the largest explicit srcset candidate when available.
+        srcset = str(tag.get("srcset", "") or tag.get("data-srcset", ""))
+        if srcset:
+            choices: list[tuple[int, str]] = []
+            for piece in srcset.split(","):
+                bit = piece.strip().split()
+                if not bit:
+                    continue
+                url = bit[0]
+                width = 0
+                if len(bit) > 1:
+                    m = re.match(r"(\d+)w$", bit[1])
+                    if m:
+                        width = int(m.group(1))
+                if url.startswith(("https://", "http://")):
+                    choices.append((width, url))
+            if choices:
+                return max(choices, key=lambda item: item[0])[1]
+        for attr in ("src", "data-src", "data-lazy-src"):
+            value = tag.get(attr)
+            if isinstance(value, str) and value.startswith(("https://", "http://")):
+                return value
+
+    # Exact RT movie pages commonly expose the key art through OpenGraph even
+    # when the responsive poster component is hydrated client-side.  Restrict
+    # this fallback to RT/Fandango's image CDN families so a generic site logo
+    # or unrelated social image is not accepted as a poster.
+    meta = soup.find("meta", attrs={"property": "og:image"})
+    value = str(meta.get("content", "")) if meta else ""
+    low = value.casefold()
+    if value.startswith(("https://", "http://")) and any(
+        host in low for host in ("flixster.com", "fandango.com")
+    ):
+        return value
+    return None
+
+
+def _rt_page_metadata(url: str) -> RtPageMetadata | None:
+    if not RT_MOVIE_URL_RE.match(url or ""):
+        return None
+    html_text = _fetch_text(url)
+    if not html_text:
+        return None
+    soup = BeautifulSoup(html_text, "html.parser")
+    heading = soup.find("h1")
+    title = clean_amc_title(heading.get_text(" ", strip=True)) if heading else ""
+    if not title:
+        meta = soup.find("meta", attrs={"property": "og:title"})
+        if meta and meta.get("content"):
+            title = clean_amc_title(str(meta.get("content")))
+            title = re.sub(r"\s*\|\s*Rotten Tomatoes\s*$", "", title, flags=re.I)
+    if not title:
+        return None
+
+    strings = _rt_flat_strings(soup)
+    language = _rt_labeled_value(strings, "Original Language")
+    genre = _rt_labeled_value(strings, "Genre")
+    release = _rt_labeled_value(strings, "Release Date (Theaters)") or _rt_labeled_value(strings, "Release Date")
+    runtime = _rt_labeled_value(strings, "Runtime")
+
+    year = None
+    if release:
+        match = re.search(r"\b((?:19|20)\d{2})\b", release)
+        if match:
+            year = int(match.group(1))
+
+    # Current RT pages sometimes hydrate Movie Info client-side.  When the
+    # labeled release field is absent, use structured date metadata or the
+    # compact title/header line before giving up on release-year validation.
+    if year is None:
+        for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+            raw = script.string or script.get_text(" ", strip=True)
+            match = re.search(
+                r'"(?:datePublished|dateCreated)"\s*:\s*"((?:19|20)\d{2})',
+                raw or "",
+                flags=re.IGNORECASE,
+            )
+            if match:
+                year = int(match.group(1))
+                break
+    if year is None:
+        flat = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
+        pos = flat.casefold().find(title.casefold())
+        nearby = flat[pos : pos + 280] if pos >= 0 else flat[:280]
+        match = re.search(r"\b((?:19|20)\d{2})\b", nearby)
+        if match:
+            year = int(match.group(1))
+
+    runtime_min = _runtime_minutes(runtime or "")
+    if runtime_min is None:
+        flat = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
+        pos = flat.casefold().find(title.casefold())
+        nearby = flat[pos : pos + 320] if pos >= 0 else flat[:320]
+        runtime_min = _runtime_minutes(nearby)
+
+    languages = frozenset(
+        clean_amc_title(part).casefold()
+        for part in re.split(r"[,;/]", language or "")
+        if clean_amc_title(part)
+    )
+    genres = frozenset(
+        clean_amc_title(part).casefold()
+        for part in re.split(r"[,;/]", genre or "")
+        if clean_amc_title(part)
+    )
+    return RtPageMetadata(
+        title=title,
+        poster_url=_rt_poster_url(soup),
+        languages=languages,
+        genres=genres,
+        release_year=year,
+        runtime_min=runtime_min,
+    )
+
+
+def _rt_metadata_for_context(url: str | None, context: MovieContext) -> RtPageMetadata | None:
+    if not url:
+        return None
+    metadata = _rt_page_metadata(url)
+    if metadata is None:
+        return None
+    if max(
+        (_title_similarity(metadata.title, candidate) for candidate in _context_title_variants(context)),
+        default=0.0,
+    ) < 0.90:
+        return None
+    if context.expected_year is not None and metadata.release_year is not None:
+        if abs(metadata.release_year - context.expected_year) > 3:
+            return None
+    if (
+        context.runtime_min is not None
+        and metadata.runtime_min is not None
+        and not context.relax_runtime
+        and abs(metadata.runtime_min - context.runtime_min) > 20
+    ):
+        return None
+    return metadata
+
+
+def _context_with_rt_identity(
+    context: MovieContext,
+    metadata: RtPageMetadata | None,
+) -> MovieContext:
+    """Use a validated RT release year to disambiguate downstream identity.
+
+    AMC titles frequently omit a year even when a same-title older movie
+    exists.  Once the already-resolved RT page agrees on title and runtime, its
+    release year is stronger evidence than a generic title-only Wikidata hit.
+    Explicit/anniversary-derived AMC years still win and are never overwritten.
+    """
+    if metadata is None or context.expected_year is not None or metadata.release_year is None:
+        return context
+    return replace(context, expected_year=metadata.release_year)
+
+
+@dataclass(frozen=True)
+class LetterboxdPageMetadata:
+    title: str
+    poster_url: str | None
+    release_year: int | None
+    runtime_min: int | None
+    url: str
+
+
+def _letterboxd_title_from_soup(soup: BeautifulSoup) -> tuple[str, int | None]:
+    """Extract a film title/year from a Letterboxd film page conservatively."""
+    for tag in soup.find_all(attrs={"data-film-name": True}):
+        value = clean_amc_title(str(tag.get("data-film-name", "")))
+        if value:
+            year = None
+            raw_year = tag.get("data-film-release-year") or tag.get("data-film-year")
+            if raw_year and str(raw_year).isdigit():
+                year = int(raw_year)
+            return value, year
+
+    candidates: list[str] = []
+    for attrs in (
+        {"property": "og:title"},
+        {"name": "twitter:title"},
+    ):
+        meta = soup.find("meta", attrs=attrs)
+        if meta and meta.get("content"):
+            candidates.append(clean_amc_title(str(meta.get("content"))).lstrip("\u200e\u200f"))
+    h1 = soup.find("h1")
+    if h1:
+        candidates.append(clean_amc_title(h1.get_text(" ", strip=True)))
+
+    for raw in candidates:
+        if not raw:
+            continue
+        # Letterboxd social titles commonly append "(YYYY) directed by ..." or
+        # "• Reviews, film + cast".  Strip only those provider decorations.
+        year = None
+        match = re.match(r"^(.*?)\s*\(((?:19|20)\d{2})\)(?:\s+directed by.*|\s*[•|].*)?$", raw, re.I)
+        if match:
+            return clean_amc_title(match.group(1)), int(match.group(2))
+        cleaned = re.sub(r"\s*[•|].*$", "", raw).strip()
+        cleaned = re.sub(r"\s+directed by\s+.*$", "", cleaned, flags=re.I).strip()
+        if cleaned:
+            return cleaned, year
+    return "", None
+
+
+def _letterboxd_poster_url(soup: BeautifulSoup) -> str | None:
+    def accepted(value: str) -> str | None:
+        value = (value or "").strip()
+        if value.startswith("//"):
+            value = "https:" + value
+        low = value.casefold()
+        if value.startswith(("https://", "http://")) and any(
+            host in low for host in LETTERBOXD_POSTER_HOSTS
+        ):
+            return value
+        return None
+
+    # Prefer an explicitly poster-scoped image over OpenGraph, which some
+    # providers use for a landscape sharing card.
+    for img in soup.find_all("img"):
+        ancestry = []
+        node = img
+        for _ in range(3):
+            if node is None:
+                break
+            classes = node.get("class", []) if hasattr(node, "get") else []
+            if isinstance(classes, list):
+                ancestry.extend(str(x) for x in classes)
+            node = getattr(node, "parent", None)
+        context = " ".join(
+            [str(img.get("alt", "")), " ".join(ancestry)]
+        ).casefold()
+        if "poster" not in context and "film-poster" not in context:
+            continue
+        for attr in ("src", "data-src"):
+            value = accepted(str(img.get(attr, "")))
+            if value:
+                return value
+        srcset = str(img.get("srcset", "") or img.get("data-srcset", ""))
+        if srcset:
+            choices = []
+            for piece in srcset.split(","):
+                bits = piece.strip().split()
+                if not bits:
+                    continue
+                value = accepted(bits[0])
+                if not value:
+                    continue
+                width = 0
+                if len(bits) > 1 and re.fullmatch(r"\d+w", bits[1]):
+                    width = int(bits[1][:-1])
+                choices.append((width, value))
+            if choices:
+                return max(choices, key=lambda item: item[0])[1]
+
+    for attrs in (
+        {"property": "og:image"},
+        {"name": "twitter:image"},
+    ):
+        meta = soup.find("meta", attrs=attrs)
+        value = accepted(str(meta.get("content", "")) if meta else "")
+        if value:
+            return value
+    return None
+
+
+def _letterboxd_page_metadata(url: str) -> LetterboxdPageMetadata | None:
+    if not LETTERBOXD_FILM_RE.match(url or ""):
+        return None
+    html_text = _fetch_text(url, timeout=8, attempts=1)
+    if not html_text:
+        # The embed host is intentionally a secondary read path for the same
+        # resolved film slug; it is not a separate discovery source.
+        slug = url.rstrip("/").rsplit("/", 1)[-1]
+        html_text = _fetch_text(
+            f"https://embed.letterboxd.com/film/{slug}/", timeout=8, attempts=1
+        )
+    if not html_text:
+        return None
+    soup = BeautifulSoup(html_text, "html.parser")
+    title, year = _letterboxd_title_from_soup(soup)
+    if not title:
+        return None
+    text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
+    if year is None:
+        match = re.search(r"\b((?:19|20)\d{2})\b", text[:700])
+        if match:
+            year = int(match.group(1))
+    runtime = None
+    match = re.search(r"\b(\d{2,3})\s*(?:mins?|minutes)\b", text, re.I)
+    if match:
+        runtime = int(match.group(1))
+    return LetterboxdPageMetadata(
+        title=title,
+        poster_url=_letterboxd_poster_url(soup),
+        release_year=year,
+        runtime_min=runtime,
+        url=url,
+    )
+
+
+def _letterboxd_search_urls(query: str) -> list[str]:
+    query = clean_amc_title(query)
+    if not query:
+        return []
+    search_urls = [
+        f"{LETTERBOXD_BASE}/search/films/{quote(query, safe='')}/",
+        f"{LETTERBOXD_BASE}/s/search/{quote(query, safe='')}/",
+    ]
+    out: list[str] = []
+    seen: set[str] = set()
+    for search_url in search_urls:
+        html_text = _fetch_text(search_url, timeout=8, attempts=1)
+        if not html_text:
+            continue
+        soup = BeautifulSoup(html_text, "html.parser")
+        for link in soup.find_all("a", href=True):
+            href = str(link.get("href", ""))
+            candidate = urljoin(LETTERBOXD_BASE, href)
+            candidate = candidate.split("?", 1)[0].split("#", 1)[0]
+            if not candidate.endswith("/"):
+                candidate += "/"
+            if not LETTERBOXD_FILM_RE.match(candidate):
+                continue
+            key = candidate.casefold()
+            if key not in seen:
+                seen.add(key)
+                out.append(candidate)
+            if len(out) >= 8:
+                return out
+        if out:
+            break
+    return out
+
+
+def _image_via_letterboxd(
+    context: MovieContext,
+    reference_year: int,
+) -> tuple[str | None, str | None, list[str]]:
+    """Final poster fallback using Letterboxd's TMDB-backed film catalogue.
+
+    This runs only after the exact RT page and Wikimedia paths fail. Search
+    results are never trusted directly: each film page must independently match
+    the title and any available year/runtime evidence before its poster is used.
+    """
+    urls: list[str] = []
+    seen: set[str] = set()
+    for query in _context_title_variants(context):
+        for url in _letterboxd_search_urls(query):
+            if url.casefold() not in seen:
+                seen.add(url.casefold())
+                urls.append(url)
+        if len(urls) >= 8:
+            break
+
+    ranked: list[tuple[float, str, str]] = []
+    rejected: list[str] = []
+    for url in urls[:8]:
+        meta = _letterboxd_page_metadata(url)
+        if meta is None or not meta.poster_url:
+            continue
+        title_score = max(
+            (_title_similarity(meta.title, c) for c in _context_title_variants(context)),
+            default=0.0,
+        )
+        if title_score < 0.90:
+            rejected.append(f"{url}:title")
+            continue
+        if context.expected_year is not None and meta.release_year is not None:
+            if abs(meta.release_year - context.expected_year) > 3:
+                rejected.append(f"{url}:year")
+                continue
+        if (
+            context.runtime_min is not None
+            and meta.runtime_min is not None
+            and not context.relax_runtime
+            and abs(meta.runtime_min - context.runtime_min) > 20
+        ):
+            rejected.append(f"{url}:runtime")
+            continue
+
+        if context.expected_year is not None:
+            year_score = 0.0 if meta.release_year is None else max(
+                -25.0, 12.0 - 4.0 * abs(meta.release_year - context.expected_year)
+            )
+        else:
+            # Current theatrical inventory is most likely to refer to the
+            # recent same-title entry; runtime remains a stronger veto above.
+            year_score = 0.0 if meta.release_year is None else max(
+                -30.0, 10.0 - 2.5 * abs(meta.release_year - reference_year)
+            )
+        runtime_bonus = 0.0
+        if context.runtime_min is not None and meta.runtime_min is not None:
+            runtime_bonus = max(0.0, 10.0 - abs(meta.runtime_min - context.runtime_min) / 2.0)
+        ranked.append((title_score * 100.0 + year_score + runtime_bonus, meta.poster_url, url))
+
+    if not ranked:
+        return None, None, rejected
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    _, poster, url = ranked[0]
+    return poster, url, rejected
 
 
 def _normalized_match_text(value: str) -> str:
@@ -593,11 +1120,21 @@ def _wikipedia_search_pages(query: str, limit: int = 10) -> list[dict]:
 
 
 def _extract_imdb_id(row) -> str | None:
+    candidates: list[str] = []
     link = row.select_one('a[href*="imdb.com/title/"]')
-    if link is None:
-        return None
-    match = IMDB_ID_RE.search(str(link.get("href", "")))
-    return match.group(1).lower() if match else None
+    if link is not None:
+        candidates.append(str(link.get("href", "")))
+    # ``postprocess_report`` preserves exact provider URLs even when a numeric
+    # rating is not published yet.  Use that hidden identity bridge too.
+    for cell in row.find_all(["td", "th"], recursive=False):
+        value = cell.get("data-source-url")
+        if isinstance(value, str) and "imdb.com/title/" in value:
+            candidates.append(value)
+    for value in candidates:
+        match = IMDB_ID_RE.search(value)
+        if match:
+            return match.group(1).lower()
+    return None
 
 
 def _runtime_minutes(text: str) -> int | None:
@@ -1088,6 +1625,8 @@ def classify_audience_focus(
     entity: dict | None = None,
     *,
     supplemental_focus_text: str = "",
+    supplemental_languages: frozenset[str] = frozenset(),
+    supplemental_genres: frozenset[str] = frozenset(),
 ) -> AudienceFocusResult:
     """
     Describe strong audience/cultural signals without judging film quality.
@@ -1103,6 +1642,22 @@ def classify_audience_focus(
     if amc_languages:
         _add_language_focus(tags, reasons, amc_languages, source_label="AMC lists")
 
+    if supplemental_languages:
+        _add_language_focus(
+            tags, reasons, set(supplemental_languages),
+            source_label="Rotten Tomatoes original language",
+        )
+
+    if _matches_any_pattern(context.display_title.casefold(), MUSIC_EVENT_TITLE_PATTERNS):
+        tags.add("Music/Concert")
+        reasons.append("Music/Concert: explicit cinema-event wording in title")
+    if any(
+        re.search(r"\b(?:music|concert)\b", genre, flags=re.IGNORECASE)
+        for genre in supplemental_genres
+    ):
+        tags.add("Music/Concert")
+        reasons.append("Music/Concert: Rotten Tomatoes genre metadata")
+
     # Title wording is used only for a small set of unambiguous faith terms.
     # This is a generic fallback for new releases whose Wikidata/Wikipedia
     # records have not yet accumulated subject or genre metadata.
@@ -1117,6 +1672,9 @@ def classify_audience_focus(
         _add_entity_market_focus(tags, reasons, entity_languages, countries)
 
         focus_text = _explicit_focus_text(entity)
+        if _matches_any_pattern(focus_text, MUSIC_EVENT_METADATA_PATTERNS):
+            tags.add("Music/Concert")
+            reasons.append("Music/Concert: explicit music/concert metadata")
         if _matches_any_pattern(focus_text, FAITH_TEXT_PATTERNS):
             tags.add("Faith-oriented")
             reasons.append("Faith-oriented: explicit faith/religion metadata")
@@ -1174,6 +1732,9 @@ def classify_audience_focus(
     if supplemental_focus_text:
         focus_text = supplemental_focus_text.casefold()
         _add_wikipedia_market_focus(tags, reasons, focus_text)
+        if _matches_any_pattern(focus_text, MUSIC_EVENT_METADATA_PATTERNS):
+            tags.add("Music/Concert")
+            reasons.append("Music/Concert: explicit Wikipedia film context")
         if _matches_any_pattern(focus_text, FAITH_TEXT_PATTERNS):
             tags.add("Faith-oriented")
             reasons.append("Faith-oriented: explicit Wikipedia film context")
@@ -1311,6 +1872,8 @@ def _add_audience_focus_column(soup: BeautifulSoup, reference_year: int) -> int:
             continue
 
         context = _row_movie_context(row, display_title, reference_year)
+        rt_metadata = _rt_metadata_for_context(_extract_rt_url(row), context)
+        context = _context_with_rt_identity(context, rt_metadata)
         img = row.select_one("img.movie-poster")
         wiki_page = None
         if img is not None:
@@ -1329,7 +1892,12 @@ def _add_audience_focus_column(soup: BeautifulSoup, reference_year: int) -> int:
         # Page intro/categories are most useful when the structured metadata has
         # not already identified a thematic audience focus. International-market
         # labels (Indian/Korean/etc.) remain valid and may coexist with a theme.
-        initial = classify_audience_focus(context, entity)
+        initial = classify_audience_focus(
+            context,
+            entity,
+            supplemental_languages=(rt_metadata.languages if rt_metadata else frozenset()),
+            supplemental_genres=(rt_metadata.genres if rt_metadata else frozenset()),
+        )
         thematic_tags = {
             "Faith-oriented", "LGBTQ+-focused", "Black-focused",
             "Latino/Hispanic-focused",
@@ -1344,6 +1912,7 @@ def _add_audience_focus_column(soup: BeautifulSoup, reference_year: int) -> int:
             "entity": entity,
             "page_title": page_title if needs_page_context else None,
             "initial": initial,
+            "rt_metadata": rt_metadata,
         })
 
     focus_pages = _wikipedia_focus_pages(page_titles) if page_titles else {}
@@ -1358,6 +1927,8 @@ def _add_audience_focus_column(soup: BeautifulSoup, reference_year: int) -> int:
                 record["context"],
                 record["entity"],
                 supplemental_focus_text=supplemental,
+                supplemental_languages=(record["rt_metadata"].languages if record["rt_metadata"] else frozenset()),
+                supplemental_genres=(record["rt_metadata"].genres if record["rt_metadata"] else frozenset()),
             )
             if supplemental
             else record["initial"]
@@ -1729,6 +2300,8 @@ def main() -> int:
             )
 
         context = _row_movie_context(row, display_title, current_year)
+        rt_metadata = _rt_metadata_for_context(_extract_rt_url(row), context)
+        context = _context_with_rt_identity(context, rt_metadata)
         canonical = context.canonical_title
 
         poster_link = row.select_one(".movie-poster-wrap a")
@@ -1749,17 +2322,45 @@ def main() -> int:
 
         old_src = str(img.get("src", ""))
         imdb_id = _extract_imdb_id(row)
-        image, wiki_page, source, rejected = resolve_poster(
-            context,
-            imdb_id=imdb_id,
-            reference_year=current_year,
-        )
+
+        # A notebook-resolved RT page has already survived exact-title plus
+        # year/runtime identity checks. Prefer its explicit key art over a
+        # title-only Wikimedia hit; this is crucial for remakes that reuse an
+        # older film's exact title.
+        image = None
+        wiki_page = None
+        source = None
+        rejected: list[str] = []
+        if rt_metadata is not None and rt_metadata.poster_url:
+            image = rt_metadata.poster_url
+            source = "rottentomatoes-exact"
+
+        if not image:
+            image, wiki_page, source, rejected = resolve_poster(
+                context,
+                imdb_id=imdb_id,
+                reference_year=current_year,
+            )
+
+        # Very new/limited/event titles are frequently absent from Wikimedia.
+        # Letterboxd's catalogue is TMDB-backed, so use it only as the final
+        # poster fallback after independent title/year/runtime validation.
+        if not image:
+            image, letterboxd_url, rejected_lb = _image_via_letterboxd(
+                context, current_year
+            )
+            rejected.extend(rejected_lb)
+            if image:
+                source = "letterboxd-tmdb"
+                img["data-letterboxd-page"] = letterboxd_url or ""
 
         if image:
             if image != old_src:
                 updated += 1
             img["src"] = image
             img["data-poster-source"] = source or "wikimedia"
+            if source != "letterboxd-tmdb" and img.has_attr("data-letterboxd-page"):
+                del img["data-letterboxd-page"]
             if wiki_page:
                 img["data-wikipedia-page"] = wiki_page
             elif img.has_attr("data-wikipedia-page"):
@@ -1785,7 +2386,10 @@ def main() -> int:
             )
         elif _is_placeholder(old_src):
             unresolved.append(display_title)
-            print(f"[POSTER] No usable Wikimedia image: {display_title!r}")
+            print(
+                f"[POSTER] No usable poster from validated metadata sources: "
+                f"{display_title!r}"
+            )
         else:
             # No decisive evidence either way: keep the working image.
             preserved += 1

@@ -113,8 +113,16 @@ _SUFFIX_PATTERNS = (
     re.compile(r"\s*(?:[-–—:]\s*)?remaster(?:ed)?\s*$", re.IGNORECASE),
     re.compile(r"\s*[-–—:]\s*encore\s*$", re.IGNORECASE),
 
-    # Generic anniversary suffix. This comes after event/program suffixes so
-    # stacked labels can collapse all the way to the base title.
+    # Generic anniversary suffix. Parenthesized anniversary labels are also
+    # presentation metadata (for example ``<movie> (20th Anniversary)``).
+    # Keep this generic: the count is parsed from the title and no release year
+    # or movie name is embedded in source.
+    re.compile(
+        r"\s*\(\s*\d{1,3}(?:st|nd|rd|th)\s+anniversary\s*\)\s*$",
+        re.IGNORECASE,
+    ),
+    # Non-parenthesized anniversary suffix. This comes after event/program
+    # suffixes so stacked labels can collapse all the way to the base title.
     re.compile(
         r"(?:\s*[-–—:]\s*|\s+)"
         r"\d{1,3}(?:st|nd|rd|th)\s+anniversary\s*$",
@@ -196,6 +204,39 @@ def _presenter_possessive_variant(display: str, canonical: str) -> str | None:
 
     tail = clean_amc_title(match.group("title"))
     return tail or None
+
+
+def _trailing_creator_credit_variant(title: str) -> str | None:
+    """Return a secondary base-title candidate for a trailing creator credit.
+
+    Cinema/event listings sometimes append a playwright/creator credit in the
+    form ``<work> by <person name>`` even though metadata providers index only
+    the underlying work title.  This is intentionally a *secondary* candidate:
+    the original title stays first, and provider-side title/year/runtime
+    validation must still succeed before the shorter form is accepted.
+
+    Requiring a short person-like credit (2-5 name tokens, letters/punctuation
+    only) avoids broadly stripping ordinary uses of the word "by".
+    """
+    value = clean_amc_title(title)
+    match = re.match(
+        r"^(?P<title>.+?)\s+by\s+(?P<creator>[^:;!?]{3,80})$",
+        value,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+
+    creator = clean_amc_title(match.group("creator"))
+    tokens = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'’.-]*", creator)
+    if not (2 <= len(tokens) <= 5):
+        return None
+    # Reject credits that contain obvious non-name numerics/marketing syntax.
+    if re.search(r"\d|[@#]|\b(?:edition|version|event|screening|tour|concert)\b", creator, re.I):
+        return None
+
+    base = clean_amc_title(match.group("title")).strip(" -–—:")
+    return base or None
 
 
 def clean_amc_title(title: str) -> str:
@@ -367,6 +408,13 @@ def candidate_title_variants(title: str) -> list[str]:
     presenter_variant = _presenter_possessive_variant(display, canonical)
     if presenter_variant:
         values.extend(_generic_spelling_variants(presenter_variant))
+
+    # A trailing creator credit is another common exhibition/title-card
+    # wrapper. Keep it secondary so ordinary titles containing "by" are not
+    # rewritten unless a provider independently validates the shorter title.
+    creator_variant = _trailing_creator_credit_variant(canonical)
+    if creator_variant:
+        values.extend(_generic_spelling_variants(creator_variant))
 
     # A parenthetical four-digit year is useful disambiguation in the AMC
     # display title, but metadata providers usually store it as a page suffix

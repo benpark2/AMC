@@ -30,6 +30,7 @@ from scripts.patch_notebook_titles import (
     patch_postprocess_source,
 )
 from scripts.postprocess_report import parse_showtimes_blob
+import scripts.postprocess_report as postprocess
 import scripts.finalize_posters as posters
 
 
@@ -47,6 +48,24 @@ class MovieTitleTests(unittest.TestCase):
             canonical_movie_title("The Fast and the Furious 25th Anniversary"),
             "The Fast and the Furious",
         )
+
+    def test_parenthesized_anniversary_is_generic_presentation_metadata(self):
+        info = analyze_movie_title("Example Palace (20th Anniversary)", reference_year=2026)
+        self.assertEqual(info.canonical_title, "Example Palace")
+        self.assertEqual(info.inferred_release_year, 2006)
+        self.assertEqual(
+            metadata_release_year_hint("Example Palace (20th Anniversary)", reference_year=2026),
+            2006,
+        )
+
+    def test_trailing_creator_credit_is_secondary_generic_candidate(self):
+        variants = candidate_title_variants("Example Play by Alex Morgan")
+        self.assertEqual(variants[0], "Example Play by Alex Morgan")
+        self.assertIn("Example Play", variants)
+
+    def test_ordinary_by_phrase_is_not_stripped_when_credit_is_not_person_like(self):
+        variants = candidate_title_variants("Designed by Committee")
+        self.assertNotIn("Designed", variants)
 
     def test_accessibility_and_qa(self):
         self.assertEqual(
@@ -304,6 +323,26 @@ def rt_get_scores(session, title, cache, debug=False):
     # fixture so the patcher must continue to match the notebook function.
     return None, None, None
 
+# Structural copy of the notebook's movie lookup loop. ``movie_titles`` is
+# empty so this compiles/executes without invoking network stubs.
+session = None
+movie_titles = []
+rt_cache = {}
+imdb_cache = {}
+movie_rows = []
+for title in movie_titles:
+    rt_aud, rt_crit, rt_url = rt_get_scores(session, title, rt_cache, debug=DEBUG_RT)
+    imdb, imdb_runtime_min, imdb_url = imdb_rating_runtime_url(session, title, imdb_cache)
+
+    rank, prim_score, prim_src = pick_primary(rt_aud, imdb, rt_crit)
+
+    # Priority: AMC runtime first, IMDb runtime second
+    amc_rt = df_show[df_show["movie_title"] == title]["runtime_min"].dropna()
+    rt_min = int(amc_rt.iloc[0]) if not amc_rt.empty else imdb_runtime_min
+
+    h, m = divmod(rt_min, 60) if rt_min else (0, 0)
+    fmt_rt = f"{h}h {m}m" if h else (f"{m}m" if m else None)
+
 def extract_showtimes_from_json_scripts(html_txt: str, theatre_name: str, d: date) -> List[dict]:
     return []
 
@@ -338,6 +377,9 @@ THEATRES = [
     {'name': 'AMC Woodbridge 5'},
     {'name': 'AMC Orange 30'},
 ]
+sat, sun = upcoming_weekend_pacific()
+dates = [sat, sun]
+# Aggregate-guard fixtures below intentionally override the requested dates.
 dates = [date(2026, 9, 26), date(2026, 9, 27)]
 _fixture_theatres = [
     'AMC Tustin 14 @ The District',
@@ -482,6 +524,34 @@ desired = [
                     (first.isoformat(), second.isoformat()), expected
                 )
 
+    def test_requested_dates_include_today_plus_normal_two_weekend_days(self):
+        source = self._patched_source()
+        self.assertIn(
+            "dates = list(dict.fromkeys([current_pacific_date(), sat, sun]))",
+            source,
+        )
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        real_datetime = datetime
+        fixed = real_datetime(2026, 10, 18, 12, 0, 0)
+
+        class FakeDateTime(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                if tz is None:
+                    return cls(2026, 10, 18, 12, 0, 0)
+                return cls(2026, 10, 18, 12, 0, 0, tzinfo=tz)
+
+        ns["datetime"] = FakeDateTime
+        ns["OVERRIDE_SATURDAY"] = ""
+        today = ns["current_pacific_date"]()
+        first, second = ns["upcoming_weekend_pacific"]()
+        requested = list(dict.fromkeys([today, first, second]))
+        self.assertEqual(
+            [d.isoformat() for d in requested],
+            ["2026-10-18", "2026-10-24", "2026-10-25"],
+        )
+
     def test_weekend_override_keeps_explicit_saturday_sunday_pair(self):
         source = self._patched_source()
         ns = {}
@@ -528,6 +598,106 @@ desired = [
         )
         self.assertTrue(calls)
         self.assertTrue(calls[0].endswith("/m/example_feature_2016"), calls[0])
+
+    def test_rt_valid_new_page_without_scores_does_not_fall_through_to_old_title(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        current_year = ns["date"].today().year
+        target_year = current_year - 1
+        calls = []
+
+        def fake_fetch(session, url, params=None, tries=2):
+            calls.append(url)
+            if url.endswith(f"/m/example_feature_{target_year}"):
+                return 200, (
+                    f"<html><h1>Example Feature</h1>"
+                    f"<div>Release Date (Theaters)</div><div>Oct 1, {target_year}</div>"
+                    "<div>Tomatometer 2 Reviews Popcornmeter Fewer than 50 Ratings</div>"
+                    "</html>"
+                )
+            if url.endswith("/m/example_feature"):
+                return 200, (
+                    "<html><h1>Example Feature</h1>"
+                    "<div>Release Date (Theaters)</div><div>Jan 1, 2007</div>"
+                    '<score-board audiencescore="87"></score-board></html>'
+                )
+            return 404, ""
+
+        ns["fetch_html"] = fake_fetch
+        aud, crit, url = ns["rt_get_scores"](None, "Example Feature", {}, debug=False)
+        self.assertIsNone(aud)
+        self.assertIsNone(crit)
+        self.assertTrue(url.endswith(f"/m/example_feature_{target_year}"), url)
+        self.assertNotIn("/m/example_feature", calls[calls.index(url) + 1 :])
+
+    def test_rt_reused_title_rejects_old_runtime_and_prefers_recent_identity(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        current_year = ns["date"].today().year
+        recent_year = current_year - 1
+        calls = []
+
+        def fake_fetch(session, url, params=None, tries=2):
+            calls.append(url)
+            # Simulate a year-specific URL silently serving an older famous
+            # same-title movie. Runtime must veto it.
+            if url.endswith(f"/m/example_feature_{current_year}"):
+                return 200, (
+                    "<html><h1>Example Feature</h1>"
+                    "<div>Runtime</div><div>1h 3m</div>"
+                    '<score-board audiencescore="87"></score-board></html>'
+                )
+            if url.endswith(f"/m/example_feature_{recent_year}"):
+                return 200, (
+                    f"<html><h1>Example Feature</h1>"
+                    f"<div>Release Date (Theaters)</div><div>Oct 1, {recent_year}</div>"
+                    "<div>Runtime</div><div>2h 1m</div>"
+                    "<div>Tomatometer 2 Reviews Popcornmeter Fewer than 50 Ratings</div>"
+                    "</html>"
+                )
+            return 404, ""
+
+        ns["fetch_html"] = fake_fetch
+        aud, crit, url = ns["rt_get_scores"](
+            None, "Example Feature", {}, debug=False, runtime_min=121
+        )
+        self.assertIsNone(aud)
+        self.assertIsNone(crit)
+        self.assertTrue(url.endswith(f"/m/example_feature_{recent_year}"), url)
+        self.assertTrue(any(call.endswith(f"/m/example_feature_{current_year}") for call in calls))
+
+    def test_rt_provider_search_recovers_non_derivable_movie_slug(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        current_year = ns["date"].today().year
+        calls = []
+
+        def fake_fetch(session, url, params=None, tries=2):
+            calls.append(url)
+            if "/napi/search/" in url:
+                return 200, json.dumps({
+                    "movies": [
+                        {"name": "Example Palace", "year": current_year, "url": "/m/987654-example_palace"},
+                        {"name": "Example Palaces", "year": current_year, "url": "/m/wrong"},
+                    ]
+                })
+            if url.endswith("/m/987654-example_palace"):
+                return 200, (
+                    f"<html><h1>Example Palace</h1>"
+                    f"<div>Release Date (Theaters)</div><div>Oct 1, {current_year}</div>"
+                    '<score-board tomatometerscore="91" audiencescore="88"></score-board>'
+                    "</html>"
+                )
+            return 404, ""
+
+        ns["fetch_html"] = fake_fetch
+        aud, crit, url = ns["rt_get_scores"](None, "Example Palace", {}, debug=False)
+        self.assertEqual((aud, crit), (88, 91))
+        self.assertTrue(url.endswith("/m/987654-example_palace"), url)
+        self.assertTrue(any("/napi/search/" in call for call in calls))
 
     def test_amc_current_ssr_payload_fallback_extracts_showtimes(self):
         source = self._patched_source()
@@ -1642,6 +1812,7 @@ def remove_noisy_output(soup: BeautifulSoup) -> None:
 class PosterValidationTests(unittest.TestCase):
     def setUp(self):
         posters._JSON_CACHE.clear()
+        posters._TEXT_CACHE.clear()
         posters._LABEL_CACHE.clear()
         posters._LABEL_CACHE.update({
             "Q1001": "japanese",
@@ -1759,6 +1930,63 @@ class PosterValidationTests(unittest.TestCase):
         right = self.entity("Q2", "Example", runtime=97, language_qid="Q1003")
         best, _ = posters._best_entity_for_context([wrong, right], ctx, None)
         self.assertEqual(best["id"], "Q2")
+
+    def test_rt_metadata_runtime_rejects_wrong_same_title_page(self):
+        ctx = self.context(canonical_title="Example", runtime_min=121)
+        old_html = (
+            "<html><h1>Example</h1>"
+            "<div>Release Date (Theaters)</div><div>Jan 1, 2007</div>"
+            "<div>Runtime</div><div>1h 3m</div>"
+            '<img alt="Poster for Example" src="https://resizing.flixster.com/old.jpg">'
+            "</html>"
+        )
+        with patch.object(posters, "_fetch_text", return_value=old_html):
+            meta = posters._rt_metadata_for_context(
+                "https://www.rottentomatoes.com/m/example", ctx
+            )
+        self.assertIsNone(meta)
+
+    def test_valid_rt_year_becomes_downstream_identity_anchor(self):
+        ctx = self.context(canonical_title="Example", runtime_min=119)
+        meta = posters.RtPageMetadata(
+            title="Example",
+            poster_url="https://resizing.flixster.com/new.jpg",
+            languages=frozenset({"english"}),
+            genres=frozenset({"action"}),
+            release_year=2026,
+            runtime_min=119,
+        )
+        anchored = posters._context_with_rt_identity(ctx, meta)
+        self.assertEqual(anchored.expected_year, 2026)
+        self.assertEqual(anchored.runtime_min, 119)
+
+    def test_letterboxd_fallback_prefers_recent_runtime_matching_same_title(self):
+        ctx = self.context(canonical_title="Example", runtime_min=121)
+        old = posters.LetterboxdPageMetadata(
+            title="Example",
+            poster_url="https://a.ltrbxd.com/old.jpg",
+            release_year=2007,
+            runtime_min=63,
+            url="https://letterboxd.com/film/example-old/",
+        )
+        new = posters.LetterboxdPageMetadata(
+            title="Example",
+            poster_url="https://a.ltrbxd.com/new.jpg",
+            release_year=2025,
+            runtime_min=121,
+            url="https://letterboxd.com/film/example-new/",
+        )
+        urls = [old.url, new.url]
+        with patch.object(posters, "_letterboxd_search_urls", return_value=urls), \
+             patch.object(
+                 posters,
+                 "_letterboxd_page_metadata",
+                 side_effect=lambda url: old if url == old.url else new,
+             ):
+            image, page, rejected = posters._image_via_letterboxd(ctx, 2026)
+        self.assertEqual(image, new.poster_url)
+        self.assertEqual(page, new.url)
+        self.assertTrue(any("runtime" in item for item in rejected))
 
     def test_nonfilm_is_vetoed(self):
         entity = self.entity("Q1", "Example")
@@ -1931,6 +2159,24 @@ class PosterValidationTests(unittest.TestCase):
 
 
 
+class PostprocessProviderIdentityTests(unittest.TestCase):
+    def test_show_blob_scoring_is_year_agnostic(self):
+        older = "AMC Example 10\n• 2026-10-18: 7:00 pm"
+        future = "AMC Example 10\n• 2031-10-18: 7:00 pm"
+        self.assertEqual(postprocess.score_show_blob(older), postprocess.score_show_blob(future))
+
+    def test_blank_score_preserves_resolved_source_url_without_visible_link(self):
+        soup = BeautifulSoup("<html></html>", "html.parser")
+        td = postprocess._linked_score_td(
+            soup, "", "https://www.example.com/movie/example"
+        )
+        self.assertEqual(td.get_text(" ", strip=True), "")
+        self.assertIsNone(td.find("a"))
+        self.assertEqual(
+            td.get("data-source-url"), "https://www.example.com/movie/example"
+        )
+
+
 class AudienceFocusTests(unittest.TestCase):
     def setUp(self):
         posters._JSON_CACHE.clear()
@@ -1990,6 +2236,50 @@ class AudienceFocusTests(unittest.TestCase):
     def test_general_when_no_strong_signal_exists(self):
         result = posters.classify_audience_focus(self.context(), self.entity())
         self.assertEqual(result.tags, ("General",))
+
+    def test_music_concert_event_title_is_generic_category(self):
+        result = posters.classify_audience_focus(
+            self.context(title="Example Artist World Tour: Live Viewing"),
+            None,
+        )
+        self.assertIn("Music/Concert", result.tags)
+
+    def test_rt_language_and_genre_enrich_audience_focus(self):
+        result = posters.classify_audience_focus(
+            self.context(),
+            None,
+            supplemental_languages=frozenset({"japanese"}),
+            supplemental_genres=frozenset({"music"}),
+        )
+        self.assertIn("Japanese", result.tags)
+        self.assertIn("Music/Concert", result.tags)
+
+    def test_exact_rt_metadata_supplies_poster_language_and_genre(self):
+        ctx = self.context(title="Example Feature")
+        html = """
+        <html><head><meta property="og:title" content="Example Feature | Rotten Tomatoes"></head>
+        <body><h1>Example Feature</h1>
+        <img alt="Poster for Example Feature" src="https://resizing.flixster.com/example-poster.jpg">
+        <div>Genre</div><div>Music</div>
+        <div>Original Language</div><div>Japanese</div>
+        <div>Release Date (Theaters)</div><div>Oct 18, 2026</div>
+        </body></html>
+        """
+        with patch.object(posters, "_fetch_text", return_value=html):
+            meta = posters._rt_metadata_for_context(
+                "https://www.rottentomatoes.com/m/example_feature", ctx
+            )
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta.poster_url, "https://resizing.flixster.com/example-poster.jpg")
+        self.assertEqual(meta.languages, frozenset({"japanese"}))
+        self.assertEqual(meta.genres, frozenset({"music"}))
+
+    def test_hidden_imdb_source_url_remains_identity_bridge(self):
+        soup = BeautifulSoup(
+            '<tr><td data-source-url="https://www.imdb.com/title/tt1234567/"></td></tr>',
+            "html.parser",
+        )
+        self.assertEqual(posters._extract_imdb_id(soup.tr), "tt1234567")
 
     def test_amc_hindi_is_indian_without_remote_metadata(self):
         result = posters.classify_audience_focus(
