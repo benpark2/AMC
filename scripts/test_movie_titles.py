@@ -2026,7 +2026,8 @@ class PosterValidationTests(unittest.TestCase):
             url="https://letterboxd.com/film/example-new/",
         )
         urls = [old.url, new.url]
-        with patch.object(posters, "_letterboxd_search_urls", return_value=urls), \
+        with patch.object(posters, "_letterboxd_direct_urls", return_value=[]), \
+             patch.object(posters, "_letterboxd_search_urls", return_value=urls), \
              patch.object(
                  posters,
                  "_letterboxd_page_metadata",
@@ -2036,6 +2037,57 @@ class PosterValidationTests(unittest.TestCase):
         self.assertEqual(image, new.poster_url)
         self.assertEqual(page, new.url)
         self.assertTrue(any("runtime" in item for item in rejected))
+
+    def test_letterboxd_direct_slug_uses_known_year_before_plain_title(self):
+        ctx = self.context(canonical_title="Example Movie", expected_year=2025)
+        urls = posters._letterboxd_direct_urls(ctx)
+        self.assertGreaterEqual(len(urls), 2)
+        self.assertEqual(urls[0], "https://letterboxd.com/film/example-movie-2025/")
+        self.assertEqual(urls[1], "https://letterboxd.com/film/example-movie/")
+
+    def test_letterboxd_embed_can_supply_poster_when_main_page_has_none(self):
+        ctx_url = "https://letterboxd.com/film/example-world-tour/"
+        main = (
+            '<html><meta property="og:title" content="Example World Tour (2026) directed by Person">'
+            '<body><h1>Example World Tour</h1><p>2026</p></body></html>'
+        )
+        embed = (
+            '<html><meta property="og:title" content="Example World Tour (2026)">'
+            '<body><div class="film-poster"><img alt="Example World Tour poster" '
+            'srcset="https://a.ltrbxd.com/poster-300.jpg 300w, '
+            'https://a.ltrbxd.com/poster-1000.jpg 1000w"></div>'
+            '<h1>Example World Tour</h1><p>2026</p></body></html>'
+        )
+        with patch.object(posters, "_fetch_text", side_effect=[main, embed]):
+            meta = posters._letterboxd_page_metadata(ctx_url)
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta.poster_url, "https://a.ltrbxd.com/poster-1000.jpg")
+        self.assertEqual(meta.release_year, 2026)
+
+    def test_wikidata_fallback_progresses_to_generic_title_variant(self):
+        ctx = self.context(
+            display_title="Presenter's Example 20th Anniversary",
+            canonical_title="Presenter's Example",
+            expected_year=2006,
+        )
+        entity = self.entity("Q2", "Underlying Example", year=2006)
+        entity.setdefault("claims", {})["P18"] = [
+            {"mainsnak": {"datavalue": {"value": "Underlying Example poster.jpg"}}}
+        ]
+        with patch.object(
+            posters,
+            "_context_title_variants",
+            return_value=["Presenter's Example", "Underlying Example"],
+        ), patch.object(
+            posters,
+            "_wikidata_qids_for_title",
+            side_effect=lambda title, limit=10: [] if title == "Presenter's Example" else ["Q2"],
+        ), patch.object(posters, "_wikidata_entities", return_value=[entity]):
+            image, page, source, _ = posters._image_via_wikidata(ctx, None)
+        self.assertIn("Underlying_Example_poster.jpg", image)
+        self.assertIsNone(page)
+        self.assertEqual(source, "wikidata-commons")
+        self.assertIn("width=800", image)
 
     def test_rt_default_poster_asset_is_rejected(self):
         html = (
@@ -2066,7 +2118,8 @@ class PosterValidationTests(unittest.TestCase):
             imdb_id="tt12345678",
             url="https://letterboxd.com/film/example-world-tour/",
         )
-        with patch.object(posters, "_letterboxd_search_urls", return_value=[meta.url]), \
+        with patch.object(posters, "_letterboxd_direct_urls", return_value=[]), \
+             patch.object(posters, "_letterboxd_search_urls", return_value=[meta.url]), \
              patch.object(posters, "_letterboxd_page_metadata", return_value=meta):
             chosen, rejected = posters._best_letterboxd_metadata(ctx, 2026)
         self.assertIsNotNone(chosen)

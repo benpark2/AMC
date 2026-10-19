@@ -57,6 +57,7 @@ from pathlib import Path
 import re
 import sys
 import time
+import unicodedata
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urljoin
 from urllib.request import Request, urlopen
@@ -89,10 +90,26 @@ PLACEHOLDER_URL = (
 IMDB_ID_RE = re.compile(r"/title/(tt\d{5,12})(?:/|$)", re.IGNORECASE)
 QID_RE = re.compile(r"^Q\d+$")
 RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
-MAX_API_ATTEMPTS = 3
+MAX_API_ATTEMPTS = 2
+WIKIMEDIA_POSTER_WIDTH = 800
+LETTERBOXD_DIRECT_URL_LIMIT = 6
+LETTERBOXD_SEARCH_RESULT_LIMIT = 4
+WIKIDATA_TITLE_VARIANT_LIMIT = 3
+# Provider enrichment is deliberately bounded.  These are not whole-job
+# timeouts; they cap only this post-processing script's external metadata work.
+# If a provider is slow or blocked, the report preserves existing data and
+# moves on instead of turning poster enrichment into a many-minute crawl.
+_PROVIDER_BUDGET_SECONDS = {
+    "wikimedia": 45.0,
+    "rt": 30.0,
+    "letterboxd": 35.0,
+    "imdb": 12.0,
+}
+_PROVIDER_BUDGET_STARTED: dict[str, float] = {}
 _JSON_CACHE: dict[str, dict | None] = {}
 _TEXT_CACHE: dict[str, str | None] = {}
 _LABEL_CACHE: dict[str, str] = {}
+_LETTERBOXD_RESULT_CACHE: dict[tuple[object, ...], tuple[object, list[str]]] = {}
 RT_MOVIE_URL_RE = re.compile(
     r"^https?://(?:www\.)?rottentomatoes\.com/m/[a-z0-9_%\-]+/?(?:[?#].*)?$",
     re.IGNORECASE,
@@ -358,9 +375,36 @@ def _api_url(base: str, params: dict[str, object]) -> str:
     return f"{base}?{encoded}"
 
 
-def _fetch_json(url: str, timeout: int = 20) -> dict | None:
+def _provider_name_for_url(url: str) -> str | None:
+    low = (url or "").casefold()
+    if "wikipedia.org" in low or "wikidata.org" in low or "wikimedia.org" in low:
+        return "wikimedia"
+    if "rottentomatoes.com" in low or "flixster.com" in low or "fandango.com" in low:
+        return "rt"
+    if "letterboxd.com" in low or "ltrbxd.com" in low or "image.tmdb.org" in low:
+        return "letterboxd"
+    if "imdb.com" in low:
+        return "imdb"
+    return None
+
+
+def _provider_budget_available(url: str) -> bool:
+    provider = _provider_name_for_url(url)
+    if provider is None:
+        return True
+    limit = _PROVIDER_BUDGET_SECONDS.get(provider)
+    if limit is None:
+        return True
+    now = time.monotonic()
+    started = _PROVIDER_BUDGET_STARTED.setdefault(provider, now)
+    return (now - started) < limit
+
+
+def _fetch_json(url: str, timeout: int = 8) -> dict | None:
     if url in _JSON_CACHE:
         return _JSON_CACHE[url]
+    if not _provider_budget_available(url):
+        return None
 
     for attempt in range(MAX_API_ATTEMPTS):
         try:
@@ -410,6 +454,8 @@ def _fetch_text(
     """
     if url in _TEXT_CACHE:
         return _TEXT_CACHE[url]
+    if not _provider_budget_available(url):
+        return None
     max_attempts = MAX_API_ATTEMPTS if attempts is None else max(1, int(attempts))
     for attempt in range(max_attempts):
         try:
@@ -556,7 +602,7 @@ def _rt_poster_url(soup: BeautifulSoup) -> str | None:
 def _rt_page_metadata(url: str) -> RtPageMetadata | None:
     if not RT_MOVIE_URL_RE.match(url or ""):
         return None
-    html_text = _fetch_text(url)
+    html_text = _fetch_text(url, timeout=5, attempts=1)
     if not html_text:
         return None
     soup = BeautifulSoup(html_text, "html.parser")
@@ -781,19 +827,11 @@ def _letterboxd_poster_url(soup: BeautifulSoup) -> str | None:
     return None
 
 
-def _letterboxd_page_metadata(url: str) -> LetterboxdPageMetadata | None:
-    if not LETTERBOXD_FILM_RE.match(url or ""):
-        return None
-    html_text = _fetch_text(url, timeout=8, attempts=1)
-    if not html_text:
-        # The embed host is intentionally a secondary read path for the same
-        # resolved film slug; it is not a separate discovery source.
-        slug = url.rstrip("/").rsplit("/", 1)[-1]
-        html_text = _fetch_text(
-            f"https://embed.letterboxd.com/film/{slug}/", timeout=8, attempts=1
-        )
-    if not html_text:
-        return None
+def _parse_letterboxd_metadata_html(
+    html_text: str,
+    *,
+    canonical_url: str,
+) -> LetterboxdPageMetadata | None:
     soup = BeautifulSoup(html_text, "html.parser")
     title, year = _letterboxd_title_from_soup(soup)
     if not title:
@@ -821,14 +859,97 @@ def _letterboxd_page_metadata(url: str) -> LetterboxdPageMetadata | None:
         release_year=year,
         runtime_min=runtime,
         imdb_id=imdb_id,
+        url=canonical_url,
+    )
+
+
+def _letterboxd_page_metadata(url: str) -> LetterboxdPageMetadata | None:
+    if not LETTERBOXD_FILM_RE.match(url or ""):
+        return None
+    # Letterboxd's main page sometimes exposes identity metadata but leaves the
+    # poster to client-side hydration.  Parse it first, then consult the embed
+    # representation only when the poster is still missing.  Both reads are
+    # one-shot, short-timeout fallbacks so a blocked provider cannot stall the
+    # whole report.
+    main_html = _fetch_text(url, timeout=4, attempts=1)
+    main_meta = (
+        _parse_letterboxd_metadata_html(main_html, canonical_url=url)
+        if main_html
+        else None
+    )
+    if main_meta is not None and main_meta.poster_url:
+        return main_meta
+
+    slug = url.rstrip("/").rsplit("/", 1)[-1]
+    embed_html = _fetch_text(
+        f"https://embed.letterboxd.com/film/{slug}/", timeout=4, attempts=1
+    )
+    embed_meta = (
+        _parse_letterboxd_metadata_html(embed_html, canonical_url=url)
+        if embed_html
+        else None
+    )
+    if main_meta is None:
+        return embed_meta
+    if embed_meta is None:
+        return main_meta
+    return LetterboxdPageMetadata(
+        title=main_meta.title or embed_meta.title,
+        poster_url=main_meta.poster_url or embed_meta.poster_url,
+        release_year=main_meta.release_year or embed_meta.release_year,
+        runtime_min=main_meta.runtime_min or embed_meta.runtime_min,
+        imdb_id=main_meta.imdb_id or embed_meta.imdb_id,
         url=url,
     )
+
+
+def _letterboxd_slug(value: str) -> str:
+    value = clean_amc_title(value)
+    if not value:
+        return ""
+    # Letterboxd slugs are ASCII-ish, lowercase, punctuation-free words joined
+    # by hyphens.  This is deterministic title shaping, not a movie alias.
+    value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    value = value.replace("&", " and ").replace("’", "'").casefold()
+    value = re.sub(r"['`]", "", value)
+    value = re.sub(r"[^a-z0-9]+", "-", value).strip("-")
+    return re.sub(r"-+", "-", value)
+
+
+def _letterboxd_direct_urls(context: MovieContext) -> list[str]:
+    """Cheap deterministic film-page candidates before any site search.
+
+    When a release year is known, try the year-qualified slug first so remakes
+    and same-title releases do not accidentally resolve to an older famous film.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for title in _context_title_variants(context):
+        slug = _letterboxd_slug(title)
+        if not slug:
+            continue
+        variants = []
+        if context.expected_year is not None:
+            variants.append(f"{slug}-{context.expected_year}")
+        variants.append(slug)
+        for candidate_slug in variants:
+            url = f"{LETTERBOXD_BASE}/film/{candidate_slug}/"
+            key = url.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(url)
+            if len(out) >= LETTERBOXD_DIRECT_URL_LIMIT:
+                return out
+    return out
 
 
 def _letterboxd_search_urls(query: str) -> list[str]:
     query = clean_amc_title(query)
     if not query:
         return []
+    # The films-only endpoint is normally enough.  The generic endpoint is a
+    # single fallback, not an additional broad crawl.
     search_urls = [
         f"{LETTERBOXD_BASE}/search/films/{quote(query, safe='')}/",
         f"{LETTERBOXD_BASE}/s/search/{quote(query, safe='')}/",
@@ -836,7 +957,7 @@ def _letterboxd_search_urls(query: str) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
     for search_url in search_urls:
-        html_text = _fetch_text(search_url, timeout=8, attempts=1)
+        html_text = _fetch_text(search_url, timeout=4, attempts=1)
         if not html_text:
             continue
         soup = BeautifulSoup(html_text, "html.parser")
@@ -852,11 +973,60 @@ def _letterboxd_search_urls(query: str) -> list[str]:
             if key not in seen:
                 seen.add(key)
                 out.append(candidate)
-            if len(out) >= 8:
+            if len(out) >= LETTERBOXD_SEARCH_RESULT_LIMIT:
                 return out
         if out:
             break
     return out
+
+
+def _letterboxd_context_cache_key(context: MovieContext, reference_year: int) -> tuple[object, ...]:
+    return (
+        context.display_title.casefold(),
+        context.canonical_title.casefold(),
+        context.expected_year,
+        context.runtime_min,
+        tuple(sorted(context.spoken_languages)),
+        context.relax_runtime,
+        reference_year,
+    )
+
+
+def _score_letterboxd_metadata(
+    meta: LetterboxdPageMetadata,
+    context: MovieContext,
+    reference_year: int,
+) -> tuple[float | None, str | None]:
+    title_score = max(
+        (_title_similarity(meta.title, c) for c in _context_title_variants(context)),
+        default=0.0,
+    )
+    if title_score < 0.90:
+        return None, "title"
+    if context.expected_year is not None and meta.release_year is not None:
+        if abs(meta.release_year - context.expected_year) > 3:
+            return None, "year"
+    if (
+        context.runtime_min is not None
+        and meta.runtime_min is not None
+        and not context.relax_runtime
+        and abs(meta.runtime_min - context.runtime_min) > 20
+    ):
+        return None, "runtime"
+
+    if context.expected_year is not None:
+        year_score = 0.0 if meta.release_year is None else max(
+            -25.0, 12.0 - 4.0 * abs(meta.release_year - context.expected_year)
+        )
+    else:
+        year_score = 0.0 if meta.release_year is None else max(
+            -30.0, 10.0 - 2.5 * abs(meta.release_year - reference_year)
+        )
+    runtime_bonus = 0.0
+    if context.runtime_min is not None and meta.runtime_min is not None and not context.relax_runtime:
+        runtime_bonus = max(0.0, 10.0 - abs(meta.runtime_min - context.runtime_min) / 2.0)
+    poster_bonus = 2.0 if meta.poster_url else 0.0
+    return title_score * 100.0 + year_score + runtime_bonus + poster_bonus, None
 
 
 def _best_letterboxd_metadata(
@@ -865,65 +1035,66 @@ def _best_letterboxd_metadata(
 ) -> tuple[LetterboxdPageMetadata | None, list[str]]:
     """Return the best independently validated Letterboxd/TMDB identity.
 
-    The catalogue is a last-resort identity source.  Exact/near-exact title is
-    mandatory, year evidence is honored, and runtime is a veto for ordinary
-    features.  Concert/live-event presentations deliberately relax runtime
-    because theatrical cuts can differ substantially from the recorded-event
-    catalogue entry while retaining the same exact event title.
+    Fast path: deterministic film slugs. Search is used only when those fail.
+    Exact/near-exact title is mandatory, year evidence is honored, and runtime
+    is a veto for ordinary features. Concert/live-event presentations relax
+    runtime because theatrical cuts can differ from catalogue runtime.
     """
-    urls: list[str] = []
-    seen: set[str] = set()
-    for query in _context_title_variants(context):
-        for url in _letterboxd_search_urls(query):
-            if url.casefold() not in seen:
-                seen.add(url.casefold())
-                urls.append(url)
-        if len(urls) >= 8:
-            break
+    cache_key = _letterboxd_context_cache_key(context, reference_year)
+    cached = _LETTERBOXD_RESULT_CACHE.get(cache_key)
+    if cached is not None:
+        meta, rejected = cached
+        return meta if isinstance(meta, LetterboxdPageMetadata) else None, list(rejected)
 
-    ranked: list[tuple[float, LetterboxdPageMetadata]] = []
     rejected: list[str] = []
-    for url in urls[:8]:
+    ranked: list[tuple[float, LetterboxdPageMetadata]] = []
+    seen: set[str] = set()
+
+    def consider(url: str) -> LetterboxdPageMetadata | None:
+        key = url.casefold()
+        if key in seen:
+            return None
+        seen.add(key)
         meta = _letterboxd_page_metadata(url)
         if meta is None:
-            continue
-        title_score = max(
-            (_title_similarity(meta.title, c) for c in _context_title_variants(context)),
-            default=0.0,
-        )
-        if title_score < 0.90:
-            rejected.append(f"{url}:title")
-            continue
-        if context.expected_year is not None and meta.release_year is not None:
-            if abs(meta.release_year - context.expected_year) > 3:
-                rejected.append(f"{url}:year")
-                continue
-        if (
-            context.runtime_min is not None
-            and meta.runtime_min is not None
-            and not context.relax_runtime
-            and abs(meta.runtime_min - context.runtime_min) > 20
-        ):
-            rejected.append(f"{url}:runtime")
-            continue
+            return None
+        score, reason = _score_letterboxd_metadata(meta, context, reference_year)
+        if score is None:
+            rejected.append(f"{url}:{reason}")
+            return None
+        ranked.append((score, meta))
+        return meta
 
-        if context.expected_year is not None:
-            year_score = 0.0 if meta.release_year is None else max(
-                -25.0, 12.0 - 4.0 * abs(meta.release_year - context.expected_year)
-            )
-        else:
-            year_score = 0.0 if meta.release_year is None else max(
-                -30.0, 10.0 - 2.5 * abs(meta.release_year - reference_year)
-            )
-        runtime_bonus = 0.0
-        if context.runtime_min is not None and meta.runtime_min is not None and not context.relax_runtime:
-            runtime_bonus = max(0.0, 10.0 - abs(meta.runtime_min - context.runtime_min) / 2.0)
-        ranked.append((title_score * 100.0 + year_score + runtime_bonus, meta))
+    # Deterministic URLs are much cheaper than a search crawl and solve most
+    # modern event/remake slugs directly.
+    for url in _letterboxd_direct_urls(context):
+        meta = consider(url)
+        if meta is not None and meta.poster_url:
+            # A direct exact identity with artwork is already the desired final
+            # fallback.  Avoid unnecessary search-page/network work.
+            _LETTERBOXD_RESULT_CACHE[cache_key] = (meta, list(rejected))
+            return meta, rejected
+
+    # Search only the first two distinct title variants, stopping after enough
+    # candidates have been seen.  This keeps obscure-title recovery useful but
+    # predictably bounded.
+    if not ranked:
+        for query in _context_title_variants(context)[:2]:
+            for url in _letterboxd_search_urls(query):
+                consider(url)
+                if len(seen) >= LETTERBOXD_SEARCH_RESULT_LIMIT + LETTERBOXD_DIRECT_URL_LIMIT:
+                    break
+            if ranked:
+                break
 
     if not ranked:
+        result = (None, list(rejected))
+        _LETTERBOXD_RESULT_CACHE[cache_key] = result
         return None, rejected
     ranked.sort(key=lambda item: item[0], reverse=True)
-    return ranked[0][1], rejected
+    best = ranked[0][1]
+    _LETTERBOXD_RESULT_CACHE[cache_key] = (best, list(rejected))
+    return best, rejected
 
 
 def _image_via_letterboxd(
@@ -935,7 +1106,6 @@ def _image_via_letterboxd(
     if meta is None or not meta.poster_url:
         return None, None, rejected
     return meta.poster_url, meta.url, rejected
-
 
 def _normalized_match_text(value: str) -> str:
     value = clean_amc_title(value)
@@ -1081,7 +1251,7 @@ def _infobox_image_filename(wikitext: str | None) -> str | None:
     return value
 
 
-def _wikipedia_file_thumbnail(filename: str, width: int = 500) -> str | None:
+def _wikipedia_file_thumbnail(filename: str, width: int = WIKIMEDIA_POSTER_WIDTH) -> str | None:
     filename = clean_amc_title(filename)
     if not filename:
         return None
@@ -1145,7 +1315,7 @@ def _wikipedia_pages_for_titles(titles: list[str]) -> list[dict]:
             redirects=1,
             prop="pageimages|pageprops",
             piprop="thumbnail|original",
-            pithumbsize=500,
+            pithumbsize=WIKIMEDIA_POSTER_WIDTH,
             pilicense="any",
             titles="|".join(batch),
         )
@@ -1168,7 +1338,7 @@ def _wikipedia_search_pages(query: str, limit: int = 10) -> list[dict]:
         gsrlimit=limit,
         prop="pageimages|pageprops",
         piprop="thumbnail|original",
-        pithumbsize=500,
+        pithumbsize=WIKIMEDIA_POSTER_WIDTH,
         pilicense="any",
     )
     pages = _pages_from_query(data)
@@ -1294,11 +1464,19 @@ def _wikidata_qids_for_title(title: str, limit: int = 12) -> list[str]:
     out: list[str] = []
     for hit in hits:
         qid = str(hit.get("id", ""))
-        label = clean_amc_title(str(hit.get("label", "")))
-        if QID_RE.fullmatch(qid) and _title_similarity(label, title) >= 0.82:
+        if not QID_RE.fullmatch(qid):
+            continue
+        names = [clean_amc_title(str(hit.get("label", "")))]
+        match = hit.get("match")
+        if isinstance(match, dict):
+            names.append(clean_amc_title(str(match.get("text", ""))))
+        # wbsearchentities may find an item through an alias whose canonical
+        # English label is different.  Consider the matched alias text as well
+        # instead of discarding the item before its full aliases/claims can be
+        # validated.
+        if max((_title_similarity(name, title) for name in names if name), default=0.0) >= 0.82:
             out.append(qid)
     return out
-
 
 def _wikidata_entities(qids: list[str]) -> list[dict]:
     clean_qids: list[str] = []
@@ -2088,7 +2266,7 @@ def _commons_url_from_entity(entity: dict) -> str | None:
     filename = filenames[0].strip()
     if not filename:
         return None
-    return COMMONS_FILE_REDIRECT + quote(filename.replace(" ", "_"), safe="()_',.-") + "?width=500"
+    return COMMONS_FILE_REDIRECT + quote(filename.replace(" ", "_"), safe="()_',.-") + f"?width={WIKIMEDIA_POSTER_WIDTH}"
 
 
 def _image_from_validated_entity(entity: dict) -> tuple[str | None, str | None, str | None]:
@@ -2136,7 +2314,14 @@ def _image_via_wikidata(
     context: MovieContext,
     imdb_id: str | None,
 ) -> tuple[str | None, str | None, str | None, list[str]]:
-    """Resolve a poster through Wikidata, preferring a verified IMDb bridge."""
+    """Resolve a poster through Wikidata, preferring a verified IMDb bridge.
+
+    Title fallback is progressive rather than broad: try the canonical title
+    first and consult at most a couple of generic metadata variants only if the
+    earlier query cannot produce a validated image.  This improves recall for
+    presentation/anniversary titles without multiplying network work for the
+    normal case.
+    """
     rejected: list[str] = []
 
     if imdb_id:
@@ -2154,21 +2339,27 @@ def _image_via_wikidata(
             if image:
                 return image, page, source, rejected
 
-    # Fall back to title search only after the exact external-ID bridge.  This
-    # keeps sparse new releases working while preventing a merely similar IMDb
-    # search hit from becoming the film's country/language/poster identity.
-    title_entities = _wikidata_entities(
-        _wikidata_qids_for_title(context.canonical_title)
-    )
-    entity, title_rejected = _best_entity_for_context(
-        title_entities, context, None
-    )
-    rejected.extend(title_rejected)
-    if entity is None:
-        return None, None, None, rejected
-    image, page, source = _image_from_validated_entity(entity)
-    return image, page, source, rejected
+    seen_qids: set[str] = set()
+    for title in _context_title_variants(context)[:WIKIDATA_TITLE_VARIANT_LIMIT]:
+        qids = [
+            qid for qid in _wikidata_qids_for_title(title, limit=10)
+            if qid not in seen_qids
+        ]
+        seen_qids.update(qids)
+        if not qids:
+            continue
+        title_entities = _wikidata_entities(qids)
+        entity, title_rejected = _best_entity_for_context(
+            title_entities, context, None
+        )
+        rejected.extend(title_rejected)
+        if entity is None:
+            continue
+        image, page, source = _image_from_validated_entity(entity)
+        if image:
+            return image, page, source, rejected
 
+    return None, None, None, rejected
 
 def _page_evaluation(
     page: dict,
@@ -2599,6 +2790,25 @@ def main() -> int:
             if image:
                 source = "letterboxd-tmdb"
                 img["data-letterboxd-page"] = letterboxd_url or ""
+
+        # If the generated report already contains a validated Wikimedia or
+        # Letterboxd/TMDB poster, do not downgrade it to an RT thumbnail merely
+        # because a later lookup was temporarily inconclusive.  A known
+        # contradiction still wins and is handled below.
+        existing_source = str(img.get("data-poster-source", "")).casefold()
+        if (
+            not image
+            and not _is_placeholder(old_src)
+            and (
+                existing_source.startswith("wikipedia")
+                or existing_source.startswith("wikidata")
+                or existing_source == "letterboxd-tmdb"
+            )
+        ):
+            contradictions = _existing_known_contradiction(img, context)
+            if not contradictions:
+                preserved += 1
+                continue
 
         # RT is a last poster fallback.  Its exact movie page is valuable for
         # identity/scores/language, but poster art can be a low-resolution or
