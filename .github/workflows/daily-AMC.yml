@@ -44,6 +44,13 @@ jobs:
         run: |
           mkdir -p build docs
 
+          # Preserve the previously committed public report before nbconvert
+          # overwrites docs/index.html. Poster finalization may reuse a prior
+          # non-placeholder image only when movie identity still matches.
+          if [ -f docs/index.html ]; then
+            cp docs/index.html build/previous_report.html
+          fi
+
           # Patch a temporary notebook copy. The production notebook stays
           # unchanged and the patch fails loudly if its structure changes.
           python scripts/patch_notebook_titles.py \
@@ -60,6 +67,7 @@ jobs:
 
           while true; do
             log_file="build/papermill-attempt-${attempt}.log"
+            rm -f build/amc_live_metrics.json
             echo "[INFO] Papermill attempt ${attempt}/${max_attempts}"
 
             set +e
@@ -69,6 +77,32 @@ jobs:
               2>&1 | tee "${log_file}"
             pm_status=${PIPESTATUS[0]}
             set -e
+
+            # The notebook writes metrics to a build file rather than stdout so
+            # these diagnostics appear in Actions only and can never leak into
+            # the exported HTML.
+            if [ -f build/amc_live_metrics.json ]; then
+              python - <<'PY'
+              import json
+              from pathlib import Path
+              data = json.loads(Path("build/amc_live_metrics.json").read_text(encoding="utf-8"))
+              print(
+                  "[AMC-METRICS] "
+                  f"live={data.get('combos_live', 0)} "
+                  f"cached={data.get('combos_cached', 0)} "
+                  f"failed={data.get('combos_failed', 0)} "
+                  f"static={data.get('static_requests', 0)} "
+                  f"browser={data.get('browser_launches', 0)} "
+                  f"loads={data.get('live_page_loads', 0)} "
+                  f"spacing={data.get('spacing_seconds', 0)}s "
+                  f"slept={float(data.get('spacing_sleep_seconds', 0.0)):.1f}s "
+                  f"explicit_blocks={data.get('explicit_block_combos', 0)} "
+                  f"circuit_skips={data.get('circuit_cache_skips', 0)} "
+                  f"circuit_open={data.get('circuit_open', False)} "
+                  f"elapsed={float(data.get('elapsed_seconds', 0.0)):.1f}s"
+              )
+              PY
+            fi
 
             if [ "${pm_status}" -eq 0 ]; then
               break
