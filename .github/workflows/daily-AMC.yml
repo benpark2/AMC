@@ -78,14 +78,17 @@ jobs:
             pm_status=${PIPESTATUS[0]}
             set -e
 
-            # The notebook writes metrics to a build file rather than stdout so
-            # these diagnostics appear in Actions only and can never leak into
-            # the exported HTML.
-            if [ -f build/amc_live_metrics.json ]; then
-              python - <<'PY'
-              import json
-              from pathlib import Path
-              data = json.loads(Path("build/amc_live_metrics.json").read_text(encoding="utf-8"))
+          # The notebook writes metrics to a build file rather than stdout so
+          # these diagnostics appear in Actions only and can never leak into
+          # the exported HTML. Keep this heredoc at the YAML block's base
+          # indentation so Bash sees its terminator at column zero.
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          metrics_path = Path("build/amc_live_metrics.json")
+          if metrics_path.is_file():
+              data = json.loads(metrics_path.read_text(encoding="utf-8"))
               print(
                   "[AMC-METRICS] "
                   f"live={data.get('combos_live', 0)} "
@@ -101,8 +104,7 @@ jobs:
                   f"circuit_open={data.get('circuit_open', False)} "
                   f"elapsed={float(data.get('elapsed_seconds', 0.0)):.1f}s"
               )
-              PY
-            fi
+          PY
 
             if [ "${pm_status}" -eq 0 ]; then
               break
