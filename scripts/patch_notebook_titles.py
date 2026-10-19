@@ -677,6 +677,19 @@ with sync_playwright() as p:
 print(json.dumps(payload))
 """
 
+AMC_STATIC_FETCH_REPLACEMENT = r'''def fetch_amc_html(session: requests.Session, url: str, params: dict | None = None) -> Tuple[int, str]:
+    """Return one static AMC response; the scraper owns browser recovery.
+
+    The notebook used to call a browser fallback here and then call the browser
+    again inside ``scrape_amc_showtimes_for_date``. During an AMC-wide block
+    that doubled expensive Playwright work for every theatre/date. Keep this
+    helper deliberately static-only so there is exactly one rendered-browser
+    decision point, with a single HTTP attempt before it.
+    """
+    return fetch_html(session, url, params=params, tries=1)
+'''
+
+
 AMC_BROWSER_FETCH_REPLACEMENT_TEMPLATE = r'''def fetch_html_with_browser(url: str, params: dict | None = None, timeout_ms: int = 30000) -> Tuple[int, str]:
     """
     Fetch an AMC page in Chromium and wait for its client-rendered showtime DOM
@@ -1729,6 +1742,82 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         except Exception as e:
             print(f"[WARN] Could not record AMC previous-report fallback: {e}")
 
+    # Per-Papermill-run live-health circuit breaker. It is intentionally kept
+    # in memory (not persisted between workflow retries) so a later retry still
+    # gets a fresh chance at AMC. The circuit opens quickly only for explicit
+    # anti-bot/interstitial responses; otherwise it requires a broader pattern
+    # of repeated failures across multiple theatres and dates. This prevents an
+    # AMC-wide block from spending many minutes launching identical browsers for
+    # every combination while preserving live retries for isolated failures.
+    _live_health = globals().setdefault("_AMC_LIVE_HEALTH", {
+        "failures": [],
+        "circuit_open": False,
+        "reason": "",
+    })
+
+    def _is_explicit_amc_block(page_html: str) -> bool:
+        low = str(page_html or "").casefold()
+        markers = (
+            "the site requires javascript to be enabled",
+            "queue.amctheatres.com",
+            "global safety net",
+            "enable-javascript.com",
+            "access denied",
+            "verify you are human",
+            "checking your browser before accessing",
+            "attention required",
+            "cf-chl",
+            "captcha",
+            "bot protection",
+        )
+        return any(marker in low for marker in markers)
+
+    def _record_live_success() -> None:
+        _live_health["failures"] = []
+        _live_health["circuit_open"] = False
+        _live_health["reason"] = ""
+
+    def _record_live_failure(reason: str, *, explicit_block: bool = False) -> None:
+        failures = list(_live_health.get("failures") or [])
+        failures.append({
+            "theatre": str(theatre_name),
+            "date": str(wanted),
+            "reason": str(reason or "live failure"),
+            "explicit_block": bool(explicit_block),
+        })
+        # Keep only the current consecutive-failure streak. A successful combo
+        # clears this list via ``_record_live_success``.
+        failures = failures[-8:]
+        _live_health["failures"] = failures
+
+        explicit = [f for f in failures if f.get("explicit_block")]
+        theatres = {f.get("theatre") for f in failures if f.get("theatre")}
+        dates_seen = {f.get("date") for f in failures if f.get("date")}
+
+        if len(explicit) >= 2:
+            _live_health["circuit_open"] = True
+            _live_health["reason"] = "repeated explicit AMC anti-bot/interstitial responses"
+        elif len(failures) >= 4 and len(theatres) >= 2 and len(dates_seen) >= 2:
+            _live_health["circuit_open"] = True
+            _live_health["reason"] = "repeated empty/incomplete AMC responses across theatres and dates"
+
+    # If earlier combinations established a site-wide live failure, skip costly
+    # network/browser work only when this exact combination has a valid recent
+    # previous-report fallback. Otherwise continue live so the circuit breaker
+    # can never turn a missing cache into a hard failure by itself.
+    if _live_health.get("circuit_open"):
+        previous_rows = _previous_report_rows()
+        if previous_rows:
+            _mark_previous_report_fallback()
+            reason = str(_live_health.get("reason") or "AMC live circuit open")
+            _write_combo_status(True, reason=reason, fallback=True)
+            print(
+                f"[WARN] AMC live circuit open for this run ({reason}); "
+                f"using recent same-weekend previous report for {theatre_name} {wanted} "
+                "without another browser launch."
+            )
+            return previous_rows
+
     browser_html = ""
     html_txt = ""
     target = requests.Request("GET", showtimes_url, params={"date": wanted}).prepare().url
@@ -1741,6 +1830,7 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
     # genuine small schedule from a one-off partial response without hard-coded
     # inventory floors.
     _max_rounds = 2
+    _saw_explicit_browser_block = False
     for _round in range(1, _max_rounds + 1):
         try:
             status, round_html = fetch_amc_html(session, showtimes_url, params={"date": wanted})
@@ -1748,7 +1838,8 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
             status, round_html = 0, ""
             print(f"[WARN] AMC static fetch failed for {theatre_name} {wanted} round {_round}: {e}")
 
-        if status == 200 and round_html:
+        _static_blocked = _is_explicit_amc_block(round_html)
+        if status == 200 and round_html and not _static_blocked:
             html_txt = round_html
             merge_html(round_html, rendered=False, source_label=f"static-r{_round}")
         else:
@@ -1770,13 +1861,16 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
                 f"{_before['parsed_showtime_slots']}/{_before['source_showtime_slots']} trusted rendered slot(s), "
                 f"source samples={_before['source_samples']}"
             )
+        _browser_blocked = False
         try:
             status2, round_browser_html = fetch_html_with_browser(
                 showtimes_url,
                 params={"date": wanted},
                 timeout_ms=45000,
             )
-            if status2 == 200 and round_browser_html:
+            _browser_blocked = _is_explicit_amc_block(round_browser_html)
+            _saw_explicit_browser_block = _saw_explicit_browser_block or _browser_blocked
+            if status2 == 200 and round_browser_html and not _browser_blocked:
                 browser_html = round_browser_html
                 merge_html(round_browser_html, rendered=True, source_label=f"browser-r{_round}")
             else:
@@ -1786,6 +1880,17 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
                 )
         except Exception as e:
             print(f"[WARN] AMC browser enrichment failed for {theatre_name} {wanted} round {_round}: {e}")
+
+        # A rendered anti-bot/interstitial page is strong evidence that repeating
+        # the same browser round for this combination will only waste time. If
+        # we already have usable rows from another source we still allow normal
+        # completeness logic; otherwise fall through to the recent-report cache.
+        if _browser_blocked and not _clean_rows():
+            print(
+                f"[WARN] AMC explicit block detected for {theatre_name} {wanted}; "
+                "skipping duplicate browser round for this combination."
+            )
+            break
 
         _save_cache()
         _save_source_evidence()
@@ -1818,6 +1923,7 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
                 else "no usable live rows"
             )
             _write_combo_status(True, reason=reason, fallback=True)
+            _record_live_failure(reason, explicit_block=_saw_explicit_browser_block)
             print(
                 f"[WARN] AMC live scrape had {reason} for {theatre_name} {wanted}; "
                 f"using recent same-weekend previous report ({len(previous_unique)} movie(s))."
@@ -1846,9 +1952,11 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
                     "raw IDs are intentionally non-fatal because AMC may replace/duplicate them across snapshots"
                 )
             _write_combo_status(False, reason=reason)
+            _record_live_failure(reason, explicit_block=_saw_explicit_browser_block)
             print(f"[WARN] AMC source/parser completeness failure for {theatre_name} {wanted}: {reason}")
         else:
             _write_combo_status(False, reason="no usable live rows")
+            _record_live_failure("no usable live rows", explicit_block=_saw_explicit_browser_block)
     else:
         # If the source scanner found no independent evidence but normal parsing
         # did recover rows, do not invent a failure. The two-round strategy above
@@ -1859,6 +1967,7 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
                 "but source-evidence scanner found no independently countable regions"
             )
         _write_combo_status(True)
+        _record_live_success()
 
     return final_rows
 '''
@@ -2325,6 +2434,7 @@ def patch_notebook(notebook: dict) -> dict:
     rt_lookup_loop_replacements = 0
     rt_display_insertions = 0
     rt_desired_replacements = 0
+    amc_static_fetch_replacements = 0
     amc_browser_fetch_replacements = 0
     amc_showtime_parser_replacements = 0
     amc_scrape_function_replacements = 0
@@ -2395,6 +2505,13 @@ def patch_notebook(notebook: dict) -> dict:
             source = source.replace(RT_LOOKUP_LOOP_OLD, RT_LOOKUP_LOOP_NEW, 1)
             rt_lookup_loop_replacements += 1
 
+        source, did_patch_amc_static = _replace_function(
+            source,
+            "fetch_amc_html",
+            AMC_STATIC_FETCH_REPLACEMENT,
+        )
+        amc_static_fetch_replacements += int(did_patch_amc_static)
+
         source, did_patch_amc_browser = _replace_function(
             source,
             "fetch_html_with_browser",
@@ -2457,6 +2574,7 @@ def patch_notebook(notebook: dict) -> dict:
         "RT runtime-aware lookup loop": rt_lookup_loop_replacements,
         "RT display column insertion": rt_display_insertions,
         "RT desired-column replacement": rt_desired_replacements,
+        "AMC single-pass static fetch replacement": amc_static_fetch_replacements,
         "AMC stabilized browser fetch replacement": amc_browser_fetch_replacements,
         "AMC escaped showtime parser replacement": amc_showtime_parser_replacements,
         "AMC browser-enriched scrape replacement": amc_scrape_function_replacements,
@@ -2501,7 +2619,7 @@ def main() -> int:
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
         "non-movie filtering, original-film metadata lookup, stabilized AMC browser fetch, "
-        "AMC A-List metadata + clean public logs v33 -> "
+        "AMC A-List metadata + clean public logs v35 -> "
         f"{args.output_notebook}"
     )
     return 0

@@ -463,6 +463,9 @@ desired = [
         self.assertIn('_a_list_excluded_for_showtime', source)
         self.assertIn('_cache_dir = _AMCPath("build/amc_combo_cache")', source)
         self.assertIn('_max_rounds = 2', source)
+        self.assertIn('return fetch_html(session, url, params=params, tries=1)', source)
+        self.assertIn('_AMC_LIVE_HEALTH', source)
+        self.assertIn('without another browser launch', source)
         self.assertIn('_inspect_source_evidence', source)
         self.assertIn('_coverage_state', source)
         self.assertIn('_clock_evidence_key', source)
@@ -836,6 +839,89 @@ desired = [
             [(r["showtime_id"], r["movie_title"], r["show_time"]) for r in rows],
             [("444", "Hanuman Ansh", "7:15 pm")],
         )
+
+    def test_amc_static_helper_does_not_launch_duplicate_browser_fallback(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+
+        calls = []
+        def static_fetch(session, url, params=None, tries=2):
+            calls.append((url, params, tries))
+            return 403, "access denied"
+
+        ns["fetch_html"] = static_fetch
+        status, html = ns["fetch_amc_html"](
+            None,
+            "https://example.invalid/showtimes",
+            params={"date": "2026-09-26"},
+        )
+        self.assertEqual((status, html), (403, "access denied"))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][2], 1)
+
+    def test_explicit_amc_block_opens_run_circuit_and_uses_exact_cache(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+
+        network = {"static": 0, "browser": 0}
+        def static(session, url, params=None):
+            network["static"] += 1
+            return 200, "<html><body>Access Denied</body></html>"
+        def browser(url, params=None, timeout_ms=30000):
+            network["browser"] += 1
+            return 200, "<html><body>Verify you are human</body></html>"
+        ns["fetch_amc_html"] = static
+        ns["fetch_html_with_browser"] = browser
+
+        theatres = ["AMC Alpha 10", "AMC Beta 10", "AMC Gamma 10"]
+        wanted = "2026-09-26"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docs").mkdir()
+            (root / "docs" / "last_run_utc.txt").write_text(
+                datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ") + "\n",
+                encoding="utf-8",
+            )
+            cached_rows = []
+            for idx, theatre in enumerate(theatres, start=1):
+                cached_rows.append({
+                    "movie_id": idx,
+                    "movie": f"Cached Film {idx}",
+                    "theater": theatre,
+                    "format": "",
+                    "date": wanted,
+                    "start": "7:00 pm",
+                    "runtime_min": 100 + idx,
+                    "a_list_excluded": False,
+                })
+            report_html = (
+                '<html><body><script id="showtimes-data" type="application/json">'
+                + json.dumps({"movies": [], "showtimes": cached_rows})
+                + '</script></body></html>'
+            )
+            (root / "docs" / "index.html").write_text(report_html, encoding="utf-8")
+
+            old_cwd = os.getcwd()
+            os.chdir(root)
+            try:
+                first = scraper(None, theatres[0], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                second = scraper(None, theatres[1], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                before_third = dict(network)
+                third = scraper(None, theatres[2], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertEqual(first[0]["movie_title"], "Cached Film 1")
+        self.assertEqual(second[0]["movie_title"], "Cached Film 2")
+        self.assertEqual(third[0]["movie_title"], "Cached Film 3")
+        self.assertEqual(before_third, network)
+        self.assertEqual(network["static"], 2)
+        self.assertEqual(network["browser"], 2)
+        self.assertTrue(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
 
     def test_non_200_static_still_uses_browser(self):
         source = self._patched_source()
