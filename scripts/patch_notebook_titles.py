@@ -1891,13 +1891,28 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         failures = failures[-8:]
         _live_health["failures"] = failures
 
-        explicit = [f for f in failures if f.get("explicit_block")]
         theatres = {f.get("theatre") for f in failures if f.get("theatre")}
         dates_seen = {f.get("date") for f in failures if f.get("date")}
 
-        if len(explicit) >= 2:
+        # Do not abandon the live run after only two blocked combinations. AMC
+        # can transiently block one or two navigations and then recover, as seen
+        # in otherwise-successful runs. Require three *consecutive* explicit
+        # anti-bot/interstitial failures from three distinct theatre/date
+        # combinations before opening the fast cache circuit. Any live success
+        # clears ``failures`` above, so the explicit streak starts over.
+        recent_three = failures[-3:]
+        recent_three_combos = {
+            (f.get("theatre"), f.get("date"))
+            for f in recent_three
+            if f.get("theatre") and f.get("date")
+        }
+        if (
+            len(recent_three) == 3
+            and all(f.get("explicit_block") for f in recent_three)
+            and len(recent_three_combos) == 3
+        ):
             _live_health["circuit_open"] = True
-            _live_health["reason"] = "repeated explicit AMC anti-bot/interstitial responses"
+            _live_health["reason"] = "three consecutive explicit AMC anti-bot/interstitial responses"
         elif len(failures) >= 4 and len(theatres) >= 2 and len(dates_seen) >= 2:
             _live_health["circuit_open"] = True
             _live_health["reason"] = "repeated empty/incomplete AMC responses across theatres and dates"
@@ -2725,7 +2740,7 @@ def main() -> int:
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
         "non-movie filtering, original-film metadata lookup, stabilized AMC browser fetch, "
-        "AMC A-List metadata + clean public logs v38 -> "
+        "AMC A-List metadata + clean public logs v39 -> "
         f"{args.output_notebook}"
     )
     return 0

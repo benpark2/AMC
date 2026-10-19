@@ -954,7 +954,7 @@ desired = [
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][2], 1)
 
-    def test_explicit_amc_block_opens_run_circuit_and_uses_exact_cache(self):
+    def test_explicit_amc_block_requires_three_consecutive_combos_before_cache_circuit(self):
         source = self._patched_source()
         ns = {}
         exec(compile(source, "<patched-notebook-test>", "exec"), ns)
@@ -970,7 +970,7 @@ desired = [
         ns["fetch_amc_html"] = static
         ns["fetch_html_with_browser"] = browser
 
-        theatres = ["AMC Alpha 10", "AMC Beta 10", "AMC Gamma 10"]
+        theatres = ["AMC Alpha 10", "AMC Beta 10", "AMC Gamma 10", "AMC Delta 10"]
         wanted = "2026-09-26"
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1002,20 +1002,119 @@ desired = [
             old_cwd = os.getcwd()
             os.chdir(root)
             try:
-                first = scraper(None, theatres[0], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
-                second = scraper(None, theatres[1], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
-                before_third = dict(network)
-                third = scraper(None, theatres[2], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                with patch.dict(os.environ, {"AMC_LIVE_SPACING_SECONDS": "0"}, clear=False):
+                    first = scraper(None, theatres[0], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                    self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
+                    second = scraper(None, theatres[1], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                    self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
+                    third = scraper(None, theatres[2], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                    self.assertTrue(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
+                    before_fourth = dict(network)
+                    fourth = scraper(None, theatres[3], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
             finally:
                 os.chdir(old_cwd)
 
         self.assertEqual(first[0]["movie_title"], "Cached Film 1")
         self.assertEqual(second[0]["movie_title"], "Cached Film 2")
         self.assertEqual(third[0]["movie_title"], "Cached Film 3")
-        self.assertEqual(before_third, network)
-        self.assertEqual(network["static"], 2)
-        self.assertEqual(network["browser"], 2)
+        self.assertEqual(fourth[0]["movie_title"], "Cached Film 4")
+        self.assertEqual(before_fourth, network)
+        self.assertEqual(network["static"], 3)
+        self.assertEqual(network["browser"], 3)
+        self.assertEqual(ns["_AMC_LIVE_METRICS"]["explicit_block_combos"], 3)
+        self.assertEqual(ns["_AMC_LIVE_METRICS"]["circuit_cache_skips"], 1)
         self.assertTrue(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
+        self.assertIn("three consecutive explicit", ns["_AMC_LIVE_HEALTH"]["reason"])
+
+    def test_amc_live_success_resets_explicit_block_streak(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+
+        rendered = "".join(
+            f'<div aria-label="Showtimes for Movie {i}"><a href="/showtimes/{100+i}">8:{i:02d} PM</a></div>'
+            for i in range(1, 7)
+        )
+        state = {"blocked": True}
+        network = {"static": 0, "browser": 0}
+
+        def static(session, url, params=None):
+            network["static"] += 1
+            if state["blocked"]:
+                return 200, "<html><body>Access Denied</body></html>"
+            return 200, rendered
+
+        def browser(url, params=None, timeout_ms=30000):
+            network["browser"] += 1
+            if state["blocked"]:
+                return 200, "<html><body>Verify you are human</body></html>"
+            return 200, rendered
+
+        ns["fetch_amc_html"] = static
+        ns["fetch_html_with_browser"] = browser
+        theatres = [f"AMC Reset {i}" for i in range(1, 8)]
+        wanted = "2026-09-26"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docs").mkdir()
+            (root / "docs" / "last_run_utc.txt").write_text(
+                datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ") + "\n",
+                encoding="utf-8",
+            )
+            cached_rows = [
+                {
+                    "movie_id": idx,
+                    "movie": f"Cached Reset Film {idx}",
+                    "theater": theatre,
+                    "format": "",
+                    "date": wanted,
+                    "start": "7:00 pm",
+                    "runtime_min": 100,
+                    "a_list_excluded": False,
+                }
+                for idx, theatre in enumerate(theatres, start=1)
+            ]
+            report_html = (
+                '<html><body><script id="showtimes-data" type="application/json">'
+                + json.dumps({"movies": [], "showtimes": cached_rows})
+                + '</script></body></html>'
+            )
+            (root / "docs" / "index.html").write_text(report_html, encoding="utf-8")
+
+            old_cwd = os.getcwd()
+            os.chdir(root)
+            try:
+                with patch.dict(os.environ, {"AMC_LIVE_SPACING_SECONDS": "0"}, clear=False):
+                    scraper(None, theatres[0], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                    scraper(None, theatres[1], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                    self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
+                    self.assertEqual(len(ns["_AMC_LIVE_HEALTH"]["failures"]), 2)
+
+                    # A real live success must clear the two-block streak.
+                    state["blocked"] = False
+                    live_rows = scraper(None, theatres[2], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                    self.assertTrue(live_rows)
+                    self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
+                    self.assertEqual(ns["_AMC_LIVE_HEALTH"]["failures"], [])
+
+                    # Two more blocks after the success still must not open it.
+                    state["blocked"] = True
+                    scraper(None, theatres[3], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                    scraper(None, theatres[4], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                    self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
+
+                    # The third consecutive post-success block opens the circuit;
+                    # the next exact cached combination must skip all network work.
+                    scraper(None, theatres[5], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                    self.assertTrue(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
+                    before_skip = dict(network)
+                    skipped = scraper(None, theatres[6], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                    self.assertEqual(before_skip, network)
+                    self.assertEqual(skipped[0]["movie_title"], "Cached Reset Film 7")
+            finally:
+                os.chdir(old_cwd)
 
     def test_amc_live_loads_are_spaced_and_metrics_written_outside_notebook(self):
         source = self._patched_source()
