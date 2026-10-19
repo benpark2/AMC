@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import gzip
 from datetime import datetime, timedelta
 import json
 import os
@@ -597,7 +598,11 @@ desired = [
             None, "Example Feature 10th Anniversary Remastered", {}, debug=False
         )
         self.assertTrue(calls)
-        self.assertTrue(calls[0].endswith("/m/example_feature_2016"), calls[0])
+        # Provider search is intentionally first for speed; if it misses, the
+        # anniversary-derived original release year is the first direct page.
+        direct = [call for call in calls if "/m/" in call]
+        self.assertTrue(direct)
+        self.assertTrue(direct[0].endswith("/m/example_feature_2016"), direct[0])
 
     def test_rt_valid_new_page_without_scores_does_not_fall_through_to_old_title(self):
         source = self._patched_source()
@@ -630,6 +635,48 @@ desired = [
         self.assertIsNone(crit)
         self.assertTrue(url.endswith(f"/m/example_feature_{target_year}"), url)
         self.assertNotIn("/m/example_feature", calls[calls.index(url) + 1 :])
+
+    def test_rt_recent_blank_alias_can_upgrade_to_same_release_scored_canonical(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        current_year = ns["date"].today().year
+        recent_year = current_year - 1
+        calls = []
+
+        def fake_fetch(session, url, params=None, tries=2):
+            calls.append(url)
+            if "/napi/search/" in url:
+                return 200, json.dumps({
+                    "movies": [
+                        {"name": "Example Feature", "year": recent_year, "url": f"/m/example_feature_{recent_year}"}
+                    ]
+                })
+            if url.endswith(f"/m/example_feature_{recent_year}"):
+                return 200, (
+                    f"<html><h1>Example Feature</h1>"
+                    f"<div>Release Date (Theaters)</div><div>Oct 1, {recent_year}</div>"
+                    "<div>Runtime</div><div>1h 46m</div>"
+                    "<div>Tomatometer 2 Reviews Popcornmeter Fewer than 50 Ratings</div>"
+                    "</html>"
+                )
+            if url.endswith("/m/example_feature"):
+                return 200, (
+                    f"<html><h1>Example Feature</h1>"
+                    f"<div>Release Date (Theaters)</div><div>Oct 1, {recent_year}</div>"
+                    "<div>Runtime</div><div>1h 46m</div>"
+                    '<score-board tomatometerscore="71" audiencescore="82"></score-board>'
+                    "</html>"
+                )
+            return 404, ""
+
+        ns["fetch_html"] = fake_fetch
+        aud, crit, url = ns["rt_get_scores"](
+            None, "Example Feature", {}, debug=False, runtime_min=106
+        )
+        self.assertEqual((aud, crit), (82, 71))
+        self.assertTrue(url.endswith("/m/example_feature"), url)
+        self.assertTrue(any(call.endswith(f"/m/example_feature_{recent_year}") for call in calls))
 
     def test_rt_reused_title_rejects_old_runtime_and_prefers_recent_identity(self):
         source = self._patched_source()
@@ -1967,6 +2014,7 @@ class PosterValidationTests(unittest.TestCase):
             poster_url="https://a.ltrbxd.com/old.jpg",
             release_year=2007,
             runtime_min=63,
+            imdb_id=None,
             url="https://letterboxd.com/film/example-old/",
         )
         new = posters.LetterboxdPageMetadata(
@@ -1974,6 +2022,7 @@ class PosterValidationTests(unittest.TestCase):
             poster_url="https://a.ltrbxd.com/new.jpg",
             release_year=2025,
             runtime_min=121,
+            imdb_id=None,
             url="https://letterboxd.com/film/example-new/",
         )
         urls = [old.url, new.url]
@@ -1987,6 +2036,89 @@ class PosterValidationTests(unittest.TestCase):
         self.assertEqual(image, new.poster_url)
         self.assertEqual(page, new.url)
         self.assertTrue(any("runtime" in item for item in rejected))
+
+    def test_rt_default_poster_asset_is_rejected(self):
+        html = (
+            '<html><img alt="Poster for Example" '
+            'src="https://resizing.flixster.com/5d84d010--rt-poster-default.gif"></html>'
+        )
+        soup = BeautifulSoup(html, "html.parser")
+        self.assertIsNone(posters._rt_poster_url(soup))
+        self.assertTrue(
+            posters._is_placeholder(
+                "Weekend Movies_files/5d84d010--rt-poster-default_test.gif"
+            )
+        )
+
+    def test_music_event_letterboxd_identity_relaxes_runtime_cut_difference(self):
+        row = BeautifulSoup(
+            '<tr><td>1</td><td><div class="movie-cell-title">Example World Tour</div></td>'
+            '<td></td><td></td><td></td><td>1h 37m</td></tr>',
+            "html.parser",
+        ).find("tr")
+        ctx = posters._row_movie_context(row, "Example World Tour", 2026)
+        self.assertTrue(ctx.relax_runtime)
+        meta = posters.LetterboxdPageMetadata(
+            title="Example World Tour",
+            poster_url="https://a.ltrbxd.com/example.jpg",
+            release_year=2025,
+            runtime_min=160,
+            imdb_id="tt12345678",
+            url="https://letterboxd.com/film/example-world-tour/",
+        )
+        with patch.object(posters, "_letterboxd_search_urls", return_value=[meta.url]), \
+             patch.object(posters, "_letterboxd_page_metadata", return_value=meta):
+            chosen, rejected = posters._best_letterboxd_metadata(ctx, 2026)
+        self.assertIsNotNone(chosen)
+        self.assertEqual(chosen.url, meta.url)
+        self.assertFalse(any("runtime" in item for item in rejected))
+
+    def test_missing_imdb_rating_backfill_uses_official_dataset_only(self):
+        html = BeautifulSoup(
+            '<table class="dataframe"><thead><tr><th>#</th><th>Movie</th><th>RT_C/A</th>'
+            '<th>IMDb</th><th>Showtimes</th><th>Runtime</th></tr></thead><tbody>'
+            '<tr data-movie-id="1"><td>1</td><td><div class="movie-cell-title">Example</div>'
+            '<div class="movie-poster-wrap"><a><img class="movie-poster" src="x.jpg"></a></div></td>'
+            '<td></td><td></td><td>AMC Example</td><td>1h 40m</td></tr>'
+            '</tbody></table>',
+            "html.parser",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            ratings = Path(tmp) / "title.ratings.tsv.gz"
+            with gzip.open(ratings, "wt", encoding="utf-8", newline="") as handle:
+                handle.write("tconst\taverageRating\tnumVotes\n")
+                handle.write("tt12345678\t7.4\t123\n")
+            with patch.object(posters, "IMDB_RATINGS_GZ", ratings), \
+                 patch.object(posters, "_imdb_id_for_context", return_value="tt12345678"), \
+                 patch.object(posters, "_rt_metadata_for_context", return_value=None):
+                changed = posters._fill_missing_imdb_scores(html, 2026)
+        self.assertEqual(changed, 1)
+        cell = html.find("tbody").find("tr").find_all("td", recursive=False)[3]
+        self.assertEqual(cell.get_text(strip=True), "7.4")
+        self.assertIn("tt12345678", cell.get("data-source-url", ""))
+
+    def test_imdb_backfill_leaves_score_blank_when_dataset_has_no_rating(self):
+        html = BeautifulSoup(
+            '<table class="dataframe"><thead><tr><th>#</th><th>Movie</th><th>RT_C/A</th>'
+            '<th>IMDb</th><th>Showtimes</th><th>Runtime</th></tr></thead><tbody>'
+            '<tr data-movie-id="1"><td>1</td><td><div class="movie-cell-title">Example</div>'
+            '<div class="movie-poster-wrap"><a><img class="movie-poster" src="x.jpg"></a></div></td>'
+            '<td></td><td></td><td>AMC Example</td><td>1h 40m</td></tr>'
+            '</tbody></table>',
+            "html.parser",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            ratings = Path(tmp) / "title.ratings.tsv.gz"
+            with gzip.open(ratings, "wt", encoding="utf-8", newline="") as handle:
+                handle.write("tconst\taverageRating\tnumVotes\n")
+            with patch.object(posters, "IMDB_RATINGS_GZ", ratings), \
+                 patch.object(posters, "_imdb_id_for_context", return_value="tt12345678"), \
+                 patch.object(posters, "_rt_metadata_for_context", return_value=None):
+                changed = posters._fill_missing_imdb_scores(html, 2026)
+        self.assertEqual(changed, 0)
+        cell = html.find("tbody").find("tr").find_all("td", recursive=False)[3]
+        self.assertEqual(cell.get_text(strip=True), "")
+        self.assertIn("tt12345678", cell.get("data-source-url", ""))
 
     def test_nonfilm_is_vetoed(self):
         entity = self.entity("Q1", "Example")

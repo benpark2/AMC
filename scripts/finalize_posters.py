@@ -6,9 +6,9 @@ The resolver uses an already-validated Rotten Tomatoes movie identity plus
 Wikimedia/Wikidata for primary poster resolution. When those sources cannot
 produce a usable poster for a new/limited/event title, Letterboxd's TMDB-backed
 film catalogue is used as a final, independently validated poster fallback.
-The finalizer never scrapes IMDb/Fandango for discovery. IMDb IDs already
-present in the report are used only as optional identifiers when querying
-Wikidata.
+The finalizer never uses IMDb/Fandango for title discovery. Exact IMDb IDs
+resolved from validated metadata may be checked for a current published rating
+when the official daily ratings dataset has not caught up yet.
 
 Poster policy
 -------------
@@ -48,6 +48,8 @@ alone is not enough for an identity-focus flag. Missing metadata defaults to
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import csv
+import gzip
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 import json
@@ -105,6 +107,7 @@ LETTERBOXD_FILM_RE = re.compile(
     re.IGNORECASE,
 )
 LETTERBOXD_POSTER_HOSTS = ("ltrbxd.com", "image.tmdb.org")
+IMDB_RATINGS_GZ = Path("build/imdb_datasets/title.ratings.tsv.gz")
 
 # Audience-focus labels are intentionally descriptive and evidence based.  The
 # first four describe an explicit thematic/marketing focus.  The remaining
@@ -474,8 +477,39 @@ def _rt_labeled_value(strings: list[str], label: str) -> str | None:
     return None
 
 
+def _usable_rt_poster_url(value: str | None) -> str | None:
+    """Reject RT/Fandango placeholder art and other non-poster assets.
+
+    Rotten Tomatoes serves a generic ``rt-poster-default`` GIF for titles whose
+    real key art is not available.  Treating that asset as a movie poster caused
+    good Wikimedia posters to be overwritten and blocked later fallbacks.  This
+    filter is provider-shape based only; it contains no title/year exceptions.
+    """
+    value = (value or "").strip()
+    if not value.startswith(("https://", "http://")):
+        return None
+    low = value.casefold()
+    bad_tokens = (
+        "rt-poster-default",
+        "poster-default",
+        "default-poster",
+        "placeholder",
+        "images-not-found",
+        "image-not-found",
+        "no-poster",
+        "no_poster",
+    )
+    if any(token in low for token in bad_tokens):
+        return None
+    # RT's known default art is a GIF.  Real theatrical key art from the
+    # provider CDNs is JPEG/PNG/WebP, so a GIF is intentionally not accepted.
+    if re.search(r"\.gif(?:[?#]|$)", low):
+        return None
+    return value
+
+
 def _rt_poster_url(soup: BeautifulSoup) -> str | None:
-    """Return the poster image only; avoid arbitrary RT photos/social cards."""
+    """Return usable RT key art only; avoid defaults/photos/social cards."""
     for tag in soup.find_all(attrs={"alt": re.compile(r"^\s*Poster for\b", re.I)}):
         # Prefer the largest explicit srcset candidate when available.
         srcset = str(tag.get("srcset", "") or tag.get("data-srcset", ""))
@@ -494,11 +528,16 @@ def _rt_poster_url(soup: BeautifulSoup) -> str | None:
                 if url.startswith(("https://", "http://")):
                     choices.append((width, url))
             if choices:
-                return max(choices, key=lambda item: item[0])[1]
+                for _, candidate in sorted(choices, key=lambda item: item[0], reverse=True):
+                    usable = _usable_rt_poster_url(candidate)
+                    if usable:
+                        return usable
         for attr in ("src", "data-src", "data-lazy-src"):
             value = tag.get(attr)
             if isinstance(value, str) and value.startswith(("https://", "http://")):
-                return value
+                usable = _usable_rt_poster_url(value)
+                if usable:
+                    return usable
 
     # Exact RT movie pages commonly expose the key art through OpenGraph even
     # when the responsive poster component is hydrated client-side.  Restrict
@@ -510,7 +549,7 @@ def _rt_poster_url(soup: BeautifulSoup) -> str | None:
     if value.startswith(("https://", "http://")) and any(
         host in low for host in ("flixster.com", "fandango.com")
     ):
-        return value
+        return _usable_rt_poster_url(value)
     return None
 
 
@@ -638,6 +677,7 @@ class LetterboxdPageMetadata:
     poster_url: str | None
     release_year: int | None
     runtime_min: int | None
+    imdb_id: str | None
     url: str
 
 
@@ -709,10 +749,6 @@ def _letterboxd_poster_url(soup: BeautifulSoup) -> str | None:
         ).casefold()
         if "poster" not in context and "film-poster" not in context:
             continue
-        for attr in ("src", "data-src"):
-            value = accepted(str(img.get(attr, "")))
-            if value:
-                return value
         srcset = str(img.get("srcset", "") or img.get("data-srcset", ""))
         if srcset:
             choices = []
@@ -729,6 +765,10 @@ def _letterboxd_poster_url(soup: BeautifulSoup) -> str | None:
                 choices.append((width, value))
             if choices:
                 return max(choices, key=lambda item: item[0])[1]
+        for attr in ("src", "data-src"):
+            value = accepted(str(img.get(attr, "")))
+            if value:
+                return value
 
     for attrs in (
         {"property": "og:image"},
@@ -767,11 +807,20 @@ def _letterboxd_page_metadata(url: str) -> LetterboxdPageMetadata | None:
     match = re.search(r"\b(\d{2,3})\s*(?:mins?|minutes)\b", text, re.I)
     if match:
         runtime = int(match.group(1))
+
+    imdb_id = None
+    imdb_link = soup.find("a", href=re.compile(r"imdb\.com/title/tt\d+", re.I))
+    if imdb_link is not None:
+        match = IMDB_ID_RE.search(str(imdb_link.get("href", "")))
+        if match:
+            imdb_id = match.group(1).lower()
+
     return LetterboxdPageMetadata(
         title=title,
         poster_url=_letterboxd_poster_url(soup),
         release_year=year,
         runtime_min=runtime,
+        imdb_id=imdb_id,
         url=url,
     )
 
@@ -810,15 +859,17 @@ def _letterboxd_search_urls(query: str) -> list[str]:
     return out
 
 
-def _image_via_letterboxd(
+def _best_letterboxd_metadata(
     context: MovieContext,
     reference_year: int,
-) -> tuple[str | None, str | None, list[str]]:
-    """Final poster fallback using Letterboxd's TMDB-backed film catalogue.
+) -> tuple[LetterboxdPageMetadata | None, list[str]]:
+    """Return the best independently validated Letterboxd/TMDB identity.
 
-    This runs only after the exact RT page and Wikimedia paths fail. Search
-    results are never trusted directly: each film page must independently match
-    the title and any available year/runtime evidence before its poster is used.
+    The catalogue is a last-resort identity source.  Exact/near-exact title is
+    mandatory, year evidence is honored, and runtime is a veto for ordinary
+    features.  Concert/live-event presentations deliberately relax runtime
+    because theatrical cuts can differ substantially from the recorded-event
+    catalogue entry while retaining the same exact event title.
     """
     urls: list[str] = []
     seen: set[str] = set()
@@ -830,11 +881,11 @@ def _image_via_letterboxd(
         if len(urls) >= 8:
             break
 
-    ranked: list[tuple[float, str, str]] = []
+    ranked: list[tuple[float, LetterboxdPageMetadata]] = []
     rejected: list[str] = []
     for url in urls[:8]:
         meta = _letterboxd_page_metadata(url)
-        if meta is None or not meta.poster_url:
+        if meta is None:
             continue
         title_score = max(
             (_title_similarity(meta.title, c) for c in _context_title_variants(context)),
@@ -861,21 +912,29 @@ def _image_via_letterboxd(
                 -25.0, 12.0 - 4.0 * abs(meta.release_year - context.expected_year)
             )
         else:
-            # Current theatrical inventory is most likely to refer to the
-            # recent same-title entry; runtime remains a stronger veto above.
             year_score = 0.0 if meta.release_year is None else max(
                 -30.0, 10.0 - 2.5 * abs(meta.release_year - reference_year)
             )
         runtime_bonus = 0.0
-        if context.runtime_min is not None and meta.runtime_min is not None:
+        if context.runtime_min is not None and meta.runtime_min is not None and not context.relax_runtime:
             runtime_bonus = max(0.0, 10.0 - abs(meta.runtime_min - context.runtime_min) / 2.0)
-        ranked.append((title_score * 100.0 + year_score + runtime_bonus, meta.poster_url, url))
+        ranked.append((title_score * 100.0 + year_score + runtime_bonus, meta))
 
     if not ranked:
-        return None, None, rejected
+        return None, rejected
     ranked.sort(key=lambda item: item[0], reverse=True)
-    _, poster, url = ranked[0]
-    return poster, url, rejected
+    return ranked[0][1], rejected
+
+
+def _image_via_letterboxd(
+    context: MovieContext,
+    reference_year: int,
+) -> tuple[str | None, str | None, list[str]]:
+    """Final poster fallback using Letterboxd's TMDB-backed catalogue."""
+    meta, rejected = _best_letterboxd_metadata(context, reference_year)
+    if meta is None or not meta.poster_url:
+        return None, None, rejected
+    return meta.poster_url, meta.url, rejected
 
 
 def _normalized_match_text(value: str) -> str:
@@ -1181,6 +1240,7 @@ def _row_movie_context(row, display_title: str, reference_year: int) -> MovieCon
             display_title,
             flags=re.IGNORECASE,
         )
+        or _matches_any_pattern(display_title.casefold(), MUSIC_EVENT_TITLE_PATTERNS)
     )
 
     return MovieContext(
@@ -2245,7 +2305,18 @@ def resolve_poster(
 
 
 def _is_placeholder(src: str | None) -> bool:
-    return not src or PLACEHOLDER_TOKEN in src.casefold()
+    if not src:
+        return True
+    low = src.casefold()
+    return (
+        PLACEHOLDER_TOKEN in low
+        or "rt-poster-default" in low
+        or "poster-default" in low
+        or "default-poster" in low
+        or "image-not-found" in low
+        or "no-poster" in low
+        or "no_poster" in low
+    )
 
 
 def _needs_validation(img, context: MovieContext) -> bool:
@@ -2274,6 +2345,183 @@ def _existing_known_contradiction(img, context: MovieContext) -> list[str]:
             return reasons
         return []
     return []
+
+
+def _imdb_rating_values(wanted_ids: set[str]) -> dict[str, float]:
+    """Read ratings for a small set of IMDb IDs from the dataset already fetched.
+
+    Papermill downloads the official IMDb ``title.ratings.tsv.gz`` once per run.
+    Reusing it here avoids another broad network lookup and can fill ratings for
+    identities discovered later via Wikidata/Letterboxd.  No score is invented:
+    IDs absent from the official dataset simply remain blank.
+    """
+    wanted = {x.lower() for x in wanted_ids if re.fullmatch(r"tt\d{5,12}", x or "", re.I)}
+    if not wanted or not IMDB_RATINGS_GZ.exists():
+        return {}
+    out: dict[str, float] = {}
+    try:
+        with gzip.open(IMDB_RATINGS_GZ, "rt", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            for row in reader:
+                tconst = str(row.get("tconst", "")).lower()
+                if tconst not in wanted:
+                    continue
+                try:
+                    value = float(row.get("averageRating", ""))
+                except (TypeError, ValueError):
+                    continue
+                if 0.0 <= value <= 10.0:
+                    out[tconst] = value
+                    if len(out) == len(wanted):
+                        break
+    except (OSError, EOFError, gzip.BadGzipFile):
+        return {}
+    return out
+
+
+def _imdb_live_rating(imdb_id: str) -> float | None:
+    """Read a current rating from an exact IMDb title ID, best-effort only."""
+    if not re.fullmatch(r"tt\d{5,12}", imdb_id or "", re.I):
+        return None
+    html_text = _fetch_text(
+        f"https://www.imdb.com/title/{imdb_id.lower()}/", timeout=5, attempts=1
+    )
+    if not html_text:
+        return None
+    soup = BeautifulSoup(html_text, "html.parser")
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = script.string or script.get_text(" ", strip=True)
+        try:
+            data = json.loads(raw or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        objects = data if isinstance(data, list) else [data]
+        for obj in objects:
+            if not isinstance(obj, dict):
+                continue
+            aggregate = obj.get("aggregateRating")
+            if not isinstance(aggregate, dict):
+                continue
+            try:
+                value = float(aggregate.get("ratingValue"))
+            except (TypeError, ValueError):
+                continue
+            if 0.0 <= value <= 10.0:
+                return value
+    text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
+    match = re.search(r"\bIMDb\s+RATING\s+(\d(?:\.\d)?)/10\b", text, re.I)
+    if match:
+        value = float(match.group(1))
+        if 0.0 <= value <= 10.0:
+            return value
+    return None
+
+
+def _imdb_id_for_context(
+    row,
+    context: MovieContext,
+    *,
+    wikipedia_page: str | None,
+    reference_year: int,
+) -> str | None:
+    """Resolve an IMDb ID from already-validated generic metadata identities."""
+    existing = _extract_imdb_id(row)
+    if existing:
+        return existing.lower()
+
+    entity = _audience_entity_for_context(
+        context, imdb_id=None, wikipedia_page=wikipedia_page
+    )
+    if entity is not None:
+        values = [
+            value.lower()
+            for value in _claim_string_values(entity, "P345")
+            if re.fullmatch(r"tt\d{5,12}", value or "", re.I)
+        ]
+        if values:
+            return values[0]
+
+    # Sparse/new event titles may not yet have a useful Wikidata item.  The
+    # same independently validated Letterboxd/TMDB identity used for poster
+    # fallback can expose its linked IMDb ID without guessing a title alias.
+    meta, _ = _best_letterboxd_metadata(context, reference_year)
+    if meta is not None and meta.imdb_id:
+        return meta.imdb_id.lower()
+    return None
+
+
+def _fill_missing_imdb_scores(soup: BeautifulSoup, reference_year: int) -> int:
+    """Backfill missing IMDb URLs/ratings without replacing existing values."""
+    table = soup.find("table", class_=re.compile(r"\bdataframe\b")) or soup.find("table")
+    if table is None:
+        return 0
+    header_row = table.find("thead")
+    header_row = header_row.find("tr") if header_row else None
+    tbody = table.find("tbody")
+    if header_row is None or tbody is None:
+        return 0
+    headers = header_row.find_all(["th", "td"], recursive=False)
+    imdb_idx = next(
+        (i for i, cell in enumerate(headers) if clean_amc_title(cell.get_text(" ", strip=True)).casefold() == "imdb"),
+        None,
+    )
+    if imdb_idx is None:
+        return 0
+
+    pending: list[tuple[object, str]] = []
+    for row in tbody.find_all("tr", recursive=False):
+        cells = row.find_all(["th", "td"], recursive=False)
+        if imdb_idx >= len(cells):
+            continue
+        cell = cells[imdb_idx]
+        if clean_amc_title(cell.get_text(" ", strip=True)):
+            continue
+        title_el = row.select_one(".movie-cell-title")
+        if title_el is None:
+            continue
+        display_title = clean_amc_title(title_el.get_text(" ", strip=True))
+        if not display_title:
+            continue
+        context = _row_movie_context(row, display_title, reference_year)
+        rt_metadata = _rt_metadata_for_context(_extract_rt_url(row), context)
+        context = _context_with_rt_identity(context, rt_metadata)
+        img = row.select_one("img.movie-poster")
+        wiki_page = str(img.get("data-wikipedia-page", "")).strip() if img is not None else ""
+        imdb_id = _imdb_id_for_context(
+            row,
+            context,
+            wikipedia_page=wiki_page or None,
+            reference_year=reference_year,
+        )
+        if imdb_id:
+            pending.append((cell, imdb_id))
+
+    ratings = _imdb_rating_values({imdb_id for _, imdb_id in pending})
+    # IMDb's downloadable ratings file is official but daily, so a brand-new
+    # rating can appear on the exact title page before the next dataset refresh.
+    # Only exact IDs that are still absent get this short, non-fatal live check.
+    for imdb_id in dict.fromkeys(imdb_id for _, imdb_id in pending):
+        if imdb_id in ratings:
+            continue
+        value = _imdb_live_rating(imdb_id)
+        if value is not None:
+            ratings[imdb_id] = value
+
+    changed = 0
+    for cell, imdb_id in pending:
+        url = f"https://www.imdb.com/title/{imdb_id}/"
+        cell["data-source-url"] = url
+        rating = ratings.get(imdb_id)
+        if rating is None:
+            continue
+        cell.clear()
+        link = soup.new_tag("a", href=url)
+        link["rel"] = "noopener noreferrer"
+        link["target"] = "_blank"
+        link.string = f"{rating:.1f}"
+        cell.append(link)
+        changed += 1
+    return changed
 
 
 def main() -> int:
@@ -2323,28 +2571,26 @@ def main() -> int:
         old_src = str(img.get("src", ""))
         imdb_id = _extract_imdb_id(row)
 
-        # A notebook-resolved RT page has already survived exact-title plus
-        # year/runtime identity checks. Prefer its explicit key art over a
-        # title-only Wikimedia hit; this is crucial for remakes that reuse an
-        # older film's exact title.
+        # Prefer high-quality Wikimedia identity resolution.  A validated RT
+        # page contributes year/runtime/language identity above, but its CDN
+        # thumbnail must not automatically replace an already-good poster.
+        # This restores the pre-v32 quality policy while retaining remake-safe
+        # identity constraints (for example, a current film cannot resolve to
+        # an older same-title Wikipedia page).
         image = None
         wiki_page = None
         source = None
         rejected: list[str] = []
-        if rt_metadata is not None and rt_metadata.poster_url:
-            image = rt_metadata.poster_url
-            source = "rottentomatoes-exact"
-
-        if not image:
-            image, wiki_page, source, rejected = resolve_poster(
-                context,
-                imdb_id=imdb_id,
-                reference_year=current_year,
-            )
+        image, wiki_page, source, rejected = resolve_poster(
+            context,
+            imdb_id=imdb_id,
+            reference_year=current_year,
+        )
 
         # Very new/limited/event titles are frequently absent from Wikimedia.
-        # Letterboxd's catalogue is TMDB-backed, so use it only as the final
-        # poster fallback after independent title/year/runtime validation.
+        # Prefer Letterboxd/TMDB artwork next because it normally exposes the
+        # theatrical poster at useful resolution.  The page must still pass
+        # generic title/year/runtime identity checks.
         if not image:
             image, letterboxd_url, rejected_lb = _image_via_letterboxd(
                 context, current_year
@@ -2353,6 +2599,14 @@ def main() -> int:
             if image:
                 source = "letterboxd-tmdb"
                 img["data-letterboxd-page"] = letterboxd_url or ""
+
+        # RT is a last poster fallback.  Its exact movie page is valuable for
+        # identity/scores/language, but poster art can be a low-resolution or
+        # generic default asset.  _rt_poster_url() filters known defaults.
+        if not image and rt_metadata is not None and rt_metadata.poster_url:
+            image = _usable_rt_poster_url(rt_metadata.poster_url)
+            if image:
+                source = "rottentomatoes-exact"
 
         if image:
             if image != old_src:
@@ -2394,12 +2648,14 @@ def main() -> int:
             # No decisive evidence either way: keep the working image.
             preserved += 1
 
+    imdb_enriched = _fill_missing_imdb_scores(soup, current_year)
     audience_rows = _add_audience_focus_column(soup, current_year)
 
     HTML_PATH.write_text(str(soup), encoding="utf-8")
     print(
         "[OK] Poster validation complete: "
         f"{updated} changed, {preserved} preserved, {len(unresolved)} unresolved; "
+        f"IMDb backfilled {imdb_enriched} rating(s); "
         f"Audience Focus classified {audience_rows} row(s)."
     )
     return 0

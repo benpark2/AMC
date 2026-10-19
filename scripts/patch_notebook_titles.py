@@ -234,12 +234,13 @@ RT_GET_SCORES_REPLACEMENT = r'''def rt_get_scores(
     debug: bool = False,
     runtime_min: Optional[int] = None) -> Tuple[Optional[int], Optional[int], Optional[str]]:
     """
-    Resolve the most plausible Rotten Tomatoes movie page, then read scores.
+    Resolve one identity-compatible Rotten Tomatoes movie page, then read scores.
 
-    Reused titles are common.  Title identity alone is not enough: when AMC
-    supplies a runtime, it is used as a second independent identity signal, and
-    recent exact-title search results are preferred over an ambiguous yearless
-    page.  A validated page remains useful even before percentages are posted.
+    Provider search is intentionally tried before a long series of guessed URLs.
+    Exact title is mandatory; release-year and AMC runtime evidence reject older
+    same-title films. A validated page with no published percentage remains a
+    useful identity, but we keep looking briefly for another compatible page
+    before returning blanks. No movie aliases or fixed years are encoded.
     """
     from urllib.parse import quote as _rt_quote, urljoin as _rt_urljoin
 
@@ -273,32 +274,20 @@ RT_GET_SCORES_REPLACEMENT = r'''def rt_get_scores(
 
     def _page_release_year(soup: BeautifulSoup) -> Optional[int]:
         text = _page_text(soup)
-        # Prefer explicit film-level release metadata.
         for pattern in (
-            r"Release Date\s*\(Theaters\)\s*[^0-9]{0,80}\b((?:19|20)\d{2})\b",
-            r"Release Date\s*[^0-9]{0,80}\b((?:19|20)\d{2})\b",
+            r"Release Date\s*\(Theaters\)\s*.{0,100}?\b((?:19|20)\d{2})\b",
+            r"Release Date\s*.{0,100}?\b((?:19|20)\d{2})\b",
         ):
             match = re.search(pattern, text, flags=re.IGNORECASE)
             if match:
                 return int(match.group(1))
-
-        # Current RT pages often expose the year in JSON-LD even when the
-        # visible Movie Info block is client-hydrated.
         for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
             raw = script.string or script.get_text(" ", strip=True)
-            for match in re.finditer(
+            match = re.search(
                 r'"(?:datePublished|dateCreated)"\s*:\s*"((?:19|20)\d{2})',
                 raw or "",
                 flags=re.IGNORECASE,
-            ):
-                return int(match.group(1))
-
-        # Last resort: RT's title header frequently reads "Title 2026 1h...".
-        page_title = _page_title(soup)
-        if page_title:
-            pos = text.casefold().find(clean_amc_title(page_title).casefold())
-            nearby = text[pos : pos + 280] if pos >= 0 else text[:280]
-            match = re.search(r"\b((?:19|20)\d{2})\b", nearby)
+            )
             if match:
                 return int(match.group(1))
         return None
@@ -328,7 +317,6 @@ RT_GET_SCORES_REPLACEMENT = r'''def rt_get_scores(
         soup: BeautifulSoup,
         query_title: str,
         expected_year: Optional[int],
-        expected_runtime: Optional[int],
     ) -> bool:
         page_norm = _literal_norm(_page_title(soup))
         target_norms = {
@@ -336,23 +324,39 @@ RT_GET_SCORES_REPLACEMENT = r'''def rt_get_scores(
         }
         if not page_norm or page_norm not in target_norms:
             return False
-
         page_year = _page_release_year(soup)
         if expected_year is not None and page_year is not None:
             if abs(int(page_year) - int(expected_year)) > 1:
                 return False
-        elif expected_year is not None and page_year is None and expected_runtime is None:
-            # A year-specific URL that silently redirects to another same-title
-            # movie is unsafe unless another independent signal can validate it.
-            return False
-
         page_runtime = _page_runtime_min(soup)
-        if expected_runtime is not None and page_runtime is not None:
-            if abs(int(page_runtime) - int(expected_runtime)) > 20:
+        if runtime_min is not None and page_runtime is not None:
+            if abs(int(page_runtime) - int(runtime_min)) > 20:
                 return False
         return True
 
+    def _canonical_url(soup: BeautifulSoup, fallback: str) -> str:
+        link = soup.find("link", attrs={"rel": re.compile(r"\bcanonical\b", re.I)})
+        if link and link.get("href"):
+            value = _rt_urljoin(RT_BASE, str(link.get("href")))
+            if "/m/" in value:
+                return value.split("?", 1)[0].split("#", 1)[0]
+        meta = soup.find("meta", attrs={"property": "og:url"})
+        if meta and meta.get("content"):
+            value = _rt_urljoin(RT_BASE, str(meta.get("content")))
+            if "/m/" in value:
+                return value.split("?", 1)[0].split("#", 1)[0]
+        return fallback
+
+    fetched_urls = set()
+    best_blank = None
+    best_blank_year = None
+
     def _fetch_validated(rt_url: str, q: str, expected_year: Optional[int]):
+        nonlocal best_blank, best_blank_year
+        url_key = rt_url.casefold()
+        if url_key in fetched_urls:
+            return None
+        fetched_urls.add(url_key)
         status, raw_html = fetch_html(session, rt_url, params=None, tries=2)
         if debug:
             print(f"[RT] Testing {rt_url} -> Status: {status}")
@@ -363,35 +367,26 @@ RT_GET_SCORES_REPLACEMENT = r'''def rt_get_scores(
             return None
         decoded = html_lib.unescape(raw_html)
         soup = BeautifulSoup(decoded, "html.parser")
-        if not _identity_matches(soup, q, expected_year, runtime_min):
+        if not _identity_matches(soup, q, expected_year):
             if debug:
                 print(f"[RT] Rejected identity mismatch: {rt_url}")
             return None
         aud, crit = rt_parse_scores(decoded, soup)
-        return aud, crit, rt_url
+        page_year = _page_release_year(soup)
+        canonical = _canonical_url(soup, rt_url)
+        result = (aud, crit, canonical)
+        if aud is not None or crit is not None:
+            return result
+        if best_blank is None:
+            best_blank = result
+            best_blank_year = page_year or expected_year
+        return None
 
     current_year = date.today().year
     hinted_year = metadata_release_year_hint(title, reference_year=current_year)
-    years_to_check = []
-    for year in (hinted_year, current_year, current_year + 1, current_year - 1, current_year - 2):
-        if year is not None and year not in years_to_check:
-            years_to_check.append(year)
 
-    # Year-specific pages first. This prevents a famous older yearless page
-    # from winning merely because it has established ratings.
-    for q in candidate_title_variants(title):
-        base_slug = rt_slugify(q)
-        if not base_slug:
-            continue
-        for y in years_to_check:
-            found = _fetch_validated(f"{RT_BASE}/m/{base_slug}_{y}", q, y)
-            if found is not None:
-                cache[cache_key] = found
-                return found
-
-    # Use RT's own search results to arbitrate reused titles.  Exact title is
-    # mandatory; when the AMC title has no encoded year, the result nearest the
-    # current theatrical window wins, then the movie page is revalidated.
+    # Search first: one lightweight provider query usually identifies the exact
+    # current/repertory movie and avoids probing several guessed year URLs.
     for q in candidate_title_variants(title):
         search_url = f"{RT_BASE}/napi/search/?query={_rt_quote(q)}&limit=12"
         status, payload = fetch_html(session, search_url, params=None, tries=2)
@@ -432,24 +427,54 @@ RT_GET_SCORES_REPLACEMENT = r'''def rt_get_scores(
             year_rank = -9999 if item_year is None else -abs(item_year - target_year)
             ranked.append((year_rank, -index, candidate_url, item_year))
 
-        for _, _, rt_url, item_year in sorted(ranked, reverse=True):
+        for _, _, rt_url, item_year in sorted(ranked, reverse=True)[:4]:
             expected_year = hinted_year if hinted_year is not None else item_year
             found = _fetch_validated(rt_url, q, expected_year)
             if found is not None:
                 cache[cache_key] = found
                 return found
+        if best_blank is not None or ranked:
+            break
 
-    # Final fallback for provider pages with non-searchable slugs.  This is
-    # intentionally last because yearless pages are ambiguous for reused titles.
+    # Minimal direct fallback for provider-search misses. Explicit/anniversary
+    # year hints get first chance; current-year and yearless slugs cover new
+    # releases and legacy canonical pages without a five-year probe loop.
+    direct_candidates = []
+    seen_direct = set()
     for q in candidate_title_variants(title):
         base_slug = rt_slugify(q)
         if not base_slug:
             continue
-        found = _fetch_validated(f"{RT_BASE}/m/{base_slug}", q, hinted_year)
+        specs = []
+        if hinted_year is not None:
+            specs.append((f"{RT_BASE}/m/{base_slug}_{hinted_year}", hinted_year))
+        else:
+            specs.append((f"{RT_BASE}/m/{base_slug}_{current_year}", current_year))
+            specs.append((f"{RT_BASE}/m/{base_slug}_{current_year - 1}", current_year - 1))
+        specs.append((f"{RT_BASE}/m/{base_slug}", hinted_year))
+        for url, expected_year in specs:
+            key2 = url.casefold()
+            if key2 in seen_direct:
+                continue
+            seen_direct.add(key2)
+            direct_candidates.append((q, url, expected_year))
+
+    for q, rt_url, expected_year in direct_candidates:
+        # If a recent exact-title page already validated but had no score, use
+        # its release year to protect a yearless canonical URL from falling
+        # through to an older same-title film. This still allows the canonical
+        # page for the same release to supply scores when an alias/stub did not.
+        effective_year = expected_year
+        if effective_year is None and best_blank_year is not None:
+            effective_year = best_blank_year
+        found = _fetch_validated(rt_url, q, effective_year)
         if found is not None:
             cache[cache_key] = found
             return found
 
+    if best_blank is not None:
+        cache[cache_key] = best_blank
+        return best_blank
     cache[cache_key] = (None, None, None)
     return cache[cache_key]
 '''
@@ -2476,7 +2501,7 @@ def main() -> int:
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
         "non-movie filtering, original-film metadata lookup, stabilized AMC browser fetch, "
-        "AMC A-List metadata + clean public logs v32 -> "
+        "AMC A-List metadata + clean public logs v33 -> "
         f"{args.output_notebook}"
     )
     return 0
