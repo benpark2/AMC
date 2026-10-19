@@ -125,6 +125,9 @@ LETTERBOXD_FILM_RE = re.compile(
 )
 LETTERBOXD_POSTER_HOSTS = ("ltrbxd.com", "image.tmdb.org")
 IMDB_RATINGS_GZ = Path("build/imdb_datasets/title.ratings.tsv.gz")
+PREVIOUS_REPORT_PATH = Path("build/previous_report.html")
+TMDB_MOVIE_RE = re.compile(r"^https?://(?:www\.)?themoviedb\.org/movie/\d+/?(?:[?#].*)?$", re.IGNORECASE)
+_PREVIOUS_POSTER_INDEX: dict[str, list[dict[str, str | int | None]]] | None = None
 
 # Audience-focus labels are intentionally descriptive and evidence based.  The
 # first four describe an explicit thematic/marketing focus.  The remaining
@@ -381,7 +384,12 @@ def _provider_name_for_url(url: str) -> str | None:
         return "wikimedia"
     if "rottentomatoes.com" in low or "flixster.com" in low or "fandango.com" in low:
         return "rt"
-    if "letterboxd.com" in low or "ltrbxd.com" in low or "image.tmdb.org" in low:
+    if (
+        "letterboxd.com" in low
+        or "ltrbxd.com" in low
+        or "image.tmdb.org" in low
+        or "themoviedb.org" in low
+    ):
         return "letterboxd"
     if "imdb.com" in low:
         return "imdb"
@@ -725,6 +733,7 @@ class LetterboxdPageMetadata:
     runtime_min: int | None
     imdb_id: str | None
     url: str
+    tmdb_url: str | None = None
 
 
 def _letterboxd_title_from_soup(soup: BeautifulSoup) -> tuple[str, int | None]:
@@ -772,6 +781,14 @@ def _letterboxd_poster_url(soup: BeautifulSoup) -> str | None:
         if value.startswith("//"):
             value = "https:" + value
         low = value.casefold()
+        # Letterboxd itself uses empty-poster-* assets when the catalogue item
+        # has no artwork.  They are visually blank and must never be treated as
+        # a successful poster resolution.
+        if any(token in low for token in (
+            "empty-poster", "images-not-found", "image-not-found",
+            "poster-default", "default-poster", "placeholder",
+        )):
+            return None
         if value.startswith(("https://", "http://")) and any(
             host in low for host in LETTERBOXD_POSTER_HOSTS
         ):
@@ -853,6 +870,17 @@ def _parse_letterboxd_metadata_html(
         if match:
             imdb_id = match.group(1).lower()
 
+    tmdb_url = None
+    tmdb_link = soup.find("a", href=re.compile(r"themoviedb\.org/movie/\d+", re.I))
+    if tmdb_link is not None:
+        candidate = str(tmdb_link.get("href", "")).strip()
+        if candidate.startswith("//"):
+            candidate = "https:" + candidate
+        elif candidate.startswith("/"):
+            candidate = urljoin("https://www.themoviedb.org", candidate)
+        if TMDB_MOVIE_RE.match(candidate):
+            tmdb_url = candidate
+
     return LetterboxdPageMetadata(
         title=title,
         poster_url=_letterboxd_poster_url(soup),
@@ -860,7 +888,36 @@ def _parse_letterboxd_metadata_html(
         runtime_min=runtime,
         imdb_id=imdb_id,
         url=canonical_url,
+        tmdb_url=tmdb_url,
     )
+
+
+def _tmdb_page_poster_url(url: str | None) -> str | None:
+    """Return TMDB-hosted artwork linked by an already-matched catalogue item.
+
+    This is deliberately not a TMDB title search.  The URL must come from the
+    validated Letterboxd film page, so it adds one bounded request without
+    introducing another ambiguous search path.
+    """
+    if not url or not TMDB_MOVIE_RE.match(url):
+        return None
+    html_text = _fetch_text(url, timeout=4, attempts=1)
+    if not html_text:
+        return None
+    soup = BeautifulSoup(html_text, "html.parser")
+    for attrs in ({"property": "og:image"}, {"name": "twitter:image"}):
+        meta = soup.find("meta", attrs=attrs)
+        value = str(meta.get("content", "")).strip() if meta else ""
+        if value.startswith("//"):
+            value = "https:" + value
+        low = value.casefold()
+        if (
+            value.startswith(("https://", "http://"))
+            and "image.tmdb.org" in low
+            and not any(token in low for token in ("placeholder", "no-poster", "empty-poster"))
+        ):
+            return value
+    return None
 
 
 def _letterboxd_page_metadata(url: str) -> LetterboxdPageMetadata | None:
@@ -890,17 +947,27 @@ def _letterboxd_page_metadata(url: str) -> LetterboxdPageMetadata | None:
         else None
     )
     if main_meta is None:
-        return embed_meta
-    if embed_meta is None:
-        return main_meta
-    return LetterboxdPageMetadata(
-        title=main_meta.title or embed_meta.title,
-        poster_url=main_meta.poster_url or embed_meta.poster_url,
-        release_year=main_meta.release_year or embed_meta.release_year,
-        runtime_min=main_meta.runtime_min or embed_meta.runtime_min,
-        imdb_id=main_meta.imdb_id or embed_meta.imdb_id,
-        url=url,
-    )
+        combined = embed_meta
+    elif embed_meta is None:
+        combined = main_meta
+    else:
+        combined = LetterboxdPageMetadata(
+            title=main_meta.title or embed_meta.title,
+            poster_url=main_meta.poster_url or embed_meta.poster_url,
+            release_year=main_meta.release_year or embed_meta.release_year,
+            runtime_min=main_meta.runtime_min or embed_meta.runtime_min,
+            imdb_id=main_meta.imdb_id or embed_meta.imdb_id,
+            url=url,
+            tmdb_url=main_meta.tmdb_url or embed_meta.tmdb_url,
+        )
+    if combined is None:
+        return None
+    if combined.poster_url:
+        return combined
+    tmdb_poster = _tmdb_page_poster_url(combined.tmdb_url)
+    if not tmdb_poster:
+        return combined
+    return replace(combined, poster_url=tmdb_poster)
 
 
 def _letterboxd_slug(value: str) -> str:
@@ -2479,6 +2546,102 @@ def _image_via_wikipedia(
     return image, title, source, rejected
 
 
+def _previous_poster_index() -> dict[str, list[dict[str, str | int | None]]]:
+    """Index non-placeholder posters from the immediately previous report.
+
+    The workflow snapshots the committed report before nbconvert overwrites it.
+    Reuse is identity-gated later; this cache is only a resilience fallback for
+    temporary provider failures, never a title-only override.
+    """
+    global _PREVIOUS_POSTER_INDEX
+    if _PREVIOUS_POSTER_INDEX is not None:
+        return _PREVIOUS_POSTER_INDEX
+    index: dict[str, list[dict[str, str | int | None]]] = {}
+    if not PREVIOUS_REPORT_PATH.exists():
+        _PREVIOUS_POSTER_INDEX = index
+        return index
+    try:
+        previous = BeautifulSoup(PREVIOUS_REPORT_PATH.read_text(encoding="utf-8"), "html.parser")
+    except Exception:
+        _PREVIOUS_POSTER_INDEX = index
+        return index
+    for row in previous.select("tr[data-movie-id]"):
+        title_el = row.select_one(".movie-cell-title")
+        img = row.select_one("img.movie-poster")
+        if title_el is None or img is None:
+            continue
+        title = clean_amc_title(title_el.get_text(" ", strip=True))
+        src = str(img.get("src", "")).strip()
+        if not title or _is_placeholder(src) or not src.startswith(("https://", "http://")):
+            continue
+        source = str(img.get("data-poster-source", "")).strip()
+        if source == "rejected-contradiction":
+            continue
+        runtime = None
+        cells = row.find_all(["th", "td"], recursive=False)
+        if len(cells) >= 6:
+            runtime = _runtime_minutes(cells[5].get_text(" ", strip=True))
+        entry = {
+            "title": title,
+            "src": src,
+            "source": source,
+            "wiki_page": str(img.get("data-wikipedia-page", "")).strip() or None,
+            "rt_url": _extract_rt_url(row),
+            "imdb_id": _extract_imdb_id(row),
+            "runtime_min": runtime,
+        }
+        for key_title in {title, clean_amc_title(analyze_movie_title(title).canonical_title)}:
+            key = _normalized_match_text(key_title)
+            if key:
+                index.setdefault(key, []).append(entry)
+    _PREVIOUS_POSTER_INDEX = index
+    return index
+
+
+def _previous_poster_for_row(row, context: MovieContext) -> dict[str, str | int | None] | None:
+    """Return a prior poster only when movie identity is still the same.
+
+    Exact RT URL or IMDb ID is the preferred anchor.  Without one, require an
+    exact normalized title plus a near-identical AMC runtime and a structured
+    Wikimedia/Letterboxd source.  This prevents a famous older same-title film
+    from being resurrected for a remake merely because a current lookup failed.
+    """
+    index = _previous_poster_index()
+    candidates: list[dict[str, str | int | None]] = []
+    seen = set()
+    for title in _context_title_variants(context):
+        key = _normalized_match_text(title)
+        for item in index.get(key, []):
+            marker = (item.get("src"), item.get("rt_url"), item.get("imdb_id"))
+            if marker not in seen:
+                seen.add(marker)
+                candidates.append(item)
+    current_rt = _extract_rt_url(row)
+    current_imdb = _extract_imdb_id(row)
+    for item in candidates:
+        prev_rt = str(item.get("rt_url") or "")
+        prev_imdb = str(item.get("imdb_id") or "")
+        if current_rt and prev_rt and current_rt.rstrip("/").casefold() == prev_rt.rstrip("/").casefold():
+            return item
+        if current_imdb and prev_imdb and current_imdb.casefold() == prev_imdb.casefold():
+            return item
+    # If the current report has a provider identity and none of the prior rows
+    # agree with it, that disagreement is evidence against continuity.
+    if current_rt or current_imdb:
+        return None
+    # No strong provider anchor: allow only a very conservative continuity case.
+    for item in candidates:
+        source = str(item.get("source") or "").casefold()
+        if not (source.startswith("wikipedia") or source.startswith("wikidata") or source == "letterboxd-tmdb"):
+            continue
+        previous_runtime = item.get("runtime_min")
+        if context.runtime_min is None or not isinstance(previous_runtime, int):
+            continue
+        if abs(previous_runtime - context.runtime_min) <= 3:
+            return item
+    return None
+
+
 def resolve_poster(
     context: MovieContext,
     *,
@@ -2504,6 +2667,7 @@ def _is_placeholder(src: str | None) -> bool:
         or "rt-poster-default" in low
         or "poster-default" in low
         or "default-poster" in low
+        or "empty-poster" in low
         or "image-not-found" in low
         or "no-poster" in low
         or "no_poster" in low
@@ -2771,6 +2935,7 @@ def main() -> int:
         image = None
         wiki_page = None
         source = None
+        previous_poster = None
         rejected: list[str] = []
         image, wiki_page, source, rejected = resolve_poster(
             context,
@@ -2790,6 +2955,20 @@ def main() -> int:
             if image:
                 source = "letterboxd-tmdb"
                 img["data-letterboxd-page"] = letterboxd_url or ""
+
+        # Provider availability can change from run to run.  If fresh
+        # resolution failed, recover the immediately previous non-placeholder
+        # poster only when the current row still has the same validated movie
+        # identity.  This prevents transient outages from turning a good image
+        # into a placeholder while remaining remake-safe.
+        if not image:
+            previous_poster = _previous_poster_for_row(row, context)
+            if previous_poster is not None:
+                image = str(previous_poster.get("src") or "") or None
+                source = str(previous_poster.get("source") or "previous-report")
+                wiki_page = str(previous_poster.get("wiki_page") or "") or None
+                if image:
+                    img["data-poster-reused"] = "previous-report"
 
         # If the generated report already contains a validated Wikimedia or
         # Letterboxd/TMDB poster, do not downgrade it to an RT thumbnail merely
@@ -2823,6 +3002,8 @@ def main() -> int:
                 updated += 1
             img["src"] = image
             img["data-poster-source"] = source or "wikimedia"
+            if previous_poster is None and img.has_attr("data-poster-reused"):
+                del img["data-poster-reused"]
             if source != "letterboxd-tmdb" and img.has_attr("data-letterboxd-page"):
                 del img["data-letterboxd-page"]
             if wiki_page:

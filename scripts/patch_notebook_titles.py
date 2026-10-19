@@ -1753,7 +1753,68 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         "failures": [],
         "circuit_open": False,
         "reason": "",
+        "last_load_started": None,
     })
+    _AMCTime = __import__("time")
+    try:
+        _spacing_seconds = max(0.0, float(__import__("os").environ.get("AMC_LIVE_SPACING_SECONDS", "4")))
+    except Exception:
+        _spacing_seconds = 4.0
+    _live_metrics = globals().setdefault("_AMC_LIVE_METRICS", {
+        "started_at": _AMCTime.monotonic(),
+        "spacing_seconds": _spacing_seconds,
+        "spacing_sleep_seconds": 0.0,
+        "live_page_loads": 0,
+        "static_requests": 0,
+        "browser_launches": 0,
+        "combos_live": 0,
+        "combos_cached": 0,
+        "combos_failed": 0,
+        "circuit_cache_skips": 0,
+        "explicit_block_combos": 0,
+    })
+
+    def _write_live_metrics() -> None:
+        try:
+            payload = {k: v for k, v in _live_metrics.items() if k != "started_at"}
+            payload["elapsed_seconds"] = round(
+                max(0.0, _AMCTime.monotonic() - float(_live_metrics.get("started_at") or _AMCTime.monotonic())),
+                2,
+            )
+            payload["circuit_open"] = bool(_live_health.get("circuit_open"))
+            payload["circuit_reason"] = str(_live_health.get("reason") or "")
+            metrics_path = _AMCPath("build/amc_live_metrics.json")
+            metrics_path.parent.mkdir(parents=True, exist_ok=True)
+            metrics_path.write_text(__import__("json").dumps(payload, sort_keys=True), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _pace_live_load(kind: str) -> None:
+        # Space request starts rather than blindly sleeping after every call. A
+        # slow browser navigation already creates its own spacing, while a fast
+        # static response cannot be followed by an immediate browser burst.
+        last_started = _live_health.get("last_load_started")
+        now = _AMCTime.monotonic()
+        if last_started is not None and _spacing_seconds > 0:
+            wait_for = max(0.0, _spacing_seconds - (now - float(last_started)))
+            if wait_for > 0:
+                _AMCTime.sleep(wait_for)
+                _live_metrics["spacing_sleep_seconds"] = float(_live_metrics.get("spacing_sleep_seconds") or 0.0) + wait_for
+        _live_health["last_load_started"] = _AMCTime.monotonic()
+        _live_metrics["live_page_loads"] = int(_live_metrics.get("live_page_loads") or 0) + 1
+        metric_key = "browser_launches" if kind == "browser" else "static_requests"
+        _live_metrics[metric_key] = int(_live_metrics.get(metric_key) or 0) + 1
+        _write_live_metrics()
+
+    def _finish_combo(outcome: str, *, circuit_skip: bool = False, explicit_block: bool = False) -> None:
+        key = {"live": "combos_live", "cached": "combos_cached", "failed": "combos_failed"}.get(outcome)
+        if key:
+            _live_metrics[key] = int(_live_metrics.get(key) or 0) + 1
+        if circuit_skip:
+            _live_metrics["circuit_cache_skips"] = int(_live_metrics.get("circuit_cache_skips") or 0) + 1
+        if explicit_block:
+            _live_metrics["explicit_block_combos"] = int(_live_metrics.get("explicit_block_combos") or 0) + 1
+        _write_live_metrics()
 
     def _is_explicit_amc_block(page_html: str) -> bool:
         low = str(page_html or "").casefold()
@@ -1816,6 +1877,7 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
                 f"using recent same-weekend previous report for {theatre_name} {wanted} "
                 "without another browser launch."
             )
+            _finish_combo("cached", circuit_skip=True)
             return previous_rows
 
     browser_html = ""
@@ -1833,6 +1895,7 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
     _saw_explicit_browser_block = False
     for _round in range(1, _max_rounds + 1):
         try:
+            _pace_live_load("static")
             status, round_html = fetch_amc_html(session, showtimes_url, params={"date": wanted})
         except Exception as e:
             status, round_html = 0, ""
@@ -1863,6 +1926,7 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
             )
         _browser_blocked = False
         try:
+            _pace_live_load("browser")
             status2, round_browser_html = fetch_html_with_browser(
                 showtimes_url,
                 params={"date": wanted},
@@ -1928,6 +1992,7 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
                 f"[WARN] AMC live scrape had {reason} for {theatre_name} {wanted}; "
                 f"using recent same-weekend previous report ({len(previous_unique)} movie(s))."
             )
+            _finish_combo("cached", explicit_block=_saw_explicit_browser_block)
             return previous_rows
 
         if _coverage_problem:
@@ -1969,6 +2034,7 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         _write_combo_status(True)
         _record_live_success()
 
+    _finish_combo("live" if final_rows and not (_coverage_problem or _no_rows) else "failed", explicit_block=_saw_explicit_browser_block)
     return final_rows
 '''
 
@@ -2619,7 +2685,7 @@ def main() -> int:
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
         "non-movie filtering, original-film metadata lookup, stabilized AMC browser fetch, "
-        "AMC A-List metadata + clean public logs v35 -> "
+        "AMC A-List metadata + clean public logs v36 -> "
         f"{args.output_notebook}"
     )
     return 0

@@ -34,6 +34,11 @@ from scripts.postprocess_report import parse_showtimes_blob
 import scripts.postprocess_report as postprocess
 import scripts.finalize_posters as posters
 
+# Production defaults to 4-second AMC request spacing. Unit tests exercise the
+# same logic without wall-clock delays; this environment change is local to the
+# test process and does not propagate to the Actions notebook execution.
+os.environ.setdefault("AMC_LIVE_SPACING_SECONDS", "0")
+
 
 class MovieTitleTests(unittest.TestCase):
     def test_stacked_anniversary_and_festival(self):
@@ -922,6 +927,53 @@ desired = [
         self.assertEqual(network["static"], 2)
         self.assertEqual(network["browser"], 2)
         self.assertTrue(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
+
+    def test_amc_live_loads_are_spaced_and_metrics_written_outside_notebook(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+
+        rendered = "".join(
+            f'<div aria-label="Showtimes for Movie {i}"><a href="/showtimes/{100+i}">8:{i:02d} PM</a></div>'
+            for i in range(1, 7)
+        )
+        ns["fetch_amc_html"] = lambda session, url, params=None: (200, rendered)
+        ns["fetch_html_with_browser"] = lambda url, params=None, timeout_ms=30000: (200, rendered)
+
+        clock = [100.0]
+        sleeps = []
+        def monotonic():
+            return clock[0]
+        def sleep(seconds):
+            sleeps.append(seconds)
+            clock[0] += seconds
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.dict(os.environ, {"AMC_LIVE_SPACING_SECONDS": "4"}, clear=False), \
+             patch("time.monotonic", side_effect=monotonic), \
+             patch("time.sleep", side_effect=sleep):
+            old_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                rows = scraper(None, "AMC Example 10", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                metrics_path = Path("build/amc_live_metrics.json")
+                self.assertTrue(metrics_path.exists())
+                metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertTrue(rows)
+        self.assertEqual(metrics["spacing_seconds"], 4.0)
+        self.assertEqual(metrics["static_requests"], 1)
+        self.assertEqual(metrics["browser_launches"], 1)
+        self.assertEqual(metrics["combos_live"], 1)
+        self.assertEqual(metrics["live_page_loads"], 2)
+        self.assertEqual(len(sleeps), 1)
+        self.assertAlmostEqual(sleeps[0], 4.0, places=3)
+        # The notebook source writes JSON only; the Actions workflow prints the
+        # human-readable [AMC-METRICS] line after Papermill, so it cannot enter HTML.
+        self.assertNotIn("[AMC-METRICS]", source)
 
     def test_non_200_static_still_uses_browser(self):
         source = self._patched_source()
@@ -1953,6 +2005,8 @@ class PosterValidationTests(unittest.TestCase):
             "Q1003": "english",
             "Q1004": "catalan",
         })
+        posters._LETTERBOXD_RESULT_CACHE.clear()
+        posters._PREVIOUS_POSTER_INDEX = None
 
     @staticmethod
     def entity(
@@ -2174,6 +2228,78 @@ class PosterValidationTests(unittest.TestCase):
         self.assertIsNone(page)
         self.assertEqual(source, "wikidata-commons")
         self.assertIn("width=800", image)
+
+    def test_letterboxd_empty_poster_asset_is_rejected(self):
+        html = (
+            '<html><div class="film-poster"><img alt="Example poster" '
+            'src="https://s.ltrbxd.com/static/img/empty-poster-1000-abc.png"></div></html>'
+        )
+        soup = BeautifulSoup(html, "html.parser")
+        self.assertIsNone(posters._letterboxd_poster_url(soup))
+        self.assertTrue(posters._is_placeholder(
+            "Weekend Movies_files/empty-poster-1000-abc.webp"
+        ))
+
+    def test_letterboxd_validated_identity_can_use_linked_tmdb_poster(self):
+        url = "https://letterboxd.com/film/example-world-tour/"
+        main = (
+            '<html><meta property="og:title" content="Example World Tour (2026)">'
+            '<body><div class="film-poster"><img alt="Example World Tour poster" '
+            'src="https://s.ltrbxd.com/static/img/empty-poster-1000-abc.png"></div>'
+            '<a href="https://www.themoviedb.org/movie/123456/">TMDB</a>'
+            '<h1>Example World Tour</h1><p>2026</p></body></html>'
+        )
+        embed = (
+            '<html><meta property="og:title" content="Example World Tour (2026)">'
+            '<body><h1>Example World Tour</h1><p>2026</p></body></html>'
+        )
+        tmdb = (
+            '<html><meta property="og:image" '
+            'content="https://image.tmdb.org/t/p/original/example-poster.jpg"></html>'
+        )
+        with patch.object(posters, "_fetch_text", side_effect=[main, embed, tmdb]):
+            meta = posters._letterboxd_page_metadata(url)
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta.tmdb_url, "https://www.themoviedb.org/movie/123456/")
+        self.assertEqual(meta.poster_url, "https://image.tmdb.org/t/p/original/example-poster.jpg")
+
+    def test_previous_report_poster_reused_only_for_same_provider_identity(self):
+        previous_html = (
+            '<table><tbody><tr data-movie-id="1"><td>1</td><td>'
+            '<div class="movie-cell-title">Example</div>'
+            '<div class="movie-poster-wrap"><img class="movie-poster" '
+            'data-poster-source="wikidata-enwiki" data-wikipedia-page="Example (film)" '
+            'src="https://upload.wikimedia.org/example.jpg"></div></td>'
+            '<td data-source-url="https://www.rottentomatoes.com/m/example_2026"></td>'
+            '<td data-source-url="https://www.imdb.com/title/tt12345678/"></td>'
+            '<td>AMC Example</td><td>1h 40m</td></tr></tbody></table>'
+        )
+        current = BeautifulSoup(
+            '<tr data-movie-id="1"><td>1</td><td><div class="movie-cell-title">Example</div></td>'
+            '<td data-source-url="https://www.rottentomatoes.com/m/example_2026"></td>'
+            '<td></td><td>AMC Example</td><td>1h 40m</td></tr>',
+            "html.parser",
+        ).find("tr")
+        wrong = BeautifulSoup(
+            '<tr data-movie-id="1"><td>1</td><td><div class="movie-cell-title">Example</div></td>'
+            '<td data-source-url="https://www.rottentomatoes.com/m/example_1999"></td>'
+            '<td></td><td>AMC Example</td><td>1h 40m</td></tr>',
+            "html.parser",
+        ).find("tr")
+        ctx = self.context(canonical_title="Example", runtime_min=100)
+        with tempfile.TemporaryDirectory() as tmp:
+            prior = Path(tmp) / "previous.html"
+            prior.write_text(previous_html, encoding="utf-8")
+            with patch.object(posters, "PREVIOUS_REPORT_PATH", prior):
+                posters._PREVIOUS_POSTER_INDEX = None
+                chosen = posters._previous_poster_for_row(current, ctx)
+                posters._PREVIOUS_POSTER_INDEX = None
+                rejected = posters._previous_poster_for_row(wrong, ctx)
+        self.assertIsNotNone(chosen)
+        self.assertEqual(chosen["src"], "https://upload.wikimedia.org/example.jpg")
+        # A different RT release cannot borrow the old poster merely because
+        # the title/runtime happen to be the same.
+        self.assertIsNone(rejected)
 
     def test_rt_default_poster_asset_is_rejected(self):
         html = (
