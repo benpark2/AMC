@@ -686,6 +686,95 @@ desired = [
         self.assertTrue(url.endswith("/m/example_feature"), url)
         self.assertTrue(any(call.endswith(f"/m/example_feature_{recent_year}") for call in calls))
 
+    def test_rt_search_infers_missing_result_year_from_movie_url(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        current_year = ns["date"].today().year
+        recent_year = current_year - 1
+        calls = []
+
+        def fake_fetch(session, url, params=None, tries=2):
+            calls.append(url)
+            if "/napi/search/" in url:
+                return 200, json.dumps({
+                    "movies": [
+                        {"name": "Example Feature", "year": 2007, "url": "/m/example_feature"},
+                        {"name": "Example Feature", "url": f"/m/example_feature_{recent_year}"},
+                    ]
+                })
+            if url.endswith(f"/m/example_feature_{recent_year}"):
+                return 200, (
+                    f"<html><h1>Example Feature</h1>"
+                    f"<div>Release Date (Theaters)</div><div>Oct 1, {recent_year}</div>"
+                    "<div>Runtime</div><div>2h 1m</div>"
+                    "<div>Tomatometer 2 Reviews Popcornmeter Fewer than 50 Ratings</div>"
+                    "</html>"
+                )
+            if url.endswith("/m/example_feature"):
+                return 200, (
+                    "<html><h1>Example Feature</h1>"
+                    "<div>Release Date (Theaters)</div><div>Jan 1, 2007</div>"
+                    "<div>Runtime</div><div>1h 3m</div>"
+                    '<score-board audiencescore="87"></score-board></html>'
+                )
+            return 404, ""
+
+        ns["fetch_html"] = fake_fetch
+        aud, crit, url = ns["rt_get_scores"](
+            None, "Example Feature", {}, debug=False, runtime_min=121
+        )
+        self.assertIsNone(aud)
+        self.assertIsNone(crit)
+        self.assertTrue(url.endswith(f"/m/example_feature_{recent_year}"), url)
+
+    def test_rt_anniversary_year_search_can_recover_numeric_slug(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        current_year = ns["date"].today().year
+        original_year = current_year - 20
+        calls = []
+
+        def fake_fetch(session, url, params=None, tries=2):
+            calls.append(url)
+            if "/napi/search/" in url:
+                if str(original_year) in url:
+                    return 200, json.dumps({
+                        "movies": [
+                            {"name": "Example Palace", "url": "/m/987654-example_palace"},
+                            {"name": "Example Palace", "year": original_year, "url": "/m/example_palace_tv"},
+                        ]
+                    })
+                return 200, json.dumps({"movies": []})
+            if url.endswith("/m/987654-example_palace"):
+                return 200, (
+                    f"<html><h1>Example Palace</h1>"
+                    f"<div>Release Date (Theaters)</div><div>Oct 1, {original_year}</div>"
+                    "<div>Runtime</div><div>2h 3m</div>"
+                    '<score-board tomatometerscore="58" audiencescore="56"></score-board>'
+                    "</html>"
+                )
+            if url.endswith("/m/example_palace_tv"):
+                return 200, (
+                    f"<html><h1>Example Palace</h1>"
+                    f"<div>Release Date (Theaters)</div><div>Jan 1, {original_year}</div>"
+                    "<div>Runtime</div><div>1h 30m</div></html>"
+                )
+            return 404, ""
+
+        ns["fetch_html"] = fake_fetch
+        aud, crit, url = ns["rt_get_scores"](
+            None,
+            "Example Palace (20th Anniversary)",
+            {},
+            debug=False,
+            runtime_min=123,
+        )
+        self.assertEqual((aud, crit), (56, 58))
+        self.assertTrue(url.endswith("/m/987654-example_palace"), url)
+        self.assertTrue(any(str(original_year) in call for call in calls if "/napi/search/" in call))
+
     def test_rt_reused_title_rejects_old_runtime_and_prefers_recent_identity(self):
         source = self._patched_source()
         ns = {}
@@ -1998,6 +2087,7 @@ class PosterValidationTests(unittest.TestCase):
     def setUp(self):
         posters._JSON_CACHE.clear()
         posters._TEXT_CACHE.clear()
+        posters._PROVIDER_BUDGET_USED.clear()
         posters._LABEL_CACHE.clear()
         posters._LABEL_CACHE.update({
             "Q1001": "japanese",
@@ -2018,6 +2108,7 @@ class PosterValidationTests(unittest.TestCase):
         runtime: int | None = None,
         language_qid: str | None = None,
         imdb_id: str | None = None,
+        rt_id: str | None = None,
     ) -> dict:
         claims: dict = {
             "P31": [{"mainsnak": {"datavalue": {"value": {"id": "Q11424"}}}}],
@@ -2030,6 +2121,8 @@ class PosterValidationTests(unittest.TestCase):
             claims["P364"] = [{"mainsnak": {"datavalue": {"value": {"id": language_qid}}}}]
         if imdb_id:
             claims["P345"] = [{"mainsnak": {"datavalue": {"value": imdb_id}}}]
+        if rt_id:
+            claims["P1258"] = [{"mainsnak": {"datavalue": {"value": rt_id}}}]
         return {
             "id": qid,
             "claims": claims,
@@ -2146,6 +2239,70 @@ class PosterValidationTests(unittest.TestCase):
         anchored = posters._context_with_rt_identity(ctx, meta)
         self.assertEqual(anchored.expected_year, 2026)
         self.assertEqual(anchored.runtime_min, 119)
+
+    def test_wikidata_rt_identifier_backfills_anniversary_scores(self):
+        soup = BeautifulSoup(
+            '<table><tbody><tr data-movie-id="1"><td>1</td><td>'
+            '<div class="movie-cell-title">Example Palace (20th Anniversary)</div>'
+            '<div class="movie-poster-wrap"><img class="movie-poster" src="x.jpg"></div></td>'
+            '<td></td><td data-source-url="https://www.imdb.com/title/tt12345678/">7.0</td>'
+            '<td>AMC Example</td><td>2h 3m</td></tr></tbody></table>',
+            "html.parser",
+        )
+        row = soup.find("tr")
+        ctx = self.context(
+            display_title="Example Palace (20th Anniversary)",
+            canonical_title="Example Palace",
+            expected_year=2006,
+            runtime_min=123,
+        )
+        entity = self.entity(
+            "Q1", "Example Palace", year=2006, runtime=123,
+            imdb_id="tt12345678", rt_id="m/987654-example_palace",
+        )
+        meta = posters.RtPageMetadata(
+            title="Example Palace",
+            poster_url=None,
+            languages=frozenset({"english"}),
+            genres=frozenset({"drama"}),
+            release_year=2006,
+            runtime_min=123,
+        )
+        with patch.object(posters, "_wikidata_qids_for_imdb", return_value=["Q1"]), \
+             patch.object(posters, "_wikidata_entities", return_value=[entity]), \
+             patch.object(posters, "_rt_metadata_for_context", return_value=meta), \
+             patch.object(posters, "_rt_scores_for_context", return_value=(56, 58)):
+            anchored, chosen, changed = posters._repair_rt_identity_from_wikidata(
+                soup, row, ctx
+            )
+        self.assertTrue(changed)
+        self.assertEqual(chosen.release_year, 2006)
+        self.assertEqual(anchored.expected_year, 2006)
+        rt_cell = row.find_all("td", recursive=False)[2]
+        self.assertEqual(
+            rt_cell.get("data-source-url"),
+            "https://www.rottentomatoes.com/m/987654-example_palace",
+        )
+        self.assertEqual(rt_cell.get_text(" ", strip=True), "58/56")
+
+    def test_provider_budget_counts_request_work_not_global_wall_clock(self):
+        url = "https://www.rottentomatoes.com/m/example"
+        posters._PROVIDER_BUDGET_USED["rt"] = 29.5
+        self.assertTrue(posters._provider_budget_available(url))
+        posters._charge_provider_budget(url, 0.6)
+        self.assertFalse(posters._provider_budget_available(url))
+
+    def test_exact_imdb_poster_fallback_uses_identity_page(self):
+        html = (
+            '<html><meta property="og:image" '
+            'content="https://m.media-amazon.com/images/M/example._V1_.jpg"></html>'
+        )
+        with patch.object(posters, "_fetch_text", return_value=html):
+            image = posters._imdb_poster_url("tt12345678")
+        self.assertEqual(
+            image,
+            "https://m.media-amazon.com/images/M/example._V1_.jpg",
+        )
 
     def test_letterboxd_fallback_prefers_recent_runtime_matching_same_title(self):
         ctx = self.context(canonical_title="Example", runtime_min=121)

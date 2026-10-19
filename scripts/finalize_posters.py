@@ -105,7 +105,7 @@ _PROVIDER_BUDGET_SECONDS = {
     "letterboxd": 35.0,
     "imdb": 12.0,
 }
-_PROVIDER_BUDGET_STARTED: dict[str, float] = {}
+_PROVIDER_BUDGET_USED: dict[str, float] = {}
 _JSON_CACHE: dict[str, dict | None] = {}
 _TEXT_CACHE: dict[str, str | None] = {}
 _LABEL_CACHE: dict[str, str] = {}
@@ -403,9 +403,20 @@ def _provider_budget_available(url: str) -> bool:
     limit = _PROVIDER_BUDGET_SECONDS.get(provider)
     if limit is None:
         return True
-    now = time.monotonic()
-    started = _PROVIDER_BUDGET_STARTED.setdefault(provider, now)
-    return (now - started) < limit
+    # Budget actual provider/network work, not wall-clock time since the first
+    # request.  The previous wall-clock implementation could disable RT for
+    # movies near the bottom of the report simply because Wikimedia/Letterboxd
+    # work happened in between, even when RT itself had used only a few seconds.
+    return _PROVIDER_BUDGET_USED.get(provider, 0.0) < limit
+
+
+def _charge_provider_budget(url: str, elapsed: float) -> None:
+    provider = _provider_name_for_url(url)
+    if provider is None:
+        return
+    _PROVIDER_BUDGET_USED[provider] = (
+        _PROVIDER_BUDGET_USED.get(provider, 0.0) + max(0.0, float(elapsed))
+    )
 
 
 def _fetch_json(url: str, timeout: int = 8) -> dict | None:
@@ -414,34 +425,38 @@ def _fetch_json(url: str, timeout: int = 8) -> dict | None:
     if not _provider_budget_available(url):
         return None
 
-    for attempt in range(MAX_API_ATTEMPTS):
-        try:
-            request = Request(
-                url,
-                headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-            )
-            with urlopen(request, timeout=timeout) as response:
-                data = json.loads(response.read().decode("utf-8"))
-                if isinstance(data, dict):
-                    _JSON_CACHE[url] = data
-                    return data
-                break
-        except HTTPError as exc:
-            if exc.code not in RETRYABLE_HTTP_CODES:
-                break
-            if attempt + 1 < MAX_API_ATTEMPTS:
-                retry_after = 0.0
-                try:
-                    retry_after = float(exc.headers.get("Retry-After", "0") or 0)
-                except (TypeError, ValueError):
-                    pass
-                time.sleep(min(max(retry_after, 0.5 * (attempt + 1)), 3.0))
-                continue
-        except (URLError, TimeoutError, ValueError, json.JSONDecodeError):
-            if attempt + 1 < MAX_API_ATTEMPTS:
-                time.sleep(0.5 * (attempt + 1))
-                continue
-        break
+    budget_started = time.monotonic()
+    try:
+        for attempt in range(MAX_API_ATTEMPTS):
+            try:
+                request = Request(
+                    url,
+                    headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+                )
+                with urlopen(request, timeout=timeout) as response:
+                    data = json.loads(response.read().decode("utf-8"))
+                    if isinstance(data, dict):
+                        _JSON_CACHE[url] = data
+                        return data
+                    break
+            except HTTPError as exc:
+                if exc.code not in RETRYABLE_HTTP_CODES:
+                    break
+                if attempt + 1 < MAX_API_ATTEMPTS:
+                    retry_after = 0.0
+                    try:
+                        retry_after = float(exc.headers.get("Retry-After", "0") or 0)
+                    except (TypeError, ValueError):
+                        pass
+                    time.sleep(min(max(retry_after, 0.5 * (attempt + 1)), 3.0))
+                    continue
+            except (URLError, TimeoutError, ValueError, json.JSONDecodeError):
+                if attempt + 1 < MAX_API_ATTEMPTS:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+            break
+    finally:
+        _charge_provider_budget(url, time.monotonic() - budget_started)
 
     _JSON_CACHE[url] = None
     return None
@@ -465,27 +480,31 @@ def _fetch_text(
     if not _provider_budget_available(url):
         return None
     max_attempts = MAX_API_ATTEMPTS if attempts is None else max(1, int(attempts))
-    for attempt in range(max_attempts):
-        try:
-            request = Request(
-                url,
-                headers={
-                    "User-Agent": RT_USER_AGENT,
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                },
-            )
-            with urlopen(request, timeout=timeout) as response:
-                text = response.read().decode("utf-8", errors="replace")
-                _TEXT_CACHE[url] = text
-                return text
-        except HTTPError as exc:
-            if exc.code not in RETRYABLE_HTTP_CODES:
-                break
-        except (URLError, TimeoutError, ValueError):
-            pass
-        if attempt + 1 < max_attempts:
-            time.sleep(0.5 * (attempt + 1))
+    budget_started = time.monotonic()
+    try:
+        for attempt in range(max_attempts):
+            try:
+                request = Request(
+                    url,
+                    headers={
+                        "User-Agent": RT_USER_AGENT,
+                        "Accept-Language": "en-US,en;q=0.9",
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    },
+                )
+                with urlopen(request, timeout=timeout) as response:
+                    text = response.read().decode("utf-8", errors="replace")
+                    _TEXT_CACHE[url] = text
+                    return text
+            except HTTPError as exc:
+                if exc.code not in RETRYABLE_HTTP_CODES:
+                    break
+            except (URLError, TimeoutError, ValueError):
+                pass
+            if attempt + 1 < max_attempts:
+                time.sleep(0.5 * (attempt + 1))
+    finally:
+        _charge_provider_budget(url, time.monotonic() - budget_started)
     _TEXT_CACHE[url] = None
     return None
 
@@ -707,6 +726,100 @@ def _rt_metadata_for_context(url: str | None, context: MovieContext) -> RtPageMe
     ):
         return None
     return metadata
+
+
+def _rt_scores_from_soup(soup: BeautifulSoup) -> tuple[int | None, int | None]:
+    """Return (audience, critic) percentages from one validated RT page.
+
+    The parser intentionally requires percentage-shaped evidence and ignores
+    review/rating counts.  It is used only as a finalizer backfill when the
+    notebook could not discover the correct RT identity.
+    """
+    def score(value: object) -> int | None:
+        try:
+            number = int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+        return number if 0 <= number <= 100 else None
+
+    audience = None
+    critic = None
+    for tag in soup.find_all(True):
+        if audience is None:
+            for attr in ("audiencescore", "audience-score", "audience_score"):
+                if tag.has_attr(attr):
+                    audience = score(tag.get(attr))
+                    if audience is not None:
+                        break
+        if critic is None:
+            for attr in (
+                "tomatometerscore", "tomatometer-score", "tomatometer_score",
+                "criticsscore", "critics-score", "critics_score",
+            ):
+                if tag.has_attr(attr):
+                    critic = score(tag.get(attr))
+                    if critic is not None:
+                        break
+        if audience is not None and critic is not None:
+            return audience, critic
+
+    raw = str(soup)
+    if audience is None:
+        for pattern in (
+            r'"audienceScore"\s*:\s*(?:\{[^{}]{0,120}?"score"\s*:\s*)?(\d{1,3})',
+            r'"audience_score"\s*:\s*(\d{1,3})',
+        ):
+            match = re.search(pattern, raw, re.I | re.S)
+            if match:
+                audience = score(match.group(1))
+                if audience is not None:
+                    break
+    if critic is None:
+        for pattern in (
+            r'"criticsScore"\s*:\s*(?:\{[^{}]{0,120}?"score"\s*:\s*)?(\d{1,3})',
+            r'"tomatometerScore"\s*:\s*(?:\{[^{}]{0,120}?"score"\s*:\s*)?(\d{1,3})',
+            r'"tomatometer_score"\s*:\s*(\d{1,3})',
+        ):
+            match = re.search(pattern, raw, re.I | re.S)
+            if match:
+                critic = score(match.group(1))
+                if critic is not None:
+                    break
+
+    text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
+    if critic is None:
+        for pattern in (
+            r"(\d{1,3})%\s+Tomatometer\b",
+            r"\bTomatometer\b.{0,90}?(\d{1,3})%",
+        ):
+            match = re.search(pattern, text, re.I)
+            if match:
+                critic = score(match.group(1))
+                if critic is not None:
+                    break
+    if audience is None:
+        for pattern in (
+            r"(\d{1,3})%\s+Popcornmeter\b",
+            r"\bPopcornmeter\b.{0,90}?(\d{1,3})%",
+        ):
+            match = re.search(pattern, text, re.I)
+            if match:
+                audience = score(match.group(1))
+                if audience is not None:
+                    break
+    return audience, critic
+
+
+def _rt_scores_for_context(
+    url: str | None,
+    context: MovieContext,
+) -> tuple[int | None, int | None] | None:
+    if not url or _rt_metadata_for_context(url, context) is None:
+        return None
+    html_text = _fetch_text(url, timeout=5, attempts=1)
+    if not html_text:
+        return None
+    return _rt_scores_from_soup(BeautifulSoup(html_text, "html.parser"))
 
 
 def _context_with_rt_identity(
@@ -1590,6 +1703,17 @@ def _claim_string_values(entity: dict, property_id: str) -> list[str]:
     return [v for v in _claim_values(entity, property_id) if isinstance(v, str) and v]
 
 
+def _entity_rt_movie_url(entity: dict) -> str | None:
+    """Return an exact Rotten Tomatoes movie URL from Wikidata P1258."""
+    for value in _claim_string_values(entity, "P1258"):
+        value = value.strip().lstrip("/")
+        if re.fullmatch(r"m/[0-9A-Za-z_][-0-9A-Za-z_'.]*", value):
+            url = f"https://www.rottentomatoes.com/{value}"
+            if RT_MOVIE_URL_RE.match(url):
+                return url
+    return None
+
+
 def _entity_has_imdb_id(entity: dict, imdb_id: str | None) -> bool:
     """Verify an IMDb bridge result instead of trusting Wikidata search ranking.
 
@@ -2377,6 +2501,87 @@ def _best_entity_for_context(
     return ranked[0][2], rejected
 
 
+def _wikidata_entity_for_exact_imdb(
+    context: MovieContext,
+    imdb_id: str | None,
+) -> dict | None:
+    if not imdb_id:
+        return None
+    entities = [
+        entity
+        for entity in _wikidata_entities(_wikidata_qids_for_imdb(imdb_id))
+        if _entity_has_imdb_id(entity, imdb_id)
+    ]
+    entity, _ = _best_entity_for_context(entities, context, imdb_id)
+    return entity
+
+
+def _set_rt_cell(
+    soup: BeautifulSoup,
+    row,
+    url: str,
+    audience: int | None,
+    critic: int | None,
+) -> None:
+    """Write one RT identity/score cell using the report's critic/audience order."""
+    cells = row.find_all(["th", "td"], recursive=False)
+    if len(cells) < 3:
+        return
+    cell = cells[2]
+    cell["data-source-url"] = url
+    cell.clear()
+    if audience is None and critic is None:
+        return
+    link = soup.new_tag("a", href=url)
+    link["rel"] = "noopener noreferrer"
+    link["target"] = "_blank"
+    link.string = f"{critic if critic is not None else '-'}/{audience if audience is not None else '-'}"
+    cell.append(link)
+
+
+def _repair_rt_identity_from_wikidata(
+    soup: BeautifulSoup,
+    row,
+    context: MovieContext,
+) -> tuple[MovieContext, RtPageMetadata | None, bool]:
+    """Repair a missing/contradictory RT identity through exact IMDb→Wikidata.
+
+    This path is deliberately narrow: it runs only when the current RT URL is
+    missing for a year-anchored presentation, or when the existing RT page is
+    incompatible with AMC title/runtime evidence.  Wikidata's stable P1258
+    identifier then supplies the exact RT movie URL.  No title-specific aliases
+    or provider IDs are embedded in production code.
+    """
+    current_url = _extract_rt_url(row)
+    current_meta = _rt_metadata_for_context(current_url, context) if current_url else None
+    needs_bridge = (
+        (current_url is not None and current_meta is None)
+        or (current_url is None and context.expected_year is not None)
+    )
+    if not needs_bridge:
+        anchored = _context_with_rt_identity(context, current_meta)
+        return anchored, current_meta, False
+
+    imdb_id = _extract_imdb_id(row)
+    entity = _wikidata_entity_for_exact_imdb(context, imdb_id)
+    if entity is None:
+        anchored = _context_with_rt_identity(context, current_meta)
+        return anchored, current_meta, False
+    candidate_url = _entity_rt_movie_url(entity)
+    if not candidate_url:
+        anchored = _context_with_rt_identity(context, current_meta)
+        return anchored, current_meta, False
+    candidate_meta = _rt_metadata_for_context(candidate_url, context)
+    if candidate_meta is None:
+        anchored = _context_with_rt_identity(context, current_meta)
+        return anchored, current_meta, False
+
+    scores = _rt_scores_for_context(candidate_url, context) or (None, None)
+    _set_rt_cell(soup, row, candidate_url, scores[0], scores[1])
+    anchored = _context_with_rt_identity(context, candidate_meta)
+    return anchored, candidate_meta, True
+
+
 def _image_via_wikidata(
     context: MovieContext,
     imdb_id: str | None,
@@ -2772,6 +2977,49 @@ def _imdb_live_rating(imdb_id: str) -> float | None:
     return None
 
 
+def _imdb_poster_url(imdb_id: str | None) -> str | None:
+    """Return exact-ID IMDb key art as a bounded identity-safe fallback."""
+    if not re.fullmatch(r"tt\d{5,12}", imdb_id or "", re.I):
+        return None
+    url = f"https://www.imdb.com/title/{str(imdb_id).lower()}/"
+    html_text = _fetch_text(url, timeout=5, attempts=1)
+    if not html_text:
+        return None
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    candidates: list[str] = []
+    for attrs in ({"property": "og:image"}, {"name": "twitter:image"}):
+        meta = soup.find("meta", attrs=attrs)
+        if meta and meta.get("content"):
+            candidates.append(str(meta.get("content")))
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = script.string or script.get_text(" ", strip=True)
+        try:
+            data = json.loads(raw or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        objects = data if isinstance(data, list) else [data]
+        for obj in objects:
+            if not isinstance(obj, dict):
+                continue
+            image = obj.get("image")
+            if isinstance(image, str):
+                candidates.append(image)
+            elif isinstance(image, dict) and isinstance(image.get("url"), str):
+                candidates.append(str(image.get("url")))
+
+    for value in candidates:
+        value = value.strip()
+        low = value.casefold()
+        if not value.startswith(("https://", "http://")):
+            continue
+        if any(token in low for token in ("placeholder", "nopicture", "no-image")):
+            continue
+        if any(host in low for host in ("m.media-amazon.com", "media-amazon.com", "imdb-media")):
+            return value
+    return None
+
+
 def _imdb_id_for_context(
     row,
     context: MovieContext,
@@ -2889,6 +3137,11 @@ def main() -> int:
     preserved = 0
     unresolved: list[str] = []
 
+    # Resolve missing IMDb identities/ratings before poster work so exact IMDb
+    # IDs can also serve as safe Wikidata and poster identity bridges.  This is
+    # the same bounded enrichment pass that previously ran at the end.
+    imdb_enriched = _fill_missing_imdb_scores(soup, current_year)
+
     for row in soup.select("tr[data-movie-id]"):
         title_el = row.select_one(".movie-cell-title")
         if title_el is None:
@@ -2903,8 +3156,9 @@ def main() -> int:
             )
 
         context = _row_movie_context(row, display_title, current_year)
-        rt_metadata = _rt_metadata_for_context(_extract_rt_url(row), context)
-        context = _context_with_rt_identity(context, rt_metadata)
+        context, rt_metadata, _ = _repair_rt_identity_from_wikidata(
+            soup, row, context
+        )
         canonical = context.canonical_title
 
         poster_link = row.select_one(".movie-poster-wrap a")
@@ -2955,6 +3209,14 @@ def main() -> int:
             if image:
                 source = "letterboxd-tmdb"
                 img["data-letterboxd-page"] = letterboxd_url or ""
+
+        # Exact IMDb IDs are another identity-safe, bounded poster fallback.
+        # This is especially useful for very new event titles whose Wikimedia
+        # and Letterboxd pages exist but do not yet expose usable key art.
+        if not image and imdb_id:
+            image = _imdb_poster_url(imdb_id)
+            if image:
+                source = "imdb-exact"
 
         # Provider availability can change from run to run.  If fresh
         # resolution failed, recover the immediately previous non-placeholder
@@ -3039,7 +3301,6 @@ def main() -> int:
             # No decisive evidence either way: keep the working image.
             preserved += 1
 
-    imdb_enriched = _fill_missing_imdb_scores(soup, current_year)
     audience_rows = _add_audience_focus_column(soup, current_year)
 
     HTML_PATH.write_text(str(soup), encoding="utf-8")

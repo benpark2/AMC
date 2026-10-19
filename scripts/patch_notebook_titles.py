@@ -329,6 +329,14 @@ RT_GET_SCORES_REPLACEMENT = r'''def rt_get_scores(
             if abs(int(page_year) - int(expected_year)) > 1:
                 return False
         page_runtime = _page_runtime_min(soup)
+        # If a candidate is supposed to represent a specific release but the
+        # page itself exposes no year, do not accept it on title alone.  A
+        # matching runtime can still prove continuity for sparse provider
+        # pages; otherwise the candidate is too ambiguous and could be an
+        # older same-title film.
+        if expected_year is not None and page_year is None and runtime_min is not None:
+            if page_runtime is None or abs(int(page_runtime) - int(runtime_min)) > 20:
+                return False
         if runtime_min is not None and page_runtime is not None:
             if abs(int(page_runtime) - int(runtime_min)) > 20:
                 return False
@@ -385,10 +393,39 @@ RT_GET_SCORES_REPLACEMENT = r'''def rt_get_scores(
     current_year = date.today().year
     hinted_year = metadata_release_year_hint(title, reference_year=current_year)
 
+    def _search_item_year(item, path: str) -> Optional[int]:
+        raw_year = item.get("year") or item.get("releaseYear") or item.get("release_year")
+        try:
+            year = int(raw_year) if raw_year not in (None, "") else None
+        except (TypeError, ValueError):
+            year = None
+        if year is not None:
+            return year
+        # RT search occasionally omits a structured year even when the movie
+        # URL itself carries one.  Recover only a terminal four-digit slug
+        # suffix; this is generic provider parsing, not a movie-specific map.
+        match = re.search(r"[_-]((?:19|20)\d{2})(?:/)?$", path or "")
+        if match:
+            return int(match.group(1))
+        return None
+
     # Search first: one lightweight provider query usually identifies the exact
-    # current/repertory movie and avoids probing several guessed year URLs.
+    # current/repertory movie and avoids probing several guessed year URLs.  If
+    # AMC supplied a reliable original-year hint (for example an anniversary),
+    # ask RT for the year-qualified title first while still validating results
+    # against the underlying canonical movie title.
+    search_specs = []
+    seen_search_specs = set()
     for q in candidate_title_variants(title):
-        search_url = f"{RT_BASE}/napi/search/?query={_rt_quote(q)}&limit=12"
+        terms = [f"{q} {hinted_year}", q] if hinted_year is not None else [q]
+        for search_text in terms:
+            marker = (search_text.casefold(), q.casefold())
+            if marker not in seen_search_specs:
+                seen_search_specs.add(marker)
+                search_specs.append((search_text, q))
+
+    for search_text, q in search_specs:
+        search_url = f"{RT_BASE}/napi/search/?query={_rt_quote(search_text)}&limit=12"
         status, payload = fetch_html(session, search_url, params=None, tries=2)
         if debug:
             print(f"[RT] Search {search_url} -> Status: {status}")
@@ -410,21 +447,20 @@ RT_GET_SCORES_REPLACEMENT = r'''def rt_get_scores(
             name = str(item.get("name") or item.get("title") or "")
             if _literal_norm(name) not in target_norms:
                 continue
-            raw_year = item.get("year") or item.get("releaseYear") or item.get("release_year")
-            try:
-                item_year = int(raw_year) if raw_year not in (None, "") else None
-            except (TypeError, ValueError):
-                item_year = None
-            if hinted_year is not None and item_year is not None and abs(item_year - hinted_year) > 1:
-                continue
             path = str(item.get("url") or item.get("movieUrl") or "").strip()
             if not path:
                 continue
             candidate_url = _rt_urljoin(RT_BASE, path)
             if "/m/" not in candidate_url:
                 continue
+            item_year = _search_item_year(item, path)
+            if hinted_year is not None and item_year is not None and abs(item_year - hinted_year) > 1:
+                continue
             target_year = hinted_year if hinted_year is not None else current_year
-            year_rank = -9999 if item_year is None else -abs(item_year - target_year)
+            # Unknown-year search results should not automatically lose to a
+            # famous decades-old film.  Give them a modest neutral rank while
+            # still preferring a known current/original-year match.
+            year_rank = -4 if item_year is None else -abs(item_year - target_year)
             ranked.append((year_rank, -index, candidate_url, item_year))
 
         for _, _, rt_url, item_year in sorted(ranked, reverse=True)[:4]:
@@ -433,7 +469,11 @@ RT_GET_SCORES_REPLACEMENT = r'''def rt_get_scores(
             if found is not None:
                 cache[cache_key] = found
                 return found
-        if best_blank is not None or ranked:
+        # A ranked search result can still be the wrong same-title release
+        # after page-level runtime/year validation.  Only stop early once an
+        # identity-compatible blank page was actually validated; otherwise a
+        # year-qualified anniversary search gets one normal-title fallback.
+        if best_blank is not None:
             break
 
     # Minimal direct fallback for provider-search misses. Explicit/anniversary
@@ -2685,7 +2725,7 @@ def main() -> int:
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
         "non-movie filtering, original-film metadata lookup, stabilized AMC browser fetch, "
-        "AMC A-List metadata + clean public logs v36 -> "
+        "AMC A-List metadata + clean public logs v38 -> "
         f"{args.output_notebook}"
     )
     return 0
