@@ -104,6 +104,23 @@ jobs:
                   f"circuit_open={data.get('circuit_open', False)} "
                   f"elapsed={float(data.get('elapsed_seconds', 0.0)):.1f}s"
               )
+              for check in data.get("date_checks", []) or []:
+                  observed = ",".join(str(x) for x in (check.get("observed_dates") or [])) or "-"
+                  final_location = ""
+                  if check.get("final_host") or check.get("final_path"):
+                      final_location = f" final={check.get('final_host', '')}{check.get('final_path', '')}"
+                  print(
+                      "[AMC-DATE] "
+                      f"kind={check.get('kind', '?')} "
+                      f"theatre={check.get('theatre', '?')!r} "
+                      f"requested={check.get('requested_date', '?')} "
+                      f"round={check.get('round', '?')} "
+                      f"final_date={check.get('final_url_date') or '-'} "
+                      f"observed={observed} "
+                      f"restore={check.get('restore_attempted', False)} "
+                      f"accepted={check.get('accepted', False)}"
+                      f"{final_location}"
+                  )
           PY
 
             if [ "${pm_status}" -eq 0 ]; then
