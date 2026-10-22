@@ -934,6 +934,127 @@ desired = [
             [("444", "Hanuman Ansh", "7:15 pm")],
         )
 
+    def test_amc_browser_date_helpers_distinguish_requested_future_day(self):
+        tree = ast.parse(AMC_BROWSER_CHILD_SCRIPT)
+        helper_names = {"query_date", "observed_schedule_dates", "date_matches_request"}
+        helper_nodes = [
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name in helper_names
+        ]
+        ns = {
+            "re": re,
+            "datetime": datetime,
+        }
+        from urllib.parse import parse_qs, urlparse
+        from zoneinfo import ZoneInfo
+        ns.update({"parse_qs": parse_qs, "urlparse": urlparse, "ZoneInfo": ZoneInfo})
+        exec(compile(ast.Module(body=helper_nodes, type_ignores=[]), "<amc-date-helpers>", "exec"), ns)
+
+        # 02:00 UTC on Sep 26 is still Sep 25 in Pacific time. A future-date
+        # request must not accept that schedule merely because the DOM has rows.
+        wrong_day_html = '<script>{"showDateTimeUtc":"2026-09-26T02:00:00Z"}</script>'
+        self.assertEqual(ns["observed_schedule_dates"](wrong_day_html), ["2026-09-25"])
+        self.assertFalse(ns["date_matches_request"](
+            "2026-09-26",
+            "https://www.amctheatres.com/example?date=2026-09-25",
+            wrong_day_html,
+        ))
+
+        requested_day_html = '<script>{"showDateTimeUtc":"2026-09-27T02:00:00Z"}</script>'
+        self.assertTrue(ns["date_matches_request"](
+            "2026-09-26",
+            "https://www.amctheatres.com/example",
+            requested_day_html,
+        ))
+
+    def test_amc_browser_metadata_is_sanitized_for_actions_date_logging(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+
+        payload = {
+            "status": 200,
+            "html": "<html>ok</html>",
+            "url": "https://www.amctheatres.com/example?date=2026-09-26&queueToken=secret-token",
+            "requested_date": "2026-09-26",
+            "final_url_date": "2026-09-26",
+            "observed_schedule_dates": ["2026-09-26"],
+            "date_before_restore": None,
+            "observed_before_restore": ["2026-09-25"],
+            "date_restore_attempted": True,
+            "date_match": True,
+        }
+        proc = type("Proc", (), {
+            "returncode": 0,
+            "stdout": json.dumps(payload),
+            "stderr": "",
+        })()
+        with patch("subprocess.run", return_value=proc):
+            status, html = ns["fetch_html_with_browser"](
+                "https://www.amctheatres.com/example",
+                params={"date": "2026-09-26"},
+            )
+
+        self.assertEqual((status, html), (200, "<html>ok</html>"))
+        meta = ns["_AMC_LAST_BROWSER_META"]
+        self.assertEqual(meta["requested_date"], "2026-09-26")
+        self.assertEqual(meta["final_url_date"], "2026-09-26")
+        self.assertEqual(meta["final_host"], "www.amctheatres.com")
+        self.assertEqual(meta["final_path"], "/example")
+        self.assertTrue(meta["date_restore_attempted"])
+        self.assertTrue(meta["date_match"])
+        self.assertNotIn("secret-token", repr(meta))
+
+    def test_amc_wrong_rendered_date_is_not_accepted_as_requested_day(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+
+        # Serialized timestamp is Sep 25 Pacific, while the requested day is Sep 26.
+        wrong_html = (
+            '<div aria-label="Showtimes for Wrong Day Movie">'
+            '<a href="/showtimes/901">7:00 PM</a></div>'
+            '<script>{"showtimeId":901,"status":"AVAILABLE",'
+            '"showDateTimeUtc":"2026-09-26T02:00:00Z",'
+            '"display":{"time":"7:00","amPm":"PM"}}</script>'
+        )
+        ns["fetch_amc_html"] = lambda session, url, params=None: (200, wrong_html)
+
+        def browser(url, params=None, timeout_ms=30000):
+            ns["_AMC_LAST_BROWSER_META"] = {
+                "requested_date": "2026-09-26",
+                "final_url_date": "2026-09-25",
+                "final_host": "www.amctheatres.com",
+                "final_path": "/example",
+                "observed_schedule_dates": ["2026-09-25"],
+                "date_restore_attempted": True,
+                "date_match": False,
+            }
+            return 200, wrong_html
+
+        ns["fetch_html_with_browser"] = browser
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ, {"AMC_LIVE_SPACING_SECONDS": "0"}, clear=False
+        ):
+            old_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                rows = scraper(
+                    None,
+                    "AMC Example 10",
+                    "https://www.amctheatres.com/example",
+                    ns["date"](2026, 9, 26),
+                )
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertEqual(rows, [])
+        checks = ns["_AMC_LIVE_METRICS"]["date_checks"]
+        self.assertTrue(checks)
+        self.assertTrue(all(not check["accepted"] for check in checks))
+        self.assertTrue(any(check["kind"] == "browser" and check["restore_attempted"] for check in checks))
+
     def test_amc_static_helper_does_not_launch_duplicate_browser_fallback(self):
         source = self._patched_source()
         ns = {}

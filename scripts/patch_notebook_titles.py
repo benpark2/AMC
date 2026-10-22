@@ -528,7 +528,9 @@ import json
 import re
 import sys
 import time
-from urllib.parse import unquote, urljoin
+from datetime import datetime
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
+from zoneinfo import ZoneInfo
 from playwright.sync_api import sync_playwright
 
 AMC_BASE = "https://www.amctheatres.com"
@@ -566,6 +568,40 @@ def extract_redirect(html_txt: str, current_url: str = AMC_BASE):
     except Exception:
         decoded = raw
     return urljoin(current_url or AMC_BASE, decoded)
+
+
+def query_date(url: str):
+    try:
+        values = parse_qs(urlparse(str(url or "")).query).get("date") or []
+        return str(values[0]) if values else None
+    except Exception:
+        return None
+
+
+def observed_schedule_dates(html_txt: str):
+    # Return Pacific local dates explicitly represented by AMC showtime UTC fields.
+    text = str(html_txt or "").replace('\\"', '"')
+    found = set()
+    pacific = ZoneInfo("America/Los_Angeles")
+    for match in re.finditer(r'"showDateTimeUtc"\s*:\s*"([^"]+)"', text, re.I):
+        raw = match.group(1).strip()
+        try:
+            stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                continue
+            found.add(stamp.astimezone(pacific).date().isoformat())
+        except Exception:
+            continue
+    return sorted(found)
+
+
+def date_matches_request(requested_date: str | None, final_url: str, html_txt: str):
+    if not requested_date:
+        return True
+    observed = observed_schedule_dates(html_txt)
+    if observed:
+        return requested_date in observed
+    return query_date(final_url) == requested_date
 
 
 def showtime_signature(page):
@@ -669,6 +705,51 @@ with sync_playwright() as p:
         page.wait_for_timeout(1500)
         html_txt = page.content()
 
+    # Queue/interstitial redirects can drop AMC's future-date query parameter and
+    # quietly land Chromium back on today's default schedule. Once the queue has
+    # settled, restore the original requested URL exactly once when the rendered
+    # page does not prove that it is showing the requested date. The outer
+    # scraper still validates parsed showtime dates before accepting the snapshot.
+    requested_date = query_date(target_url)
+    date_restore_attempted = False
+    date_before_restore = query_date(page.url)
+    observed_before_restore = observed_schedule_dates(html_txt)
+    if requested_date and not date_matches_request(requested_date, page.url, html_txt):
+        date_restore_attempted = True
+        try:
+            response = page.goto(target_url, wait_until="domcontentloaded", timeout=timeout_ms)
+            status = response.status if response is not None else status
+        except Exception:
+            pass
+        try:
+            page.wait_for_load_state("networkidle", timeout=min(7000, timeout_ms))
+        except Exception:
+            pass
+        page.wait_for_timeout(1500)
+        html_txt = page.content()
+
+        # If restoring the requested date re-enters AMC's queue, resolve that
+        # queue but do not enter an unbounded date/queue navigation loop.
+        for _ in range(2):
+            if not looks_like_interstitial(html_txt, page.url):
+                break
+            redirect_url = extract_redirect(html_txt, page.url or target_url)
+            try:
+                if redirect_url:
+                    response = page.goto(redirect_url, wait_until="domcontentloaded", timeout=timeout_ms)
+                    status = response.status if response is not None else status
+                else:
+                    response = page.reload(wait_until="domcontentloaded", timeout=timeout_ms)
+                    status = response.status if response is not None else status
+            except Exception:
+                pass
+            try:
+                page.wait_for_load_state("networkidle", timeout=min(7000, timeout_ms))
+            except Exception:
+                pass
+            page.wait_for_timeout(1500)
+            html_txt = page.content()
+
     # Wait for useful AMC content to stabilize. A page can briefly plateau at
     # one or two cards while later React requests are still resolving.
     start = time.monotonic()
@@ -705,11 +786,20 @@ with sync_playwright() as p:
         ):
             break
 
+    final_html = page.content()
+    observed_after_restore = observed_schedule_dates(final_html)
     payload = {
         "status": int(status or 200),
-        "html": page.content(),
+        "html": final_html,
         "url": page.url,
         "signature": showtime_signature(page),
+        "requested_date": requested_date,
+        "final_url_date": query_date(page.url),
+        "observed_schedule_dates": observed_after_restore,
+        "date_before_restore": date_before_restore,
+        "observed_before_restore": observed_before_restore,
+        "date_restore_attempted": bool(date_restore_attempted),
+        "date_match": bool(date_matches_request(requested_date, page.url, final_html)),
     }
     context.close()
     browser.close()
@@ -771,6 +861,23 @@ AMC_BROWSER_FETCH_REPLACEMENT_TEMPLATE = r'''def fetch_html_with_browser(url: st
         payload = json.loads(proc.stdout)
     except Exception as e:
         raise RuntimeError(f"browser subprocess returned invalid JSON: {proc.stdout[:500]}") from e
+
+    # Keep queue/date diagnostics in memory for the scraper to persist to the
+    # Actions-only metrics file. Do not print them here: Papermill stdout becomes
+    # notebook output and would otherwise leak diagnostics into the public HTML.
+    final_url = str(payload.get("url") or "")
+    parsed_final = _amc_urlparse(final_url)
+    globals()["_AMC_LAST_BROWSER_META"] = {
+        "requested_date": payload.get("requested_date"),
+        "final_url_date": payload.get("final_url_date"),
+        "final_host": parsed_final.netloc,
+        "final_path": parsed_final.path,
+        "observed_schedule_dates": list(payload.get("observed_schedule_dates") or []),
+        "date_before_restore": payload.get("date_before_restore"),
+        "observed_before_restore": list(payload.get("observed_before_restore") or []),
+        "date_restore_attempted": bool(payload.get("date_restore_attempted")),
+        "date_match": bool(payload.get("date_match")),
+    }
 
     return int(payload.get("status") or 200), str(payload.get("html") or "")
 '''
@@ -1812,6 +1919,7 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         "combos_failed": 0,
         "circuit_cache_skips": 0,
         "explicit_block_combos": 0,
+        "date_checks": [],
     })
 
     def _write_live_metrics() -> None:
@@ -1855,6 +1963,61 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         if explicit_block:
             _live_metrics["explicit_block_combos"] = int(_live_metrics.get("explicit_block_combos") or 0) + 1
         _write_live_metrics()
+
+    def _serialized_local_dates(page_html: str) -> list[str]:
+        """Extract Pacific dates from AMC's serialized UTC showtime fields."""
+        text = str(page_html or "").replace('\\"', '"')
+        dates_found = set()
+        try:
+            from zoneinfo import ZoneInfo as _AMCMetricZoneInfo
+            pacific = _AMCMetricZoneInfo("America/Los_Angeles")
+        except Exception:
+            pacific = None
+        if pacific is None:
+            return []
+        for match in re.finditer(r'"showDateTimeUtc"\s*:\s*"([^"]+)"', text, re.I):
+            try:
+                stamp = datetime.fromisoformat(match.group(1).replace("Z", "+00:00"))
+                if stamp.tzinfo is not None:
+                    dates_found.add(stamp.astimezone(pacific).date().isoformat())
+            except Exception:
+                continue
+        return sorted(dates_found)
+
+    def _record_date_check(kind: str, round_no: int, page_html: str, *, browser_meta: dict | None = None) -> bool:
+        observed = _serialized_local_dates(page_html)
+        meta = dict(browser_meta or {})
+        requested = str(meta.get("requested_date") or wanted)
+        final_date = meta.get("final_url_date")
+        # Serialized showtime timestamps are the strongest evidence. If present,
+        # the requested local date must be among them. Otherwise a browser page
+        # must at least retain the requested date in its final URL. Static HTML
+        # without serialized timestamps remains eligible for normal parser/coverage
+        # validation because requests does not expose its final redirect URL here.
+        if observed:
+            accepted = requested in observed
+        elif kind == "browser" and meta:
+            accepted = bool(meta.get("date_match"))
+        else:
+            accepted = True
+
+        checks = list(_live_metrics.get("date_checks") or [])
+        checks.append({
+            "kind": str(kind),
+            "theatre": str(theatre_name),
+            "requested_date": str(wanted),
+            "round": int(round_no),
+            "observed_dates": observed or list(meta.get("observed_schedule_dates") or []),
+            "final_url_date": final_date,
+            "final_host": str(meta.get("final_host") or ""),
+            "final_path": str(meta.get("final_path") or ""),
+            "restore_attempted": bool(meta.get("date_restore_attempted")),
+            "accepted": bool(accepted),
+        })
+        # Bound diagnostic growth even if AMC repeatedly fails during retries.
+        _live_metrics["date_checks"] = checks[-48:]
+        _write_live_metrics()
+        return bool(accepted)
 
     def _is_explicit_amc_block(page_html: str) -> bool:
         low = str(page_html or "").casefold()
@@ -1957,7 +2120,8 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
             print(f"[WARN] AMC static fetch failed for {theatre_name} {wanted} round {_round}: {e}")
 
         _static_blocked = _is_explicit_amc_block(round_html)
-        if status == 200 and round_html and not _static_blocked:
+        _static_date_ok = _record_date_check("static", _round, round_html) if round_html else True
+        if status == 200 and round_html and not _static_blocked and _static_date_ok:
             html_txt = round_html
             merge_html(round_html, rendered=False, source_label=f"static-r{_round}")
         else:
@@ -1989,7 +2153,11 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
             )
             _browser_blocked = _is_explicit_amc_block(round_browser_html)
             _saw_explicit_browser_block = _saw_explicit_browser_block or _browser_blocked
-            if status2 == 200 and round_browser_html and not _browser_blocked:
+            _browser_meta = dict(globals().get("_AMC_LAST_BROWSER_META") or {})
+            _browser_date_ok = _record_date_check(
+                "browser", _round, round_browser_html, browser_meta=_browser_meta
+            ) if round_browser_html else True
+            if status2 == 200 and round_browser_html and not _browser_blocked and _browser_date_ok:
                 browser_html = round_browser_html
                 merge_html(round_browser_html, rendered=True, source_label=f"browser-r{_round}")
             else:
@@ -2740,7 +2908,7 @@ def main() -> int:
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
         "non-movie filtering, original-film metadata lookup, stabilized AMC browser fetch, "
-        "AMC A-List metadata + clean public logs v39 -> "
+        "AMC A-List metadata + clean public logs v40 -> "
         f"{args.output_notebook}"
     )
     return 0
