@@ -118,7 +118,7 @@ jobs:
                       f"final_date={check.get('final_url_date') or '-'} "
                       f"observed={observed} "
                       f"restore={check.get('restore_attempted', False)} "
-                      f"accepted={check.get('accepted', False)}"
+                      f"date_valid={check.get('date_valid', False)}"
                       f"{final_location}"
                   )
           PY
