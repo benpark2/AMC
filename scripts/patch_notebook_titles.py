@@ -102,6 +102,24 @@ WEEKEND_PRINT_NEW = 'print("Requested dates (Pacific): " + ", ".join(f"{d.isofor
 DATE_LIST_OLD = 'dates = [sat, sun]'
 DATE_LIST_NEW = 'dates = list(dict.fromkeys([current_pacific_date(), sat, sun]))'
 
+# Probe all configured theatres for a date before advancing to the next date.
+# This prevents a single problematic theatre from supplying the first three
+# consecutive failures and prematurely opening the run-wide AMC circuit.
+AMC_SCRAPE_LOOP_OLD = """for th in THEATRES:
+    for d in dates:
+        try:
+            showtimes.extend(scrape_amc_showtimes_for_date(session, th["name"], th["url"], d))
+            time.sleep(0.2)
+        except Exception as e:
+            print(f"[WARN] Failed scraping {th['name']} {d}: {e}")"""
+AMC_SCRAPE_LOOP_NEW = """for d in dates:
+    for th in THEATRES:
+        try:
+            showtimes.extend(scrape_amc_showtimes_for_date(session, th["name"], th["url"], d))
+            time.sleep(0.2)
+        except Exception as e:
+            print(f"[WARN] Failed scraping {th['name']} {d}: {e}")"""
+
 FUNCTION_WRAPPER = """def candidate_title_variants(title: str) -> List[str]:
     \"\"\"Use the shared generic AMC-title normalizer for metadata lookup.\"\"\"
     from scripts.movie_titles import candidate_title_variants as _shared_variants
@@ -2012,7 +2030,7 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
             "final_host": str(meta.get("final_host") or ""),
             "final_path": str(meta.get("final_path") or ""),
             "restore_attempted": bool(meta.get("date_restore_attempted")),
-            "accepted": bool(accepted),
+            "date_valid": bool(accepted),
         })
         # Bound diagnostic growth even if AMC repeatedly fails during retries.
         _live_metrics["date_checks"] = checks[-48:]
@@ -2057,11 +2075,11 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         theatres = {f.get("theatre") for f in failures if f.get("theatre")}
         dates_seen = {f.get("date") for f in failures if f.get("date")}
 
-        # Do not abandon the live run after only two blocked combinations. AMC
-        # can transiently block one or two navigations and then recover, as seen
-        # in otherwise-successful runs. Require three *consecutive* explicit
-        # anti-bot/interstitial failures from three distinct theatre/date
-        # combinations before opening the fast cache circuit. Any live success
+        # Do not let one problematic theatre shut down the entire live run. AMC
+        # can transiently block several navigations for one location while other
+        # theatres still work. Require three *consecutive* explicit anti-bot/
+        # interstitial failures whose most-recent three combinations span at
+        # least two theatres and at least two requested dates. Any live success
         # clears ``failures`` above, so the explicit streak starts over.
         recent_three = failures[-3:]
         recent_three_combos = {
@@ -2069,13 +2087,20 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
             for f in recent_three
             if f.get("theatre") and f.get("date")
         }
+        recent_three_theatres = {f.get("theatre") for f in recent_three if f.get("theatre")}
+        recent_three_dates = {f.get("date") for f in recent_three if f.get("date")}
         if (
             len(recent_three) == 3
             and all(f.get("explicit_block") for f in recent_three)
             and len(recent_three_combos) == 3
+            and len(recent_three_theatres) >= 2
+            and len(recent_three_dates) >= 2
         ):
             _live_health["circuit_open"] = True
-            _live_health["reason"] = "three consecutive explicit AMC anti-bot/interstitial responses"
+            _live_health["reason"] = (
+                "three consecutive explicit AMC anti-bot/interstitial responses "
+                "across multiple theatres and dates"
+            )
         elif len(failures) >= 4 and len(theatres) >= 2 and len(dates_seen) >= 2:
             _live_health["circuit_open"] = True
             _live_health["reason"] = "repeated empty/incomplete AMC responses across theatres and dates"
@@ -2714,6 +2739,7 @@ def patch_notebook(notebook: dict) -> dict:
     upcoming_weekend_replacements = 0
     weekend_print_replacements = 0
     date_list_replacements = 0
+    amc_scrape_loop_replacements = 0
     candidate_function_replacements = 0
     df_show_insertions = 0
     imdb_function_patches = 0
@@ -2758,6 +2784,15 @@ def patch_notebook(notebook: dict) -> dict:
         if date_list_count == 1:
             source = source.replace(DATE_LIST_OLD, DATE_LIST_NEW, 1)
             date_list_replacements += 1
+
+        scrape_loop_count = source.count(AMC_SCRAPE_LOOP_OLD)
+        if scrape_loop_count > 1:
+            raise RuntimeError(
+                f"Expected at most one AMC scrape-order loop in a cell; found {scrape_loop_count}."
+            )
+        if scrape_loop_count == 1:
+            source = source.replace(AMC_SCRAPE_LOOP_OLD, AMC_SCRAPE_LOOP_NEW, 1)
+            amc_scrape_loop_replacements += 1
 
         source, did_replace = _replace_function(
             source,
@@ -2854,6 +2889,7 @@ def patch_notebook(notebook: dict) -> dict:
     expected = {
         "upcoming_weekend_pacific replacement": upcoming_weekend_replacements,
         "current-date request-list replacement": date_list_replacements,
+        "AMC date-major scrape ordering": amc_scrape_loop_replacements,
         "candidate_title_variants replacement": candidate_function_replacements,
         "df_show non-movie filter": df_show_insertions,
         "build_imdb_lookup patch": imdb_function_patches,
@@ -2908,7 +2944,7 @@ def main() -> int:
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
         "non-movie filtering, original-film metadata lookup, stabilized AMC browser fetch, "
-        "AMC A-List metadata + clean public logs v40 -> "
+        "AMC A-List metadata + clean public logs v41 -> "
         f"{args.output_notebook}"
     )
     return 0

@@ -385,6 +385,18 @@ THEATRES = [
 ]
 sat, sun = upcoming_weekend_pacific()
 dates = [sat, sun]
+# Structural copy of the production scrape loop. Temporarily empty THEATRES so
+# the fixture executes without network work while still exercising loop patching.
+_scrape_order_fixture_theatres = THEATRES
+THEATRES = []
+for th in THEATRES:
+    for d in dates:
+        try:
+            showtimes.extend(scrape_amc_showtimes_for_date(session, th["name"], th["url"], d))
+            time.sleep(0.2)
+        except Exception as e:
+            print(f"[WARN] Failed scraping {th['name']} {d}: {e}")
+THEATRES = _scrape_order_fixture_theatres
 # Aggregate-guard fixtures below intentionally override the requested dates.
 dates = [date(2026, 9, 26), date(2026, 9, 27)]
 _fixture_theatres = [
@@ -445,6 +457,8 @@ desired = [
         self.assertIn("lookup_literal_targets = [", source)
         self.assertIn("next two weekend calendar days after today", source)
         self.assertIn("cursor = today + timedelta(days=1)", source)
+        self.assertIn("for d in dates:\n    for th in THEATRES:", source)
+        self.assertNotIn("for th in THEATRES:\n    for d in dates:", source)
         self.assertIn("metadata_release_year_hint", source)
         self.assertIn("lookup_year_hint", source)
         self.assertIn("year_match", source)
@@ -1052,7 +1066,7 @@ desired = [
         self.assertEqual(rows, [])
         checks = ns["_AMC_LIVE_METRICS"]["date_checks"]
         self.assertTrue(checks)
-        self.assertTrue(all(not check["accepted"] for check in checks))
+        self.assertTrue(all(not check["date_valid"] for check in checks))
         self.assertTrue(any(check["kind"] == "browser" and check["restore_attempted"] for check in checks))
 
     def test_amc_static_helper_does_not_launch_duplicate_browser_fallback(self):
@@ -1075,7 +1089,7 @@ desired = [
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][2], 1)
 
-    def test_explicit_amc_block_requires_three_consecutive_combos_before_cache_circuit(self):
+    def test_explicit_amc_block_requires_theatre_and_date_diversity_before_cache_circuit(self):
         source = self._patched_source()
         ns = {}
         exec(compile(source, "<patched-notebook-test>", "exec"), ns)
@@ -1091,8 +1105,9 @@ desired = [
         ns["fetch_amc_html"] = static
         ns["fetch_html_with_browser"] = browser
 
-        theatres = ["AMC Alpha 10", "AMC Beta 10", "AMC Gamma 10", "AMC Delta 10"]
-        wanted = "2026-09-26"
+        theatres = ["AMC Alpha 10", "AMC Beta 10", "AMC Gamma 10", "AMC Delta 10", "AMC Epsilon 10"]
+        first_date = "2026-09-26"
+        second_date = "2026-09-27"
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1102,7 +1117,14 @@ desired = [
                 encoding="utf-8",
             )
             cached_rows = []
-            for idx, theatre in enumerate(theatres, start=1):
+            combos = [
+                (theatres[0], first_date),
+                (theatres[1], first_date),
+                (theatres[2], first_date),
+                (theatres[3], second_date),
+                (theatres[4], second_date),
+            ]
+            for idx, (theatre, wanted) in enumerate(combos, start=1):
                 cached_rows.append({
                     "movie_id": idx,
                     "movie": f"Cached Film {idx}",
@@ -1129,9 +1151,13 @@ desired = [
                     second = scraper(None, theatres[1], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
                     self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
                     third = scraper(None, theatres[2], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                    # Three blocked theatres on only one date are not enough to
+                    # declare the whole AMC run unavailable.
+                    self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
+                    fourth = scraper(None, theatres[3], "https://example.invalid/showtimes", ns["date"](2026, 9, 27))
                     self.assertTrue(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
-                    before_fourth = dict(network)
-                    fourth = scraper(None, theatres[3], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                    before_fifth = dict(network)
+                    fifth = scraper(None, theatres[4], "https://example.invalid/showtimes", ns["date"](2026, 9, 27))
             finally:
                 os.chdir(old_cwd)
 
@@ -1139,13 +1165,41 @@ desired = [
         self.assertEqual(second[0]["movie_title"], "Cached Film 2")
         self.assertEqual(third[0]["movie_title"], "Cached Film 3")
         self.assertEqual(fourth[0]["movie_title"], "Cached Film 4")
-        self.assertEqual(before_fourth, network)
-        self.assertEqual(network["static"], 3)
-        self.assertEqual(network["browser"], 3)
-        self.assertEqual(ns["_AMC_LIVE_METRICS"]["explicit_block_combos"], 3)
+        self.assertEqual(fifth[0]["movie_title"], "Cached Film 5")
+        self.assertEqual(before_fifth, network)
+        self.assertEqual(network["static"], 4)
+        self.assertEqual(network["browser"], 4)
+        self.assertEqual(ns["_AMC_LIVE_METRICS"]["explicit_block_combos"], 4)
         self.assertEqual(ns["_AMC_LIVE_METRICS"]["circuit_cache_skips"], 1)
         self.assertTrue(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
-        self.assertIn("three consecutive explicit", ns["_AMC_LIVE_HEALTH"]["reason"])
+        self.assertIn("multiple theatres and dates", ns["_AMC_LIVE_HEALTH"]["reason"])
+
+    def test_three_explicit_blocks_from_one_theatre_do_not_open_global_circuit(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+        ns["fetch_amc_html"] = lambda session, url, params=None: (200, "<html>Access Denied</html>")
+        ns["fetch_html_with_browser"] = lambda url, params=None, timeout_ms=30000: (200, "<html>Verify you are human</html>")
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ, {"AMC_LIVE_SPACING_SECONDS": "0"}, clear=False
+        ):
+            old_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                for day in (26, 27, 28):
+                    scraper(
+                        None,
+                        "AMC Single Problem Theatre",
+                        "https://example.invalid/showtimes",
+                        ns["date"](2026, 9, day),
+                    )
+                    self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertEqual(len(ns["_AMC_LIVE_HEALTH"]["failures"]), 3)
 
     def test_amc_live_success_resets_explicit_block_streak(self):
         source = self._patched_source()
@@ -1175,7 +1229,10 @@ desired = [
         ns["fetch_amc_html"] = static
         ns["fetch_html_with_browser"] = browser
         theatres = [f"AMC Reset {i}" for i in range(1, 8)]
-        wanted = "2026-09-26"
+        combo_dates = [
+            "2026-09-26", "2026-09-27", "2026-09-26",
+            "2026-09-26", "2026-09-27", "2026-09-26", "2026-09-27",
+        ]
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1190,7 +1247,7 @@ desired = [
                     "movie": f"Cached Reset Film {idx}",
                     "theater": theatre,
                     "format": "",
-                    "date": wanted,
+                    "date": combo_dates[idx - 1],
                     "start": "7:00 pm",
                     "runtime_min": 100,
                     "a_list_excluded": False,
@@ -1209,7 +1266,7 @@ desired = [
             try:
                 with patch.dict(os.environ, {"AMC_LIVE_SPACING_SECONDS": "0"}, clear=False):
                     scraper(None, theatres[0], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
-                    scraper(None, theatres[1], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                    scraper(None, theatres[1], "https://example.invalid/showtimes", ns["date"](2026, 9, 27))
                     self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
                     self.assertEqual(len(ns["_AMC_LIVE_HEALTH"]["failures"]), 2)
 
@@ -1220,18 +1277,18 @@ desired = [
                     self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
                     self.assertEqual(ns["_AMC_LIVE_HEALTH"]["failures"], [])
 
-                    # Two more blocks after the success still must not open it.
+                    # Two more diverse blocks after the success still must not open it.
                     state["blocked"] = True
                     scraper(None, theatres[3], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
-                    scraper(None, theatres[4], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                    scraper(None, theatres[4], "https://example.invalid/showtimes", ns["date"](2026, 9, 27))
                     self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
 
-                    # The third consecutive post-success block opens the circuit;
-                    # the next exact cached combination must skip all network work.
+                    # The third consecutive post-success block now spans multiple
+                    # theatres and dates, so the next exact cached combo can skip.
                     scraper(None, theatres[5], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
                     self.assertTrue(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
                     before_skip = dict(network)
-                    skipped = scraper(None, theatres[6], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                    skipped = scraper(None, theatres[6], "https://example.invalid/showtimes", ns["date"](2026, 9, 27))
                     self.assertEqual(before_skip, network)
                     self.assertEqual(skipped[0]["movie_title"], "Cached Reset Film 7")
             finally:
@@ -1283,6 +1340,9 @@ desired = [
         # The notebook source writes JSON only; the Actions workflow prints the
         # human-readable [AMC-METRICS] line after Papermill, so it cannot enter HTML.
         self.assertNotIn("[AMC-METRICS]", source)
+        workflow = Path(".github/workflows/daily-AMC.yml").read_text(encoding="utf-8")
+        self.assertIn("date_valid=", workflow)
+        self.assertNotIn("accepted={check.get('accepted'", workflow)
 
     def test_non_200_static_still_uses_browser(self):
         source = self._patched_source()
