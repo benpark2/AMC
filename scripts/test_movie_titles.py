@@ -34,10 +34,11 @@ from scripts.postprocess_report import parse_showtimes_blob
 import scripts.postprocess_report as postprocess
 import scripts.finalize_posters as posters
 
-# Production defaults to 4-second AMC request spacing. Unit tests exercise the
-# same logic without wall-clock delays; this environment change is local to the
-# test process and does not propagate to the Actions notebook execution.
+# Production defaults to 10-second AMC browser spacing plus a 30-second
+# post-block cooldown. Unit tests exercise the same logic without wall-clock
+# delays unless a test explicitly opts into timing behavior.
 os.environ.setdefault("AMC_LIVE_SPACING_SECONDS", "0")
+os.environ.setdefault("AMC_EXPLICIT_BLOCK_COOLDOWN_SECONDS", "0")
 
 
 class MovieTitleTests(unittest.TestCase):
@@ -470,7 +471,7 @@ desired = [
         self.assertIn('"showDateTimeUtc"', source)
         self.assertIn('showtime_id', source)
         self.assertIn('aria_count == 0', source)
-        self.assertIn('Merging rendered AMC DOM for', source)
+        self.assertIn('Loading rendered AMC DOM for', source)
         self.assertNotIn('_minimum_unique_movies = 10', source)
         self.assertNotIn('_screen_count * 0.45', source)
         self.assertNotIn('_previous_movie_count * 0.40', source)
@@ -481,7 +482,7 @@ desired = [
         self.assertIn('NOALIST', source)
         self.assertIn('_a_list_excluded_for_showtime', source)
         self.assertIn('_cache_dir = _AMCPath("build/amc_combo_cache")', source)
-        self.assertIn('_max_rounds = 2', source)
+        self.assertIn('_max_rounds = 1', source)
         self.assertIn('return fetch_html(session, url, params=params, tries=1)', source)
         self.assertIn('_AMC_LIVE_HEALTH', source)
         self.assertIn('without another browser launch', source)
@@ -1167,7 +1168,7 @@ desired = [
         self.assertEqual(fourth[0]["movie_title"], "Cached Film 4")
         self.assertEqual(fifth[0]["movie_title"], "Cached Film 5")
         self.assertEqual(before_fifth, network)
-        self.assertEqual(network["static"], 4)
+        self.assertEqual(network["static"], 0)
         self.assertEqual(network["browser"], 4)
         self.assertEqual(ns["_AMC_LIVE_METRICS"]["explicit_block_combos"], 4)
         self.assertEqual(ns["_AMC_LIVE_METRICS"]["circuit_cache_skips"], 1)
@@ -1304,7 +1305,8 @@ desired = [
             f'<div aria-label="Showtimes for Movie {i}"><a href="/showtimes/{100+i}">8:{i:02d} PM</a></div>'
             for i in range(1, 7)
         )
-        ns["fetch_amc_html"] = lambda session, url, params=None: (200, rendered)
+        static_calls = []
+        ns["fetch_amc_html"] = lambda *args, **kwargs: static_calls.append(1) or (200, rendered)
         ns["fetch_html_with_browser"] = lambda url, params=None, timeout_ms=30000: (200, rendered)
 
         clock = [100.0]
@@ -1316,41 +1318,118 @@ desired = [
             clock[0] += seconds
 
         with tempfile.TemporaryDirectory() as tmp, \
-             patch.dict(os.environ, {"AMC_LIVE_SPACING_SECONDS": "4"}, clear=False), \
+             patch.dict(os.environ, {
+                 "AMC_LIVE_SPACING_SECONDS": "10",
+                 "AMC_EXPLICIT_BLOCK_COOLDOWN_SECONDS": "30",
+             }, clear=False), \
              patch("time.monotonic", side_effect=monotonic), \
              patch("time.sleep", side_effect=sleep):
             old_cwd = os.getcwd()
             os.chdir(tmp)
             try:
-                rows = scraper(None, "AMC Example 10", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                first = scraper(None, "AMC Example 10", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                second = scraper(None, "AMC Example 11", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
                 metrics_path = Path("build/amc_live_metrics.json")
                 self.assertTrue(metrics_path.exists())
                 metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
             finally:
                 os.chdir(old_cwd)
 
-        self.assertTrue(rows)
-        self.assertEqual(metrics["spacing_seconds"], 4.0)
-        self.assertEqual(metrics["static_requests"], 1)
-        self.assertEqual(metrics["browser_launches"], 1)
-        self.assertEqual(metrics["combos_live"], 1)
+        self.assertTrue(first)
+        self.assertTrue(second)
+        self.assertEqual(static_calls, [])
+        self.assertEqual(metrics["spacing_seconds"], 10.0)
+        self.assertEqual(metrics["block_cooldown_seconds"], 30.0)
+        self.assertEqual(metrics["static_requests"], 0)
+        self.assertEqual(metrics["browser_launches"], 2)
+        self.assertEqual(metrics["combos_live"], 2)
         self.assertEqual(metrics["live_page_loads"], 2)
         self.assertEqual(len(sleeps), 1)
-        self.assertAlmostEqual(sleeps[0], 4.0, places=3)
+        self.assertAlmostEqual(sleeps[0], 10.0, places=3)
         # The notebook source writes JSON only; the Actions workflow prints the
-        # human-readable [AMC-METRICS] line after Papermill, so it cannot enter HTML.
+        # human-readable diagnostics after Papermill, so they cannot enter HTML.
         self.assertNotIn("[AMC-METRICS]", source)
         workflow = Path(".github/workflows/daily-AMC.yml").read_text(encoding="utf-8")
+        self.assertIn("cooldown_slept=", workflow)
         self.assertIn("date_valid=", workflow)
         self.assertNotIn("accepted={check.get('accepted'", workflow)
 
-    def test_non_200_static_still_uses_browser(self):
+    def test_explicit_block_cooldown_precedes_next_browser_attempt(self):
         source = self._patched_source()
         ns = {}
         exec(compile(source, "<patched-notebook-test>", "exec"), ns)
         scraper = ns["scrape_amc_showtimes_for_date"]
 
-        ns["fetch_amc_html"] = lambda session, url, params=None: (403, "blocked")
+        rendered = "".join(
+            f'<div aria-label="Showtimes for Movie {i}"><a href="/showtimes/{100+i}">8:{i:02d} PM</a></div>'
+            for i in range(1, 7)
+        )
+        browser_results = [
+            (200, "<html><body>Verify you are human</body></html>"),
+            (200, rendered),
+        ]
+        browser_calls = []
+        def browser(url, params=None, timeout_ms=30000):
+            browser_calls.append((url, params))
+            return browser_results[len(browser_calls) - 1]
+        ns["fetch_html_with_browser"] = browser
+
+        clock = [200.0]
+        sleeps = []
+        def monotonic():
+            return clock[0]
+        def sleep(seconds):
+            sleeps.append(seconds)
+            clock[0] += seconds
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.dict(os.environ, {
+                 "AMC_LIVE_SPACING_SECONDS": "10",
+                 "AMC_EXPLICIT_BLOCK_COOLDOWN_SECONDS": "30",
+             }, clear=False), \
+             patch("time.monotonic", side_effect=monotonic), \
+             patch("time.sleep", side_effect=sleep):
+            root = Path(tmp)
+            (root / "docs").mkdir()
+            (root / "docs" / "last_run_utc.txt").write_text(
+                datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ") + "\n",
+                encoding="utf-8",
+            )
+            cached = [{
+                "movie_id": 1, "movie": "Cached Film", "theater": "AMC First 10",
+                "format": "", "date": "2026-09-26", "start": "7:00 pm",
+                "runtime_min": 100, "a_list_excluded": False,
+            }]
+            (root / "docs" / "index.html").write_text(
+                '<script id="showtimes-data" type="application/json">'
+                + json.dumps({"movies": [], "showtimes": cached}) + "</script>",
+                encoding="utf-8",
+            )
+            old_cwd = os.getcwd()
+            os.chdir(root)
+            try:
+                cached_rows = scraper(None, "AMC First 10", "https://example.invalid/first", ns["date"](2026, 9, 26))
+                live_rows = scraper(None, "AMC Second 10", "https://example.invalid/second", ns["date"](2026, 9, 27))
+                metrics = json.loads(Path("build/amc_live_metrics.json").read_text(encoding="utf-8"))
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertEqual(cached_rows[0]["movie_title"], "Cached Film")
+        self.assertTrue(live_rows)
+        self.assertEqual(len(browser_calls), 2)
+        self.assertEqual(len(sleeps), 1)
+        self.assertAlmostEqual(sleeps[0], 30.0, places=3)
+        self.assertAlmostEqual(metrics["block_cooldown_sleep_seconds"], 30.0, places=3)
+
+    def test_static_preflight_is_not_called_and_browser_runs_once(self):
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+
+        ns["fetch_amc_html"] = lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("static AMC preflight must not run")
+        )
         rendered = "".join(
             f'<div aria-label="Showtimes for Movie {i}"><a href="/showtimes/{100+i}">8:{i:02d} PM</a></div>'
             for i in range(1, 7)
@@ -1362,8 +1441,10 @@ desired = [
         ns["fetch_html_with_browser"] = browser
 
         rows = scraper(None, "AMC Example 10", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 1)
         self.assertEqual(len({r["movie_title"] for r in rows}), 6)
+        self.assertEqual(ns["_AMC_LIVE_METRICS"]["static_requests"], 0)
+        self.assertEqual(ns["_AMC_LIVE_METRICS"]["browser_launches"], 1)
 
     def test_complete_static_page_still_gets_one_rendered_merge_for_missing_times(self):
         source = self._patched_source()
@@ -1388,15 +1469,15 @@ desired = [
         movie1 = [r for r in rows if r["movie_title"] == "Movie 1"]
         self.assertEqual({r["showtime_id"] for r in movie1}, {"101", "999"})
 
-    def test_browser_only_small_schedule_is_corroborated_and_merged_across_rounds(self):
+    def test_browser_only_small_schedule_uses_single_snapshot(self):
         source = self._patched_source()
         ns = {}
         exec(compile(source, "<patched-notebook-test>", "exec"), ns)
         scraper = ns["scrape_amc_showtimes_for_date"]
 
-        # With no usable static evidence, a single browser snapshot is not
-        # enough to call a low-count response complete. A second independent
-        # browser observation is merged rather than replacing the first.
+        # Browser-only mode intentionally performs one helper call per combo.
+        # A structurally complete small schedule is accepted without a second
+        # request solely to corroborate its size.
         ns["fetch_amc_html"] = lambda session, url, params=None: (200, "")
         rendered_pages = [
             "".join(
@@ -1421,8 +1502,8 @@ desired = [
                 rows = scraper(None, "AMC Example 10", "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
             finally:
                 os.chdir(old_cwd)
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(len({r["movie_title"] for r in rows}), 6)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len({r["movie_title"] for r in rows}), 3)
 
     def _reordered_flight_payload(self, total=4):
         """Synthetic source where only the first record matches the strict parser order."""
@@ -1482,7 +1563,7 @@ desired = [
         self.assertEqual(status["parsed_titles"], 1)
         self.assertEqual(status["missing_titles"], [])
 
-    def test_actionable_source_parser_gap_can_be_recovered_by_second_rendered_round(self):
+    def test_actionable_source_parser_gap_does_not_trigger_second_browser_round(self):
         source = self._patched_source()
         ns = {}
         exec(compile(source, "<patched-notebook-test>", "exec"), ns)
@@ -1491,7 +1572,8 @@ desired = [
         # Four rendered movie regions intentionally reuse one AMC showtime ID.
         # The independent evidence scanner sees four actionable movie/time
         # pairs, while add_row() retains only the last title for that shared ID.
-        # This is a genuine hard coverage gap and must force round 2.
+        # This is a genuine hard coverage gap, but browser-only mode must not
+        # make a second AMC request just to try to repair it.
         partial_rendered = "".join(
             f'<div aria-label="Showtimes for Source Movie {i}"><a href="/showtimes/501">7:{i:02d} PM</a></div>'
             for i in range(1, 5)
@@ -1518,12 +1600,11 @@ desired = [
             finally:
                 os.chdir(old_cwd)
 
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(len({r["movie_title"] for r in rows}), 4)
-        self.assertTrue(status["complete"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len({r["movie_title"] for r in rows}), 1)
+        self.assertFalse(status["complete"])
         self.assertEqual(status["source_titles"], 4)
-        self.assertEqual(status["missing_titles"], [])
-        self.assertEqual(status["missing_showtime_slots"], [])
+        self.assertEqual(len(status["missing_titles"]), 3)
 
     def test_persisted_actionable_evidence_survives_a_later_smaller_response(self):
         source = self._patched_source()
@@ -1843,7 +1924,7 @@ desired = [
         static_payload = '<script>self.__next_f.push([1,"' + " ".join(serialized) + '"])</script>'
 
         ns["fetch_amc_html"] = lambda session, url, params=None: (200, static_payload)
-        ns["fetch_html_with_browser"] = lambda url, params=None, timeout_ms=30000: (200, rendered)
+        ns["fetch_html_with_browser"] = lambda url, params=None, timeout_ms=30000: (200, rendered + static_payload)
 
         with tempfile.TemporaryDirectory() as tmp:
             old_cwd = os.getcwd()
@@ -1917,7 +1998,8 @@ desired = [
         first_counts = dict(network)
         second = scraper(*args)
         self.assertEqual(len(first), len(second))
-        self.assertGreater(network["static"], first_counts["static"])
+        self.assertEqual(network["static"], 0)
+        self.assertEqual(first_counts["static"], 0)
         self.assertGreater(network["browser"], first_counts["browser"])
 
     def test_recent_same_weekend_report_is_last_good_fallback_and_keeps_noalist(self):
@@ -2208,6 +2290,7 @@ df_show = pd.DataFrame(showtimes)"""
         </div>
         '''
         ns["fetch_amc_html"] = lambda session, url, params=None: (200, html)
+        ns["fetch_html_with_browser"] = lambda url, params=None, timeout_ms=30000: (200, html)
         ns["_collect_movie_blocks"] = lambda soup: (_ for _ in ()).throw(
             AssertionError("legacy parser should not run when aria showtime links exist")
         )
@@ -2236,6 +2319,7 @@ df_show = pd.DataFrame(showtimes)"""
         </div>
         '''
         ns["fetch_amc_html"] = lambda session, url, params=None: (200, html)
+        ns["fetch_html_with_browser"] = lambda url, params=None, timeout_ms=30000: (200, html)
         rows = scraper(
             None,
             "AMC Example 5",

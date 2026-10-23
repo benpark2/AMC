@@ -1919,16 +1919,26 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         "circuit_open": False,
         "reason": "",
         "last_load_started": None,
+        "last_explicit_block_at": None,
     })
     _AMCTime = __import__("time")
     try:
-        _spacing_seconds = max(0.0, float(__import__("os").environ.get("AMC_LIVE_SPACING_SECONDS", "4")))
+        _spacing_seconds = max(0.0, float(__import__("os").environ.get("AMC_LIVE_SPACING_SECONDS", "10")))
     except Exception:
-        _spacing_seconds = 4.0
+        _spacing_seconds = 10.0
+    try:
+        _block_cooldown_seconds = max(
+            0.0,
+            float(__import__("os").environ.get("AMC_EXPLICIT_BLOCK_COOLDOWN_SECONDS", "30")),
+        )
+    except Exception:
+        _block_cooldown_seconds = 30.0
     _live_metrics = globals().setdefault("_AMC_LIVE_METRICS", {
         "started_at": _AMCTime.monotonic(),
         "spacing_seconds": _spacing_seconds,
         "spacing_sleep_seconds": 0.0,
+        "block_cooldown_seconds": _block_cooldown_seconds,
+        "block_cooldown_sleep_seconds": 0.0,
         "live_page_loads": 0,
         "static_requests": 0,
         "browser_launches": 0,
@@ -1956,20 +1966,43 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
             pass
 
     def _pace_live_load(kind: str) -> None:
-        # Space request starts rather than blindly sleeping after every call. A
-        # slow browser navigation already creates its own spacing, while a fast
-        # static response cannot be followed by an immediate browser burst.
-        last_started = _live_health.get("last_load_started")
+        # Pace browser starts rather than adding a blind post-request sleep. The
+        # normal interval smooths successful navigation, while an explicit AMC
+        # interstitial arms a longer cooldown before the next *actual* browser
+        # attempt. Cache-only circuit skips never call this helper and therefore
+        # never pay a pointless cooldown.
         now = _AMCTime.monotonic()
+        last_started = _live_health.get("last_load_started")
+        normal_wait = 0.0
         if last_started is not None and _spacing_seconds > 0:
-            wait_for = max(0.0, _spacing_seconds - (now - float(last_started)))
-            if wait_for > 0:
-                _AMCTime.sleep(wait_for)
-                _live_metrics["spacing_sleep_seconds"] = float(_live_metrics.get("spacing_sleep_seconds") or 0.0) + wait_for
+            normal_wait = max(0.0, _spacing_seconds - (now - float(last_started)))
+
+        cooldown_wait = 0.0
+        blocked_at = _live_health.get("last_explicit_block_at")
+        if blocked_at is not None and _block_cooldown_seconds > 0:
+            cooldown_wait = max(0.0, _block_cooldown_seconds - (now - float(blocked_at)))
+
+        wait_for = max(normal_wait, cooldown_wait)
+        if wait_for > 0:
+            _AMCTime.sleep(wait_for)
+            _live_metrics["spacing_sleep_seconds"] = float(
+                _live_metrics.get("spacing_sleep_seconds") or 0.0
+            ) + wait_for
+            if cooldown_wait > normal_wait:
+                _live_metrics["block_cooldown_sleep_seconds"] = float(
+                    _live_metrics.get("block_cooldown_sleep_seconds") or 0.0
+                ) + wait_for
+
         _live_health["last_load_started"] = _AMCTime.monotonic()
         _live_metrics["live_page_loads"] = int(_live_metrics.get("live_page_loads") or 0) + 1
         metric_key = "browser_launches" if kind == "browser" else "static_requests"
         _live_metrics[metric_key] = int(_live_metrics.get(metric_key) or 0) + 1
+        _write_live_metrics()
+
+    def _arm_explicit_block_cooldown() -> None:
+        # Start the cooldown when the interstitial is actually observed. Work
+        # done after detection naturally consumes part of the 30-second window.
+        _live_health["last_explicit_block_at"] = _AMCTime.monotonic()
         _write_live_metrics()
 
     def _finish_combo(outcome: str, *, circuit_skip: bool = False, explicit_block: bool = False) -> None:
@@ -2058,6 +2091,7 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         _live_health["failures"] = []
         _live_health["circuit_open"] = False
         _live_health["reason"] = ""
+        _live_health["last_explicit_block_at"] = None
 
     def _record_live_failure(reason: str, *, explicit_block: bool = False) -> None:
         failures = list(_live_health.get("failures") or [])
@@ -2127,47 +2161,19 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
     html_txt = ""
     target = requests.Request("GET", showtimes_url, params={"date": wanted}).prepare().url
 
-    # Each round combines an HTTP/static view with a fresh rendered-browser
-    # view. We stop after round 1 only when (a) every actionable item the source
-    # exposed was parsed and (b) at least two non-empty source observations
-    # corroborated the result. If only one source produced evidence, perform the
-    # second round even for a one-movie schedule; this is how we distinguish a
-    # genuine small schedule from a one-off partial response without hard-coded
-    # inventory floors.
-    _max_rounds = 2
+    # Browser-only AMC retrieval: one rendered-browser helper call per
+    # theatre/date combination. The former static preflight doubled the number
+    # of AMC hits and was no longer providing useful schedule data in blocked
+    # GitHub runs. The browser helper itself may perform one in-session date
+    # restoration if AMC redirects away from the requested day; that safeguard
+    # is not a second scraper retry.
+    _max_rounds = 1
     _saw_explicit_browser_block = False
     for _round in range(1, _max_rounds + 1):
-        try:
-            _pace_live_load("static")
-            status, round_html = fetch_amc_html(session, showtimes_url, params={"date": wanted})
-        except Exception as e:
-            status, round_html = 0, ""
-            print(f"[WARN] AMC static fetch failed for {theatre_name} {wanted} round {_round}: {e}")
-
-        _static_blocked = _is_explicit_amc_block(round_html)
-        _static_date_ok = _record_date_check("static", _round, round_html) if round_html else True
-        if status == 200 and round_html and not _static_blocked and _static_date_ok:
-            html_txt = round_html
-            merge_html(round_html, rendered=False, source_label=f"static-r{_round}")
-        else:
-            print(
-                f"[WARN] AMC static fetch returned status {status} for "
-                f"{theatre_name} {wanted} round {_round}; trying browser DOM"
-            )
-
-        if _round == 1:
-            print(
-                f"[INFO] Merging rendered AMC DOM for {theatre_name} {wanted} "
-                f"(static/cached titles so far: {_unique_title_count()})"
-            )
-        else:
-            _before = _coverage_state()
-            print(
-                f"[INFO] Targeted AMC coverage retry {_round}/{_max_rounds} for {theatre_name} {wanted}: "
-                f"parsed {_before['parsed_titles']}/{_before['source_titles']} source movie(s), "
-                f"{_before['parsed_showtime_slots']}/{_before['source_showtime_slots']} trusted rendered slot(s), "
-                f"source samples={_before['source_samples']}"
-            )
+        print(
+            f"[INFO] Loading rendered AMC DOM for {theatre_name} {wanted} "
+            f"(cached titles so far: {_unique_title_count()})"
+        )
         _browser_blocked = False
         try:
             _pace_live_load("browser")
@@ -2178,6 +2184,8 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
             )
             _browser_blocked = _is_explicit_amc_block(round_browser_html)
             _saw_explicit_browser_block = _saw_explicit_browser_block or _browser_blocked
+            if _browser_blocked:
+                _arm_explicit_block_cooldown()
             _browser_meta = dict(globals().get("_AMC_LAST_BROWSER_META") or {})
             _browser_date_ok = _record_date_check(
                 "browser", _round, round_browser_html, browser_meta=_browser_meta
@@ -2193,21 +2201,17 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         except Exception as e:
             print(f"[WARN] AMC browser enrichment failed for {theatre_name} {wanted} round {_round}: {e}")
 
-        # A rendered anti-bot/interstitial page is strong evidence that repeating
-        # the same browser round for this combination will only waste time. If
-        # we already have usable rows from another source we still allow normal
-        # completeness logic; otherwise fall through to the recent-report cache.
         if _browser_blocked and not _clean_rows():
             print(
                 f"[WARN] AMC explicit block detected for {theatre_name} {wanted}; "
-                "skipping duplicate browser round for this combination."
+                "using cache fallback if available."
             )
             break
 
         _save_cache()
         _save_source_evidence()
         _state = _coverage_state()
-        if _state["complete"] and _state["parsed_titles"] > 0 and _state["source_samples"] >= 2:
+        if _state["complete"] and _state["parsed_titles"] > 0:
             break
 
     final_rows = _clean_rows()
@@ -2944,7 +2948,7 @@ def main() -> int:
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
         "non-movie filtering, original-film metadata lookup, stabilized AMC browser fetch, "
-        "AMC A-List metadata + clean public logs v41 -> "
+        "AMC A-List metadata + clean public logs v42 -> "
         f"{args.output_notebook}"
     )
     return 0
