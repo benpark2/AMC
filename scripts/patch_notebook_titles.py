@@ -1160,6 +1160,10 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
     out: List[dict] = []
     id_to_index = {}
     fallback_to_index = {}
+    # A second Papermill attempt can load rows saved by an earlier attempt.
+    # Track semantic showtime slots parsed from THIS attempt's live browser DOM
+    # separately, so preserved rows are never mislabeled as newly retrieved.
+    _fresh_row_slots = set()
 
     # Never infer expected inventory from screen count. Instead, retain two
     # independent things across this workflow run: rows we successfully parsed
@@ -1253,6 +1257,11 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         row["movie_title"] = title
         row["show_time"] = show_time
         row["_source_rank"] = int(source_rank)
+        # Ranks 2/3 originate from the live AMC page; rank 1 is runner-local
+        # cache. Use identity + visible time, not AMC's unstable numeric IDs,
+        # to account for a live slot even when it merges with a cached row.
+        if source_rank >= 2:
+            _fresh_row_slots.add((title.casefold(), show_time.casefold()))
         sid = _normalize_space(str(row.get("showtime_id") or ""))
 
         if sid:
@@ -1943,6 +1952,8 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         "static_requests": 0,
         "browser_launches": 0,
         "combos_live": 0,
+        "combos_reused": 0,
+        "combos_mixed": 0,
         "combos_cached": 0,
         "combos_failed": 0,
         "circuit_cache_skips": 0,
@@ -2006,7 +2017,14 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         _write_live_metrics()
 
     def _finish_combo(outcome: str, *, circuit_skip: bool = False, explicit_block: bool = False) -> None:
-        key = {"live": "combos_live", "cached": "combos_cached", "failed": "combos_failed"}.get(outcome)
+        # live: every final slot arrived in this attempt; reused: all slots
+        # came from earlier Papermill attempts in this runner; mixed: both;
+        # cached: a previous published report was used instead.
+        key = {
+            "live": "combos_live", "reused": "combos_reused",
+            "mixed": "combos_mixed", "cached": "combos_cached",
+            "failed": "combos_failed",
+        }.get(outcome)
         if key:
             _live_metrics[key] = int(_live_metrics.get(key) or 0) + 1
         if circuit_skip:
@@ -2276,17 +2294,35 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
             _record_live_failure("no usable live rows", explicit_block=_saw_explicit_browser_block)
     else:
         # If the source scanner found no independent evidence but normal parsing
-        # did recover rows, do not invent a failure. The two-round strategy above
-        # has already given AMC/browser a second chance; surface the uncertainty.
+        # did recover rows, do not invent a failure. The browser was given its
+        # normal opportunity; surface the uncertainty without changing coverage.
         if _state["source_samples"] == 0:
             print(
                 f"[WARN] AMC parsed {_state['parsed_titles']} movie(s) for {theatre_name} {wanted}, "
                 "but source-evidence scanner found no independently countable regions"
             )
-        _write_combo_status(True)
-        _record_live_success()
+        final_slots = {
+            (str(row.get("movie_title") or "").casefold(),
+             str(row.get("show_time") or "").casefold())
+            for row in final_rows
+        }
+        current_slots = final_slots & _fresh_row_slots
+        if not current_slots:
+            # Retaining a successful earlier-attempt schedule is useful, but
+            # it does not mean this attempt reached AMC. In particular, an
+            # explicit block must still contribute to the live circuit breaker.
+            outcome = "reused"
+            _write_combo_status(True, reason="runner-local cache from earlier attempt")
+            _record_live_failure("no fresh rows in current attempt", explicit_block=_saw_explicit_browser_block)
+        else:
+            outcome = "live" if current_slots == final_slots else "mixed"
+            _write_combo_status(True)
+            _record_live_success()
 
-    _finish_combo("live" if final_rows and not (_coverage_problem or _no_rows) else "failed", explicit_block=_saw_explicit_browser_block)
+    _finish_combo(
+        (outcome if final_rows and not (_coverage_problem or _no_rows) else "failed"),
+        explicit_block=_saw_explicit_browser_block,
+    )
     return final_rows
 '''
 
@@ -2948,7 +2984,7 @@ def main() -> int:
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
         "non-movie filtering, original-film metadata lookup, stabilized AMC browser fetch, "
-        "AMC A-List metadata + clean public logs v42 -> "
+        "AMC A-List metadata + clean public logs v43 -> "
         f"{args.output_notebook}"
     )
     return 0

@@ -1070,6 +1070,92 @@ desired = [
         self.assertTrue(all(not check["date_valid"] for check in checks))
         self.assertTrue(any(check["kind"] == "browser" and check["restore_attempted"] for check in checks))
 
+    def test_runner_local_retries_are_not_misreported_as_fresh_browser_results(self):
+        """A blocked retry can reuse this run's rows without claiming live access."""
+        source = self._patched_source()
+        theatre = "AMC Generic 10"
+        day = "2026-09-26"
+        all_slots = {
+            "Movie One": (901, "7:00 PM"),
+            "Movie Two": (902, "8:00 PM"),
+        }
+
+        def live_page(titles):
+            return "".join(
+                f'<div aria-label="Showtimes for {title}">'
+                f'<a href="/showtimes/{all_slots[title][0]}">{all_slots[title][1]}</a></div>'
+                for title in titles
+            )
+
+        def attempt(html):
+            # Recreate the separate Python process that Papermill launches on
+            # each attempt; only build/ files survive across processes.
+            ns = {}
+            exec(compile(source, "<retry-provenance-test>", "exec"), ns)
+            ns["fetch_html_with_browser"] = (
+                lambda url, params=None, timeout_ms=30000: (200, html)
+            )
+            rows = ns["scrape_amc_showtimes_for_date"](
+                None, theatre, "https://example.invalid/showtimes",
+                ns["date"](2026, 9, 26),
+            )
+            metrics = ns["_AMC_LIVE_METRICS"]
+            return rows, metrics, ns["_AMC_LIVE_HEALTH"]
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ, {
+                "AMC_LIVE_SPACING_SECONDS": "0",
+                "AMC_EXPLICIT_BLOCK_COOLDOWN_SECONDS": "0",
+            }, clear=False,
+        ):
+            old_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                rows, metrics, health = attempt(live_page(all_slots))
+                self.assertEqual(len(rows), 2)
+                self.assertEqual(metrics["combos_live"], 1)
+                self.assertEqual(metrics["combos_reused"], 0)
+
+                rows, metrics, health = attempt("<html>Access Denied</html>")
+                self.assertEqual(len(rows), 2)
+                self.assertEqual(metrics["combos_live"], 0)
+                self.assertEqual(metrics["combos_reused"], 1)
+                self.assertEqual(metrics["combos_cached"], 0)
+                self.assertEqual(metrics["explicit_block_combos"], 1)
+                self.assertEqual(len(health["failures"]), 1)
+
+                # A partially successful navigation does not turn carried-over
+                # showtimes from another retry into freshly observed showtimes.
+                rows, metrics, health = attempt(live_page(["Movie One"]))
+                self.assertEqual(len(rows), 2)
+                self.assertEqual(metrics["combos_live"], 0)
+                self.assertEqual(metrics["combos_mixed"], 1)
+                self.assertEqual(metrics["combos_reused"], 0)
+
+                rows, metrics, health = attempt(live_page(all_slots))
+                self.assertEqual(len(rows), 2)
+                self.assertEqual(metrics["combos_live"], 1)
+                self.assertEqual(metrics["combos_mixed"], 0)
+                self.assertEqual(metrics["combos_cached"], 0)
+            finally:
+                os.chdir(old_cwd)
+
+    def test_workflow_resets_previous_report_fallback_marker_each_attempt(self):
+        """Old public cache notices cannot leak through a successful retry."""
+        workflow = Path(__file__).resolve().parents[1] / ".github/workflows/daily-AMC.yml"
+        text = workflow.read_text(encoding="utf-8")
+        loop_start = text.index("while true; do")
+        papermill_start = text.index("            papermill ", loop_start)
+        retry_prelude = text[loop_start:papermill_start]
+        self.assertIn(
+            "rm -f build/amc_live_metrics.json build/amc_previous_report_fallback.txt",
+            retry_prelude,
+        )
+        # The successful schedule cache must *not* be destroyed across retries.
+        self.assertNotIn("rm -rf build/amc_combo_cache", retry_prelude)
+        self.assertIn("f\"reused={data.get('combos_reused', 0)} ", text)
+        self.assertIn("f\"mixed={data.get('combos_mixed', 0)} ", text)
+
     def test_amc_static_helper_does_not_launch_duplicate_browser_fallback(self):
         source = self._patched_source()
         ns = {}
@@ -3161,6 +3247,40 @@ class AudienceFocusTests(unittest.TestCase):
             None,
         )
         self.assertIn("Music/Concert", result.tags)
+
+    def test_language_version_suffixes_are_generic_audience_evidence(self):
+        cases = {
+            "Echoes of Spring (Telugu)": "Indian",
+            "The Final Bridge [Hindi Dubbed]": "Indian",
+            "Broken Lantern - Malayalam": "Indian",
+            "An Evening in the City (Korean)": "Korean",
+            "A Silent Place (Mandarin Chinese Version)": "Chinese",
+            "Paper Garden (Japanese with English subtitles)": "Japanese",
+            "A Bright Star (Spanish-language)": "Spanish-language",
+            "A Blue Lake (Filipino)": "Filipino",
+            "Future Landing (Telugu) (2033)": "Indian",
+        }
+        for title, expected in cases.items():
+            with self.subTest(title=title):
+                result = posters.classify_audience_focus(self.context(title=title))
+                self.assertIn(expected, result.tags)
+                self.assertTrue(any("AMC title version qualifier" in reason for reason in result.reasons))
+
+    def test_language_words_in_regular_movie_titles_do_not_add_market_labels(self):
+        # Do not confuse story titles, adjectives, settings, or arbitrary
+        # parenthetical descriptions with explicit language/version metadata.
+        ordinary_titles = (
+            "A Korean Adventure", "Japanese Gardens", "The Spanish Prisoner",
+            "Lost in Hindi Translation", "A Small Town (Japanese History)",
+            "Stars Over India - A Telugu Story", "My Film (English)",
+        )
+        for title in ordinary_titles:
+            with self.subTest(title=title):
+                result = posters.classify_audience_focus(self.context(title=title))
+                self.assertNotIn("Indian", result.tags)
+                self.assertNotIn("Korean", result.tags)
+                self.assertNotIn("Japanese", result.tags)
+                self.assertNotIn("Spanish-language", result.tags)
 
     def test_rt_language_and_genre_enrich_audience_focus(self):
         result = posters.classify_audience_focus(

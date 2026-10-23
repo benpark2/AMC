@@ -1872,6 +1872,50 @@ def _entity_claim_labels(entity: dict, property_ids: tuple[str, ...]) -> set[str
     return set(_wikidata_labels(qids).values())
 
 
+def _title_version_languages(display_title: str) -> set[str]:
+    """Infer a screening's language only from an explicit *version* suffix.
+
+    AMC sometimes appends a bracketed or dash-delimited language qualifier
+    before providers publish original-language metadata. Reuse the existing
+    audience-language vocabulary rather than maintaining title-specific rules.
+    Ordinary film names that happen to mention a language (e.g. a story about
+    a country) must not be interpreted as language evidence.
+    """
+    known = {language for group in LANGUAGE_FOCUS_GROUPS.values() for language in group}
+    if not known:
+        return set()
+
+    # Longer multiword variants first (e.g. "mandarin chinese" before "chinese").
+    languages = "|".join(re.escape(name) for name in sorted(known, key=len, reverse=True))
+    qualifier = re.compile(
+        rf"(?:in\s+|original\s+)?(?P<language>{languages})"
+        rf"(?:[\s-]+(?:language|version|dubbed|dub|subtitled))?"
+        rf"(?:\s*(?:[,/]|with|w/?)\s*english\s*(?:subtitles?|subs|cc))?",
+        flags=re.IGNORECASE,
+    )
+    title = clean_amc_title(display_title)
+    # Display titles may append a release year *after* the language version.
+    # Strip only that generic four-digit suffix, never a film title or year in
+    # the middle of the name. This remains valid for future calendar years.
+    title = re.sub(r"\s*\(\d{4}\)\s*$", "", title)
+    candidates = []
+    for pattern in (
+        r"\(([^()]*)\)\s*$",
+        r"\[([^\[\]]*)\]\s*$",
+        r"\s+[-–—]\s+([^()\[\]]{1,80})\s*$",
+    ):
+        match = re.search(pattern, title)
+        if match:
+            candidates.append(match.group(1).strip())
+
+    found = set()
+    for candidate in candidates:
+        match = qualifier.fullmatch(candidate)
+        if match:
+            found.add(match.group("language").casefold())
+    return found
+
+
 def _add_language_focus(
     tags: set[str],
     reasons: list[str],
@@ -2070,6 +2114,16 @@ def classify_audience_focus(
     amc_languages = set(context.spoken_languages)
     if amc_languages:
         _add_language_focus(tags, reasons, amc_languages, source_label="AMC lists")
+
+    # A screening/version label is direct evidence of the audience's language
+    # even when RT/Wikidata are missing or still describe a different edit.
+    # No movie-title exceptions and no broad keyword matching within film names.
+    version_languages = _title_version_languages(context.display_title)
+    if version_languages:
+        _add_language_focus(
+            tags, reasons, version_languages,
+            source_label="AMC title version qualifier indicates",
+        )
 
     if supplemental_languages:
         _add_language_focus(
