@@ -67,7 +67,12 @@ jobs:
 
           while true; do
             log_file="build/papermill-attempt-${attempt}.log"
-            rm -f build/amc_live_metrics.json
+            # A previous failed attempt may have carried forward a schedule from
+            # docs/index.html. Rebuild this marker for EACH attempt; otherwise a
+            # later successful retry could publish a stale fallback warning.
+            # Do not clear build/amc_combo_cache: fresh rows recovered earlier
+            # in this workflow are still useful for intermittent AMC blocks.
+            rm -f build/amc_live_metrics.json build/amc_previous_report_fallback.txt
             echo "[INFO] Papermill attempt ${attempt}/${max_attempts}"
 
             set +e
@@ -92,6 +97,8 @@ jobs:
               print(
                   "[AMC-METRICS] "
                   f"live={data.get('combos_live', 0)} "
+                  f"reused={data.get('combos_reused', 0)} "
+                  f"mixed={data.get('combos_mixed', 0)} "
                   f"cached={data.get('combos_cached', 0)} "
                   f"failed={data.get('combos_failed', 0)} "
                   f"static={data.get('static_requests', 0)} "
