@@ -42,7 +42,9 @@ production/distribution organizations, and the selected English Wikipedia
 article's introductory summary/categories.  It never infers a cultural identity
 from actors or other people attached to a film.  Generic geographic setting
 alone is not enough for an identity-focus flag. Missing metadata defaults to
-``General`` rather than guessing.
+``General`` rather than guessing. Verified language metadata from the immediately
+previous report may be retained during a provider outage, but only for the same
+film identity and without replacing fresh contradictory evidence.
 """
 
 from __future__ import annotations
@@ -2303,6 +2305,146 @@ def _ensure_audience_focus_style(soup: BeautifulSoup) -> None:
     soup.head.append(style)
 
 
+# Only language/market labels backed by explicit language evidence can survive a
+# temporary metadata outage. Do not perpetuate unverified country-only signals,
+# broad thematic categories, or generic/unknown classifications.
+_VERIFIED_LANGUAGE_EVIDENCE = (
+    "Wikidata original language ",
+    "Wikidata language/country agree ",
+    "Rotten Tomatoes original language ",
+    "AMC lists ",
+    "AMC title version qualifier indicates ",
+    "explicit Wikipedia film/language context",
+)
+
+
+def _prior_verified_language_index() -> dict[str, list[dict]]:
+    """Load verified language evidence from the previous published report.
+
+    Read the already-snapshotted report only once per finalizer invocation.
+    The recorded source explanations serve as provenance, not as proof of
+    identity; matching the current provider IDs happens separately below.
+    """
+    index: dict[str, list[dict]] = {}
+    if not PREVIOUS_REPORT_PATH.is_file():
+        return index
+    try:
+        previous = BeautifulSoup(
+            PREVIOUS_REPORT_PATH.read_text(encoding="utf-8"), "html.parser"
+        )
+    except (OSError, UnicodeError):
+        return index
+
+    for row in previous.select("tr[data-movie-id]"):
+        title_el = row.select_one(".movie-cell-title")
+        focus_cell = row.select_one("td.audience-focus-cell")
+        if title_el is None or focus_cell is None:
+            continue
+        title_key = _normalized_match_text(title_el.get_text(" ", strip=True))
+        if not title_key:
+            continue
+        published_tags = set(str(focus_cell.get("data-audience-focus", "")).split("|"))
+        verified: list[tuple[str, str]] = []
+        for reason in str(focus_cell.get("data-audience-reasons", "")).split(" | "):
+            tag, separator, evidence = reason.partition(": ")
+            if not separator or tag not in published_tags:
+                continue
+            if tag not in LANGUAGE_FOCUS_GROUPS and not (
+                tag.endswith("-language") and len(tag) > len("-language")
+            ):
+                continue
+            if evidence.startswith(_VERIFIED_LANGUAGE_EVIDENCE):
+                verified.append((tag, reason))
+        if not verified:
+            continue
+        cells = row.find_all(["th", "td"], recursive=False)
+        runtime = _runtime_minutes(cells[5].get_text(" ", strip=True)) if len(cells) >= 6 else None
+        index.setdefault(title_key, []).append({
+            "imdb_id": _extract_imdb_id(row),
+            "rt_url": _extract_rt_url(row),
+            "runtime_min": runtime,
+            "verified": tuple(verified),
+        })
+    return index
+
+
+def _retain_previous_verified_language_focus(
+    row,
+    context: MovieContext,
+    fresh: AudienceFocusResult,
+    previous_index: dict[str, list[dict]],
+    *,
+    entity: dict | None,
+    rt_metadata: RtPageMetadata | None,
+) -> AudienceFocusResult:
+    """Recover an original-language tag only when movie identity is unchanged.
+
+    Never override any present-language evidence (including English), even if
+    it yields no market tag. A previous report alone is not a trusted source:
+    require an exact IMDb or RT identifier agreement, an unchanged AMC display
+    title, and no contradictory identifier or substantial runtime change.
+    This protects remakes, alternate versions and changed provider matches.
+    """
+    if (
+        context.spoken_languages
+        or _title_version_languages(context.display_title)
+        or (rt_metadata is not None and rt_metadata.languages)
+        or (entity is not None and _entity_languages(entity))
+        or any(tag in LANGUAGE_FOCUS_GROUPS or tag.endswith("-language") for tag in fresh.tags)
+    ):
+        return fresh
+
+    current_imdb = _extract_imdb_id(row)
+    current_rt = _extract_rt_url(row)
+    if not current_imdb and not current_rt:
+        return fresh
+    key = _normalized_match_text(context.display_title)
+    matches = []
+    for entry in previous_index.get(key, []):
+        prior_imdb = entry["imdb_id"]
+        prior_rt = entry["rt_url"]
+        if current_imdb and prior_imdb and current_imdb != prior_imdb:
+            continue
+        if current_rt and prior_rt and current_rt.rstrip("/").casefold() != prior_rt.rstrip("/").casefold():
+            continue
+        if not (
+            (current_imdb and prior_imdb and current_imdb == prior_imdb)
+            or (current_rt and prior_rt and current_rt.rstrip("/").casefold() == prior_rt.rstrip("/").casefold())
+        ):
+            continue
+        previous_runtime = entry["runtime_min"]
+        if (
+            not context.relax_runtime
+            and context.runtime_min is not None
+            and previous_runtime is not None
+            and abs(context.runtime_min - previous_runtime) > 3
+        ):
+            continue
+        matches.append(entry)
+
+    # Ambiguous prior rows with different, equally plausible language evidence
+    # must not be allowed to choose an arbitrary classification.
+    if not matches:
+        return fresh
+    evidence_sets = {tuple(sorted(set(entry["verified"]))) for entry in matches}
+    if len(evidence_sets) != 1:
+        return fresh
+    verified = matches[0]["verified"]
+    tags = set(fresh.tags) - {"General"}
+    reasons = [reason for reason in fresh.reasons if reason != "No strong niche-audience signal found"]
+    for tag, reason in verified:
+        tags.add(tag)
+        # Keep the original source wording so another run can verify that the
+        # carried-forward classification began with explicit language evidence.
+        suffix = " (retained from previous report; fresh language evidence unavailable)"
+        reasons.append(reason if suffix in reason else reason + suffix)
+    order = {tag: i for i, tag in enumerate(AUDIENCE_TAG_ORDER)}
+    return AudienceFocusResult(
+        tags=tuple(sorted(tags, key=lambda tag: (order.get(tag, 999), tag.casefold()))),
+        reasons=tuple(dict.fromkeys(reasons)),
+    )
+
+
 def _add_audience_focus_column(soup: BeautifulSoup, reference_year: int) -> int:
     """Append/update the Audience Focus column and return classified row count."""
     table = soup.find("table", class_=re.compile(r"\bdataframe\b")) or soup.find("table")
@@ -2339,6 +2481,9 @@ def _add_audience_focus_column(soup: BeautifulSoup, reference_year: int) -> int:
     th.string = "Audience Focus"
     th["title"] = "Descriptive cultural/market context; does not change ratings"
     header_row.append(th)
+
+    # Snapshot of previously verified language evidence. No extra network calls.
+    previous_language_index = _prior_verified_language_index()
 
     # First pass: resolve identity/Wikidata and collect the already-selected
     # Wikipedia pages.  We batch the page-context request afterward so this
@@ -2415,6 +2560,11 @@ def _add_audience_focus_column(soup: BeautifulSoup, reference_year: int) -> int:
             )
             if supplemental
             else record["initial"]
+        )
+
+        result = _retain_previous_verified_language_focus(
+            record["row"], record["context"], result, previous_language_index,
+            entity=record["entity"], rt_metadata=record["rt_metadata"],
         )
 
         td = soup.new_tag("td", **{"class": "audience-focus-cell"})

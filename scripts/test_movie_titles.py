@@ -34,7 +34,7 @@ from scripts.postprocess_report import parse_showtimes_blob
 import scripts.postprocess_report as postprocess
 import scripts.finalize_posters as posters
 
-# Production defaults to 10-second AMC browser spacing plus a 30-second
+# Production defaults to 10-second AMC browser spacing plus a 60-second
 # post-block cooldown. Unit tests exercise the same logic without wall-clock
 # delays unless a test explicitly opts into timing behavior.
 os.environ.setdefault("AMC_LIVE_SPACING_SECONDS", "0")
@@ -1471,7 +1471,7 @@ desired = [
         with tempfile.TemporaryDirectory() as tmp, \
              patch.dict(os.environ, {
                  "AMC_LIVE_SPACING_SECONDS": "10",
-                 "AMC_EXPLICIT_BLOCK_COOLDOWN_SECONDS": "30",
+                 "AMC_EXPLICIT_BLOCK_COOLDOWN_SECONDS": "60",
              }, clear=False), \
              patch("time.monotonic", side_effect=monotonic), \
              patch("time.sleep", side_effect=sleep):
@@ -1504,8 +1504,8 @@ desired = [
         self.assertTrue(live_rows)
         self.assertEqual(len(browser_calls), 2)
         self.assertEqual(len(sleeps), 1)
-        self.assertAlmostEqual(sleeps[0], 30.0, places=3)
-        self.assertAlmostEqual(metrics["block_cooldown_sleep_seconds"], 30.0, places=3)
+        self.assertAlmostEqual(sleeps[0], 60.0, places=3)
+        self.assertAlmostEqual(metrics["block_cooldown_sleep_seconds"], 60.0, places=3)
 
     def test_static_preflight_is_not_called_and_browser_runs_once(self):
         source = self._patched_source()
@@ -3632,6 +3632,129 @@ class AudienceFocusTests(unittest.TestCase):
     def test_production_classifier_does_not_inspect_cast_identity(self):
         production = Path(posters.__file__).read_text(encoding="utf-8")
         self.assertNotIn('"P161"', production)
+
+
+class PreviousLanguageRecoveryTests(unittest.TestCase):
+    """Persist provider-verified language labels, never guesses or identities."""
+
+    @staticmethod
+    def row(title="Example Harbor", imdb="tt12345678", rt="example_harbor_2026", runtime="1h 40m",
+            focus="", reason=""):
+        imdb_url = f"https://www.imdb.com/title/{imdb}/" if imdb else ""
+        rt_url = f"https://www.rottentomatoes.com/m/{rt}" if rt else ""
+        focus_cell = (
+            f'<td class="audience-focus-cell" data-audience-focus="{focus}" '
+            f'data-audience-reasons="{reason}"></td>'
+        ) if focus else ""
+        html = (
+            f'<tr data-movie-id="1"><td>1</td><td><div class="movie-cell-title">{title}</div></td>'
+            f'<td data-source-url="{rt_url}"></td><td data-source-url="{imdb_url}"></td>'
+            f'<td>AMC Example</td><td>{runtime}</td>{focus_cell}</tr>'
+        )
+        return BeautifulSoup(html, "html.parser").find("tr")
+
+    def recover(self, previous, current, *, entity=None, rt_metadata=None, title="Example Harbor"):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_report = Path(tmp) / "previous.html"
+            previous_report.write_text(
+                '<table><tbody>' + str(previous) + '</tbody></table>', encoding="utf-8"
+            )
+            with patch.object(posters, "PREVIOUS_REPORT_PATH", previous_report):
+                index = posters._prior_verified_language_index()
+        cells = current.find_all(["th", "td"], recursive=False)
+        context = posters.MovieContext(
+            display_title=title, canonical_title=title, expected_year=2026,
+            runtime_min=posters._runtime_minutes(cells[5].get_text(" ", strip=True)),
+            spoken_languages=frozenset(), relax_runtime=False,
+        )
+        fresh = posters.AudienceFocusResult(
+            tags=("General",), reasons=("No strong niche-audience signal found",)
+        )
+        return posters._retain_previous_verified_language_focus(
+            current, context, fresh, index, entity=entity, rt_metadata=rt_metadata
+        )
+
+    def test_verified_wikidata_language_recovers_with_same_imdb_id(self):
+        prior = self.row(focus="Filipino", reason="Filipino: Wikidata original language filipino")
+        recovered = self.recover(prior, self.row(rt=None))
+        self.assertEqual(recovered.tags, ("Filipino",))
+        self.assertIn("Wikidata original language filipino", recovered.reasons[0])
+        self.assertIn("retained from previous report", recovered.reasons[0])
+
+    def test_rt_identity_can_recover_without_imdb(self):
+        prior = self.row(imdb=None, focus="Korean", reason="Korean: Rotten Tomatoes original language korean")
+        recovered = self.recover(prior, self.row(imdb=None))
+        self.assertEqual(recovered.tags, ("Korean",))
+
+    def test_different_imdb_or_rt_identity_rejects_fallback(self):
+        prior = self.row(focus="Filipino", reason="Filipino: Wikidata original language filipino")
+        for current in (self.row(imdb="tt99999999"), self.row(rt="unrelated_film")):
+            with self.subTest(current=str(current)):
+                self.assertEqual(self.recover(prior, current).tags, ("General",))
+
+    def test_identity_only_title_or_runtime_cannot_recover(self):
+        prior = self.row(focus="Japanese", reason="Japanese: AMC lists japanese")
+        for current, title in (
+            (self.row(imdb=None, rt=None), "Example Harbor"),
+            (self.row(title="Another Harbor"), "Another Harbor"),
+            (self.row(runtime="2h 25m"), "Example Harbor"),
+        ):
+            with self.subTest(title=title, runtime=current.get_text()):
+                self.assertEqual(self.recover(prior, current, title=title).tags, ("General",))
+
+    def test_general_country_only_or_thematic_classifications_are_not_reused(self):
+        for tag, reason in (
+            ("Indian", "Indian: country of origin india"),
+            ("Faith-oriented", "Faith-oriented: Angel Studios production/distribution signal"),
+            ("Filipino", "Filipino: inferred from title"),
+            ("General", "No strong niche-audience signal found"),
+        ):
+            with self.subTest(tag=tag):
+                prior = self.row(focus=tag, reason=reason)
+                self.assertEqual(self.recover(prior, self.row()).tags, ("General",))
+
+    def test_live_language_metadata_or_existing_market_tag_takes_precedence(self):
+        prior = self.row(focus="Filipino", reason="Filipino: Wikidata original language filipino")
+        english = posters.RtPageMetadata(
+            title="Example Harbor", poster_url=None,
+            languages=frozenset({"english"}), genres=frozenset(),
+            release_year=2026, runtime_min=100,
+        )
+        self.assertEqual(self.recover(prior, self.row(), rt_metadata=english).tags, ("General",))
+        entity = {"claims": {"P364": [
+            {"mainsnak": {"datavalue": {"value": {"id": "QEnglish"}}}}
+        ]}}
+        with patch.object(posters, "_entity_languages", return_value={"english"}):
+            self.assertEqual(self.recover(prior, self.row(), entity=entity).tags, ("General",))
+
+    def test_repeated_runs_do_not_accumulate_provenance_suffixes(self):
+        first = self.row(focus="Filipino", reason="Filipino: Wikidata original language filipino")
+        second = self.recover(first, self.row())
+        reused = self.row(focus="|".join(second.tags), reason=" | ".join(second.reasons))
+        third = self.recover(reused, self.row())
+        self.assertEqual(third.tags, ("Filipino",))
+        self.assertEqual(third.reasons[0].count("retained from previous report"), 1)
+
+    def test_integration_adds_language_without_extra_provider_calls(self):
+        prior = self.row(focus="Filipino", reason="Filipino: Wikidata original language filipino")
+        html = (
+            '<html><head></head><body><table class="dataframe"><thead><tr>'
+            '<th>#</th><th>Movie</th><th>RT</th><th>IMDb</th><th>Showtimes</th><th>Runtime</th>'
+            '</tr></thead><tbody>' + str(self.row()) + '</tbody></table></body></html>'
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            file = Path(tmp) / 'previous.html'
+            file.write_text('<table><tbody>' + str(prior) + '</tbody></table>', encoding='utf-8')
+            with patch.object(posters, 'PREVIOUS_REPORT_PATH', file), \
+                 patch.object(posters, '_audience_entity_for_context', return_value=None), \
+                 patch.object(posters, '_rt_metadata_for_context', return_value=None), \
+                 patch.object(posters, '_wikipedia_focus_pages', return_value={}):
+                soup = BeautifulSoup(html, 'html.parser')
+                count = posters._add_audience_focus_column(soup, 2026)
+        self.assertEqual(count, 1)
+        focus = soup.select_one('td.audience-focus-cell')
+        self.assertEqual(focus.get('data-audience-focus'), 'Filipino')
+        self.assertIn('retained from previous report', focus.get('title'))
 
 
 class AttachedOutputContextTests(unittest.TestCase):

@@ -1938,10 +1938,10 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
     try:
         _block_cooldown_seconds = max(
             0.0,
-            float(__import__("os").environ.get("AMC_EXPLICIT_BLOCK_COOLDOWN_SECONDS", "30")),
+            float(__import__("os").environ.get("AMC_EXPLICIT_BLOCK_COOLDOWN_SECONDS", "60")),
         )
     except Exception:
-        _block_cooldown_seconds = 30.0
+        _block_cooldown_seconds = 60.0
     _live_metrics = globals().setdefault("_AMC_LIVE_METRICS", {
         "started_at": _AMCTime.monotonic(),
         "spacing_seconds": _spacing_seconds,
@@ -2012,7 +2012,7 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
 
     def _arm_explicit_block_cooldown() -> None:
         # Start the cooldown when the interstitial is actually observed. Work
-        # done after detection naturally consumes part of the 30-second window.
+        # done after detection naturally consumes part of the configured cooldown window.
         _live_health["last_explicit_block_at"] = _AMCTime.monotonic()
         _write_live_metrics()
 
@@ -2984,7 +2984,7 @@ def main() -> int:
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
         "non-movie filtering, original-film metadata lookup, stabilized AMC browser fetch, "
-        "AMC A-List metadata + clean public logs v43 -> "
+        "AMC A-List metadata + clean public logs v44 -> "
         f"{args.output_notebook}"
     )
     return 0
