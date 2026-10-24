@@ -102,9 +102,9 @@ WEEKEND_PRINT_NEW = 'print("Requested dates (Pacific): " + ", ".join(f"{d.isofor
 DATE_LIST_OLD = 'dates = [sat, sun]'
 DATE_LIST_NEW = 'dates = list(dict.fromkeys([current_pacific_date(), sat, sun]))'
 
-# Probe all configured theatres for a date before advancing to the next date.
-# This prevents a single problematic theatre from supplying the first three
-# consecutive failures and prematurely opening the run-wide AMC circuit.
+# Distribute the earliest browser opportunities across *both* theatre and date.
+# The round-robin permutation changes by Pacific calendar day, so no combination
+# is permanently advantaged. No additional AMC requests are introduced.
 AMC_SCRAPE_LOOP_OLD = """for th in THEATRES:
     for d in dates:
         try:
@@ -112,13 +112,37 @@ AMC_SCRAPE_LOOP_OLD = """for th in THEATRES:
             time.sleep(0.2)
         except Exception as e:
             print(f"[WARN] Failed scraping {th['name']} {d}: {e}")"""
-AMC_SCRAPE_LOOP_NEW = """for d in dates:
-    for th in THEATRES:
-        try:
-            showtimes.extend(scrape_amc_showtimes_for_date(session, th["name"], th["url"], d))
-            time.sleep(0.2)
-        except Exception as e:
-            print(f"[WARN] Failed scraping {th['name']} {d}: {e}")"""
+AMC_SCRAPE_LOOP_NEW = """def balanced_amc_request_order(theatres, requested_dates, rotation_day=None):
+    \"\"\"Yield every theatre/date exactly once with balanced early coverage.
+
+    Each round visits every theatre once, assigning a different requested date
+    to each successive theatre (cyclically). With the normal 3-by-3 grid, the
+    first three requests cover all three theatres and all three dates; the first
+    six cover each twice. Rotating the starting theatre and date by the Pacific
+    calendar day prevents the same slot from always appearing first. This is a
+    deterministic schedule, not random ordering or title-specific logic.
+    \"\"\"
+    theatre_list = list(theatres)
+    date_list = list(dict.fromkeys(requested_dates))
+    if not theatre_list or not date_list:
+        return
+    nt, nd = len(theatre_list), len(date_list)
+    day = rotation_day if rotation_day is not None else current_pacific_date()
+    phase = day.toordinal() % (nt * nd)
+    theatre_shift, date_shift = phase % nt, phase // nt
+    for round_no in range(nd):
+        for position in range(nt):
+            theatre = theatre_list[(position + theatre_shift) % nt]
+            wanted_date = date_list[(position + round_no + date_shift) % nd]
+            yield theatre, wanted_date
+
+
+for th, d in balanced_amc_request_order(THEATRES, dates):
+    try:
+        showtimes.extend(scrape_amc_showtimes_for_date(session, th["name"], th["url"], d))
+        time.sleep(0.2)
+    except Exception as e:
+        print(f"[WARN] Failed scraping {th['name']} {d}: {e}")"""
 
 FUNCTION_WRAPPER = """def candidate_title_variants(title: str) -> List[str]:
     \"\"\"Use the shared generic AMC-title normalizer for metadata lookup.\"\"\"
@@ -1929,6 +1953,9 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         "reason": "",
         "last_load_started": None,
         "last_explicit_block_at": None,
+        # Distinct combinations for which a browser attempt was actually made.
+        # A circuit skip must never count toward the initial representative sample.
+        "probed_combos": set(),
     })
     _AMCTime = __import__("time")
     try:
@@ -2127,6 +2154,31 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         theatres = {f.get("theatre") for f in failures if f.get("theatre")}
         dates_seen = {f.get("date") for f in failures if f.get("date")}
 
+        # With the new interleaved order, the first three browser requests may
+        # span all three dates and theatres. Do not open the run-wide circuit
+        # before each category has had a representative live opportunity.
+        # In a 3x3 report this means six distinct probes (two per category).
+        # Scale to other grid sizes; never require more than the full grid.
+        expected_theatres = {
+            str(th.get("name") or "").strip()
+            for th in globals().get("THEATRES", ())
+            if isinstance(th, dict) and str(th.get("name") or "").strip()
+        }
+        expected_dates = {
+            str(d.isoformat() if hasattr(d, "isoformat") else d)
+            for d in globals().get("dates", ())
+        }
+        if expected_theatres and expected_dates:
+            minimum_probes = min(
+                len(expected_theatres) * len(expected_dates),
+                2 * max(len(expected_theatres), len(expected_dates)),
+            )
+        else:
+            # Conservative fallback when called outside the normal notebook.
+            minimum_probes = 6
+        if len(_live_health.get("probed_combos") or ()) < minimum_probes:
+            return
+
         # Do not let one problematic theatre shut down the entire live run. AMC
         # can transiently block several navigations for one location while other
         # theatres still work. Require three *consecutive* explicit anti-bot/
@@ -2174,6 +2226,10 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
             )
             _finish_combo("cached", circuit_skip=True)
             return previous_rows
+
+    # Count a combination only after the cache-only circuit-skip decision;
+    # the representative-sample gate cannot be satisfied by skipped work.
+    _live_health.setdefault("probed_combos", set()).add((str(theatre_name), str(wanted)))
 
     browser_html = ""
     html_txt = ""
@@ -2929,7 +2985,7 @@ def patch_notebook(notebook: dict) -> dict:
     expected = {
         "upcoming_weekend_pacific replacement": upcoming_weekend_replacements,
         "current-date request-list replacement": date_list_replacements,
-        "AMC date-major scrape ordering": amc_scrape_loop_replacements,
+        "AMC balanced rotating scrape ordering": amc_scrape_loop_replacements,
         "candidate_title_variants replacement": candidate_function_replacements,
         "df_show non-movie filter": df_show_insertions,
         "build_imdb_lookup patch": imdb_function_patches,
@@ -2984,7 +3040,7 @@ def main() -> int:
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
         "non-movie filtering, original-film metadata lookup, stabilized AMC browser fetch, "
-        "AMC A-List metadata + clean public logs v44 -> "
+        "AMC A-List metadata + clean public logs v45 -> "
         f"{args.output_notebook}"
     )
     return 0

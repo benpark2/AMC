@@ -458,8 +458,9 @@ desired = [
         self.assertIn("lookup_literal_targets = [", source)
         self.assertIn("next two weekend calendar days after today", source)
         self.assertIn("cursor = today + timedelta(days=1)", source)
-        self.assertIn("for d in dates:\n    for th in THEATRES:", source)
+        self.assertIn("for th, d in balanced_amc_request_order(THEATRES, dates):", source)
         self.assertNotIn("for th in THEATRES:\n    for d in dates:", source)
+        self.assertNotIn("for d in dates:\n    for th in THEATRES:", source)
         self.assertIn("metadata_release_year_hint", source)
         self.assertIn("lookup_year_hint", source)
         self.assertIn("year_match", source)
@@ -1176,6 +1177,51 @@ desired = [
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][2], 1)
 
+    def test_balanced_rotating_amc_order_full_matrix_and_early_coverage(self):
+        """Every slot is covered once, and early slots span theatres and dates."""
+        ns = {}
+        exec(compile(self._patched_source(), "<patched-notebook-test>", "exec"), ns)
+        generate = ns["balanced_amc_request_order"]
+        theatres = [{"name": name} for name in ("Tustin", "Orange", "Woodbridge")]
+        dates = [ns["date"](2026, 10, day) for day in (22, 24, 25)]
+        anchor = ns["date"](2026, 10, 23)
+        all_combos = {(th["name"], day) for th in theatres for day in dates}
+        starts = set()
+        early_sets = set()
+        for offset in range(9):
+            run_day = anchor + ns["timedelta"](days=offset)
+            order = [(th["name"], day) for th, day in generate(theatres, dates, run_day)]
+            self.assertEqual(len(order), 9)
+            self.assertEqual(set(order), all_combos)
+            self.assertEqual(len({th for th, _ in order[:3]}), 3)
+            self.assertEqual(len({day for _, day in order[:3]}), 3)
+            for th in theatres:
+                self.assertEqual(sum(item[0] == th["name"] for item in order[:6]), 2)
+            for day in dates:
+                self.assertEqual(sum(item[1] == day for item in order[:6]), 2)
+            starts.add(order[0])
+            early_sets.add(frozenset(order[:3]))
+        # Over one nine-day rotation, every theatre/date gets first priority.
+        self.assertEqual(starts, all_combos)
+        self.assertGreater(len(early_sets), 1)
+
+    def test_balanced_order_generalizes_to_non_square_grids_and_empty_input(self):
+        ns = {}
+        exec(compile(self._patched_source(), "<patched-notebook-test>", "exec"), ns)
+        generate = ns["balanced_amc_request_order"]
+        anchor = ns["date"](2027, 1, 3)
+        for theatre_count, date_count in ((2, 3), (4, 2), (1, 3), (3, 1)):
+            theatres = [{"name": f"Theatre {i}"} for i in range(theatre_count)]
+            dates = [anchor + ns["timedelta"](days=j) for j in range(date_count)]
+            order = list(generate(theatres, dates, anchor))
+            self.assertEqual(len(order), theatre_count * date_count)
+            self.assertEqual(
+                {(id(th), d) for th, d in order},
+                {(id(th), d) for th in theatres for d in dates},
+            )
+        self.assertEqual(list(generate([], [anchor], anchor)), [])
+        self.assertEqual(list(generate([{"name": "T"}], [], anchor)), [])
+
     def test_explicit_amc_block_requires_theatre_and_date_diversity_before_cache_circuit(self):
         source = self._patched_source()
         ns = {}
@@ -1192,7 +1238,10 @@ desired = [
         ns["fetch_amc_html"] = static
         ns["fetch_html_with_browser"] = browser
 
-        theatres = ["AMC Alpha 10", "AMC Beta 10", "AMC Gamma 10", "AMC Delta 10", "AMC Epsilon 10"]
+        theatres = [
+            "AMC Alpha 10", "AMC Beta 10", "AMC Gamma 10", "AMC Delta 10",
+            "AMC Epsilon 10", "AMC Zeta 10", "AMC Eta 10",
+        ]
         first_date = "2026-09-26"
         second_date = "2026-09-27"
 
@@ -1206,10 +1255,12 @@ desired = [
             cached_rows = []
             combos = [
                 (theatres[0], first_date),
-                (theatres[1], first_date),
+                (theatres[1], second_date),
                 (theatres[2], first_date),
                 (theatres[3], second_date),
-                (theatres[4], second_date),
+                (theatres[4], first_date),
+                (theatres[5], second_date),
+                (theatres[6], first_date),
             ]
             for idx, (theatre, wanted) in enumerate(combos, start=1):
                 cached_rows.append({
@@ -1235,16 +1286,20 @@ desired = [
                 with patch.dict(os.environ, {"AMC_LIVE_SPACING_SECONDS": "0"}, clear=False):
                     first = scraper(None, theatres[0], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
                     self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
-                    second = scraper(None, theatres[1], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                    second = scraper(None, theatres[1], "https://example.invalid/showtimes", ns["date"](2026, 9, 27))
                     self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
                     third = scraper(None, theatres[2], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
-                    # Three blocked theatres on only one date are not enough to
-                    # declare the whole AMC run unavailable.
+                    # Even three consecutive blocks across multiple theatres and
+                    # dates must not preempt the representative first-six probe.
                     self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
                     fourth = scraper(None, theatres[3], "https://example.invalid/showtimes", ns["date"](2026, 9, 27))
+                    self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
+                    fifth = scraper(None, theatres[4], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
+                    self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
+                    sixth = scraper(None, theatres[5], "https://example.invalid/showtimes", ns["date"](2026, 9, 27))
                     self.assertTrue(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
-                    before_fifth = dict(network)
-                    fifth = scraper(None, theatres[4], "https://example.invalid/showtimes", ns["date"](2026, 9, 27))
+                    before_seventh = dict(network)
+                    seventh = scraper(None, theatres[6], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
             finally:
                 os.chdir(old_cwd)
 
@@ -1253,11 +1308,14 @@ desired = [
         self.assertEqual(third[0]["movie_title"], "Cached Film 3")
         self.assertEqual(fourth[0]["movie_title"], "Cached Film 4")
         self.assertEqual(fifth[0]["movie_title"], "Cached Film 5")
-        self.assertEqual(before_fifth, network)
+        self.assertEqual(sixth[0]["movie_title"], "Cached Film 6")
+        self.assertEqual(seventh[0]["movie_title"], "Cached Film 7")
+        self.assertEqual(before_seventh, network)
         self.assertEqual(network["static"], 0)
-        self.assertEqual(network["browser"], 4)
-        self.assertEqual(ns["_AMC_LIVE_METRICS"]["explicit_block_combos"], 4)
+        self.assertEqual(network["browser"], 6)
+        self.assertEqual(ns["_AMC_LIVE_METRICS"]["explicit_block_combos"], 6)
         self.assertEqual(ns["_AMC_LIVE_METRICS"]["circuit_cache_skips"], 1)
+        self.assertEqual(len(ns["_AMC_LIVE_HEALTH"]["probed_combos"]), 6)
         self.assertTrue(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
         self.assertIn("multiple theatres and dates", ns["_AMC_LIVE_HEALTH"]["reason"])
 
