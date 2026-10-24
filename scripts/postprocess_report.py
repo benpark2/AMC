@@ -136,11 +136,42 @@ pre, code, kbd, samp, tt,
 .amc-cache-notice{
   font-size: 13px;
   color: var(--text);
-  margin: 0 0 14px 0;
+  margin: 26px 0 4px 0;
   padding: 10px 12px;
   border: 1px solid var(--grid);
   border-radius: 10px;
   background: rgba(15,23,42,0.04);
+}
+.amc-cache-notice summary{cursor:pointer;font-weight:600;}
+.amc-cache-notice p{margin:8px 0 0;line-height:1.5;}
+
+/* Lightweight per-theatre/date provenance, with text rendered via CSS so the
+   lossless previous-report showtime parser still sees the original date lines. */
+.showtime-fetch-date::after{
+  content: attr(data-label);
+  margin-left: 6px;
+  font-size: 10px;
+  line-height: 1.2;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.showtime-fetch-date[data-source="old"]::after{font-weight: 650;}
+
+/* A showtime's source can vary by theatre/date even within one movie. The
+   compact per-movie label reports that mixture without implying that the
+   report-generated timestamp is a fresh AMC retrieval time. */
+.showtimes-freshness{
+  display: block;
+  margin-top: 7px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted);
+  font-weight: 500;
+}
+.showtimes-freshness[data-source="cached"],
+.showtimes-freshness[data-source="mixed"]{
+  font-weight: 650;
+  color: var(--text);
 }
 
 /* ========== Page chrome ========== */
@@ -855,7 +886,180 @@ def get_trailer_url(title: str) -> str:
     query = quote(f"{title} official trailer")
     return f"https://www.youtube.com/results?search_query={query}"
 
-def apply_final_table_schema(soup: BeautifulSoup, table, movie_by_id: dict[int, str], poster_by_id: dict[int, str]) -> None:
+def read_cached_showtime_combos(marker_path: Path) -> set[tuple[str, str]]:
+    """Read exact theatre/date source records; do not infer cache from movie title.
+
+    The marker is written ONLY when the notebook recovered an entire combination
+    from an earlier published report. A previous report may itself contain older
+    cache, so its generation timestamp is not a trustworthy AMC retrieval time.
+    """
+    if not marker_path.is_file():
+        return set()
+    combos = set()
+    for line in marker_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        theater, sep, date_text = line.rpartition(" | ")
+        if sep and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_text.strip()):
+            combos.add((" ".join(theater.split()).casefold(), date_text.strip()))
+    return combos
+
+
+def _combo_key(theater: str, date_text: str) -> tuple[str, str]:
+    """Canonicalize theater spelling for provenance across report generations."""
+    theater = str(theater or "").replace("@", " at ").casefold()
+    return (re.sub(r"[^a-z0-9]+", " ", theater).strip(), str(date_text or "").strip())
+
+
+def _safe_fetch_date(value: object, today: str) -> str | None:
+    """Validate inherited fetch dates instead of inventing timestamps."""
+    raw = str(value or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw) or raw > today:
+        return None
+    try:
+        from datetime import date
+        date.fromisoformat(raw)
+    except ValueError:
+        return None
+    return raw
+
+
+def read_previous_fetch_dates(report_path: Path, today: str) -> dict[tuple[str, str], str]:
+    """Only exact theater/date provenance from a previously generated report.
+
+    Older HTML files have no provenance, and deliberately become 'Old'. Never
+    use the previous report's generation timestamp as a fetch timestamp.
+    """
+    if not report_path.is_file():
+        return {}
+    try:
+        old_soup = BeautifulSoup(report_path.read_text(encoding="utf-8", errors="replace"), "html.parser")
+        node = old_soup.find("script", id="showtimes-data")
+        payload = json.loads(node.string or node.get_text() or "{}") if node else {}
+        records = payload.get("amc_fetch_dates") or []
+    except (OSError, ValueError, TypeError):
+        return {}
+    if not isinstance(records, list):
+        return {}
+    out = {}
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        key = _combo_key(rec.get("theater"), rec.get("date"))
+        date_text = _safe_fetch_date(rec.get("fetched_on"), today)
+        if key[0] and re.fullmatch(r"\d{4}-\d{2}-\d{2}", key[1]) and date_text:
+            out[key] = date_text
+    return out
+
+
+def read_workflow_fetch_dates(directory: Path, today: str) -> dict[tuple[str, str], str]:
+    """Read dates written only after the browser yielded new, usable rows."""
+    records = {}
+    if not directory.is_dir():
+        return records
+    for path in directory.glob("*.json"):
+        try:
+            rec = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(rec, dict):
+            continue
+        key = _combo_key(rec.get("theater"), rec.get("date"))
+        value = _safe_fetch_date(rec.get("fetched_on"), today)
+        if key[0] and re.fullmatch(r"\d{4}-\d{2}-\d{2}", key[1]) and value:
+            records[key] = value
+    return records
+
+
+def resolve_showtime_fetch_dates(
+    showtimes: list[dict], cached_combos: set[tuple[str, str]],
+    previous: dict[tuple[str, str], str], workflow: dict[tuple[str, str], str],
+) -> dict[tuple[str, str], str | None]:
+    """Live fetch wins; reused previous rows keep their *original* known date.
+
+    All missing dates remain None ('Old'), including the first v47 run's cache
+    recovered from a v46 report. Avoid accidentally backdating old schedules.
+    """
+    cached = {_combo_key(t, d) for t, d in cached_combos}
+    result = {}
+    for sh in showtimes:
+        key = _combo_key(sh.get("theater"), sh.get("date"))
+        if not key[0] or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", key[1]):
+            continue
+        if key in cached:
+            result[key] = previous.get(key)
+        else:
+            result[key] = workflow.get(key)  # never claim a fetch date absent live evidence
+    return result
+
+
+def label_showtime_fetch_dates(soup: BeautifulSoup, show_td, fetch_dates: dict[tuple[str, str], str | None]) -> None:
+    """Attach a label after *each* theatre/date showtime line without changing its text.
+
+    The CSS-generated wording and aria-label keep original showtime table text
+    intact for the next run's cached-row/A-List parser.
+    """
+    from bs4 import NavigableString
+    theater = None
+    for node in list(show_td.contents):
+        if not isinstance(node, NavigableString):
+            continue
+        raw = str(node).strip()
+        if raw.casefold().startswith("amc "):
+            theater = raw
+            continue
+        match = DATE_LINE_RE.match(raw)
+        if not match or not theater:
+            continue
+        key = _combo_key(theater, match.group(1))
+        fetched_on = fetch_dates.get(key)
+        marker = soup.new_tag("span", **{"class": "showtime-fetch-date"})
+        marker["data-source"] = "known" if fetched_on else "old"
+        marker["data-label"] = f" · Fetched {fetched_on}" if fetched_on else " · Old (fetch date unknown)"
+        marker["aria-label"] = f"AMC fetched on {fetched_on}" if fetched_on else "AMC fetch date unknown; old schedule"
+        node.insert_after(marker)
+
+
+def movie_showtime_freshness(showtimes: list[dict], cached_combos: set[tuple[str, str]]) -> dict[int, tuple[str, str, str]]:
+    """Compute per-film provenance at theatre/date granularity, not per row.
+
+    One combination may contain many different showtimes. The prior-report
+    marker proves only *source*, not the actual time those rows were fetched.
+    Runner-local reuse from an earlier Papermill attempt belongs to this same
+    workflow and is not a previous-publication fallback.
+    """
+    by_movie: dict[int, set[tuple[str, str]]] = {}
+    for item in showtimes:
+        try:
+            movie_id = int(item["movie_id"])
+        except (ValueError, TypeError, KeyError):
+            continue
+        theater = " ".join(str(item.get("theater") or "").split()).casefold()
+        date_text = str(item.get("date") or "").strip()
+        if theater and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_text):
+            by_movie.setdefault(movie_id, set()).add((theater, date_text))
+
+    status = {}
+    for movie_id, combos in by_movie.items():
+        cached = combos & cached_combos
+        if not cached:
+            status[movie_id] = ("fresh", "Fresh this run", "Showtime schedules were retrieved during this workflow")
+        elif len(cached) == len(combos):
+            status[movie_id] = (
+                "cached", "Cached from previous report",
+                "All displayed theatre/date schedules were carried forward; original AMC fetch time is unknown",
+            )
+        else:
+            status[movie_id] = (
+                "mixed", f"Partly cached ({len(cached)}/{len(combos)} theatre/dates)",
+                "Some schedules were retrieved this run; others were carried forward from a prior report",
+            )
+    return status
+
+
+def apply_final_table_schema(
+    soup: BeautifulSoup, table, movie_by_id: dict[int, str], poster_by_id: dict[int, str],
+    showtime_freshness: dict[int, tuple[str, str, str]] | None = None,
+    fetch_dates: dict[tuple[str, str], str | None] | None = None,
+) -> None:
     thead = table.find("thead")
     tbody = table.find("tbody")
     if not thead or not tbody:
@@ -951,6 +1155,18 @@ def apply_final_table_schema(soup: BeautifulSoup, table, movie_by_id: dict[int, 
 
         imdb_td = _linked_score_td(soup, _fmt_score(get_text(idx_imdb)), get_text(idx_imdb_url) or None)
         show_td = _clone_cell_as_td(soup, get_cell(idx_showtimes))
+        label_showtime_fetch_dates(soup, show_td, fetch_dates or {})
+        # Show a compact source indicator inside the existing Showtimes column.
+        # A separate per-movie timestamp would be misleading for mixed-source
+        # dates/theatres and for reports whose underlying cache was inherited.
+        freshness = (showtime_freshness or {}).get(mid_int)
+        if freshness:
+            kind, label, explanation = freshness
+            note = soup.new_tag("span", **{"class": "showtimes-freshness"})
+            note["data-source"] = kind
+            note["title"] = explanation
+            note.string = label
+            show_td.append(note)
         runtime_td = _clone_cell_as_td(soup, get_cell(idx_runtime))
 
         # Rebuild row
@@ -1121,7 +1337,24 @@ def main() -> None:
         if poster:
             poster_by_id[mid] = poster
 
-    apply_final_table_schema(soup, table, movie_by_id, poster_by_id)
+    # The notebook's exact fallback marker is the only reliable per-combination
+    # provenance in the current report. Do not re-date inherited cached rows.
+    fallback_marker = Path("build/amc_previous_report_fallback.txt")
+    cached_combos = read_cached_showtime_combos(fallback_marker)
+    freshness_by_movie = movie_showtime_freshness(showtimes, cached_combos)
+    # Read the previous report BEFORE replacing docs/index.html. This metadata
+    # follows exact theatre/date pairs into the next run's cached fallback.
+    # Fresh dates come from notebook markers recorded at successful AMC fetch.
+    from datetime import timezone as _Tz
+    from zoneinfo import ZoneInfo as _Zone
+    fetch_today = datetime.now(_Tz.utc).astimezone(_Zone("America/Los_Angeles")).date().isoformat()
+    # The workflow saves the committed report here BEFORE nbconvert overwrites
+    # docs/index.html, so preserve that source rather than reading this run's
+    # raw, unprocessed notebook HTML.
+    previous_dates = read_previous_fetch_dates(Path("build/previous_report.html"), fetch_today)
+    live_dates = read_workflow_fetch_dates(Path("build/amc_live_fetch_dates"), fetch_today)
+    fetch_dates = resolve_showtime_fetch_dates(showtimes, cached_combos, previous_dates, live_dates)
+    apply_final_table_schema(soup, table, movie_by_id, poster_by_id, freshness_by_movie, fetch_dates)
 
     
     # Build movies list (authoritative for input validation)
@@ -1198,7 +1431,6 @@ def main() -> None:
         old_fallback_notice.decompose()
 
     insert_pos = 1
-    fallback_marker = Path("build/amc_previous_report_fallback.txt")
     if fallback_marker.exists():
         combos = [
             line.strip()
@@ -1206,15 +1438,21 @@ def main() -> None:
             if line.strip()
         ]
         if combos:
-            notice = soup.new_tag("div", id="amc-cache-notice", **{"class": "amc-cache-notice"})
-            notice.string = (
-                "AMC blocked or incompletely rendered the live schedule for part of this run. "
-                "Those theater/date combinations were carried forward from the most recent "
-                "successful report for the same weekend (maximum age: 36 hours): "
+            # Put operational notes after the movie table and planner. A compact,
+            # collapsed footer avoids interrupting normal reading and planning.
+            notice = soup.new_tag("details", id="amc-cache-notice", **{"class": "amc-cache-notice"})
+            summary = soup.new_tag("summary")
+            summary.string = f"AMC schedule notes: {len(combos)} theater/date schedule(s) reused"
+            notice.append(summary)
+            explanation = soup.new_tag("p")
+            explanation.string = (
+                "AMC blocked or incompletely rendered some live schedules. "
+                "These combinations were carried forward from a validated recent report "
+                "for the same weekend (maximum age: 36 hours): "
                 + "; ".join(combos)
             )
-            container.insert(insert_pos, notice)
-            insert_pos += 1
+            notice.append(explanation)
+            container.append(notice)
 
     
     body = soup.body or soup
@@ -1227,6 +1465,12 @@ def main() -> None:
         "preferred_theaters": PREFERRED_THEATERS,
         "movies": movies,
         "showtimes": showtimes,
+        # Persist exact source dates inside the committed HTML for future runs.
+        # null signifies unknown/old rather than a guessed report timestamp.
+        "amc_fetch_dates": [
+            {"theater": key[0], "date": key[1], "fetched_on": fetch_dates[key]}
+            for key in sorted(fetch_dates)
+        ],
     }, ensure_ascii=False)
 
     js_tag = soup.new_tag("script", id="movie-planner-js")

@@ -1680,6 +1680,25 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         except Exception as e:
             print(f"[WARN] Could not save AMC combo status for {theatre_name} {wanted}: {e}")
 
+    def _mark_current_live_fetch() -> None:
+        """Persist the PACIFIC date when this combo actually yielded AMC rows.
+
+        Kept across Papermill retries in this workflow, but not committed.
+        Later HTML postprocessing will propagate the date via showtimes-data
+        only for exact theatre/date pairs; do not date failed/old fallbacks.
+        """
+        try:
+            from zoneinfo import ZoneInfo as _AMCFetchZone
+            fetched_on = datetime.now(_AMCFetchZone("America/Los_Angeles")).date().isoformat()
+            store = _AMCPath("build/amc_live_fetch_dates")
+            store.mkdir(parents=True, exist_ok=True)
+            record = {"theater": theatre_name, "date": wanted, "fetched_on": fetched_on}
+            (store / f"{_cache_slug}-{wanted}.json").write_text(
+                json.dumps(record, ensure_ascii=False), encoding="utf-8"
+            )
+        except Exception as e:
+            print(f"[WARN] Could not record AMC live fetch date for {theatre_name} {wanted}: {e}")
+
     def _save_cache() -> None:
         rows = _clean_rows()
         if not rows:
@@ -2154,11 +2173,12 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         theatres = {f.get("theatre") for f in failures if f.get("theatre")}
         dates_seen = {f.get("date") for f in failures if f.get("date")}
 
-        # With the new interleaved order, the first three browser requests may
-        # span all three dates and theatres. Do not open the run-wide circuit
-        # before each category has had a representative live opportunity.
-        # In a 3x3 report this means six distinct probes (two per category).
-        # Scale to other grid sizes; never require more than the full grid.
+        # With balanced ordering, intermittent AMC blocks can interrupt a streak
+        # and later combinations may still succeed. Therefore give EVERY distinct
+        # theatre/date combination one live browser chance before opening the
+        # cache-only circuit. For the ordinary 3x3 matrix this requires all nine
+        # browser probes, rather than the previous six-probe representative sample.
+        # Derive the total from configured theatres/dates, not a fixed number.
         expected_theatres = {
             str(th.get("name") or "").strip()
             for th in globals().get("THEATRES", ())
@@ -2168,15 +2188,14 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
             str(d.isoformat() if hasattr(d, "isoformat") else d)
             for d in globals().get("dates", ())
         }
-        if expected_theatres and expected_dates:
-            minimum_probes = min(
-                len(expected_theatres) * len(expected_dates),
-                2 * max(len(expected_theatres), len(expected_dates)),
-            )
-        else:
-            # Conservative fallback when called outside the normal notebook.
-            minimum_probes = 6
-        if len(_live_health.get("probed_combos") or ()) < minimum_probes:
+        if not expected_theatres or not expected_dates:
+            # No configured matrix: never skip a first attempt based on an
+            # incomplete view of the request set.
+            return
+        expected_grid = {(name, date_str) for name in expected_theatres for date_str in expected_dates}
+        if not expected_grid.issubset(_live_health.get("probed_combos") or set()):
+            # Require the actual configured slots, not just an equal COUNT of
+            # unrelated theatre/date probes made by another caller.
             return
 
         # Do not let one problematic theatre shut down the entire live run. AMC
@@ -2209,11 +2228,12 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
             _live_health["circuit_open"] = True
             _live_health["reason"] = "repeated empty/incomplete AMC responses across theatres and dates"
 
-    # If earlier combinations established a site-wide live failure, skip costly
-    # network/browser work only when this exact combination has a valid recent
-    # previous-report fallback. Otherwise continue live so the circuit breaker
-    # can never turn a missing cache into a hard failure by itself.
-    if _live_health.get("circuit_open"):
+    # Every distinct theatre/date in the configured matrix receives one live
+    # attempt first. Only redundant later calls can encounter the cache-only
+    # circuit; even then, skip only with a valid same-weekend fallback. This
+    # favors potentially intermittent successes over saving a few browser loads.
+    if (_live_health.get("circuit_open")
+            and (str(theatre_name), str(wanted)) in (_live_health.get("probed_combos") or set())):
         previous_rows = _previous_report_rows()
         if previous_rows:
             _mark_previous_report_fallback()
@@ -2227,8 +2247,8 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
             _finish_combo("cached", circuit_skip=True)
             return previous_rows
 
-    # Count a combination only after the cache-only circuit-skip decision;
-    # the representative-sample gate cannot be satisfied by skipped work.
+    # Count only attempted combinations: circuit skips and cache-only rows may
+    # not satisfy the all-combinations-live-attempted gate.
     _live_health.setdefault("probed_combos", set()).add((str(theatre_name), str(wanted)))
 
     browser_html = ""
@@ -2372,6 +2392,7 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
             _record_live_failure("no fresh rows in current attempt", explicit_block=_saw_explicit_browser_block)
         else:
             outcome = "live" if current_slots == final_slots else "mixed"
+            _mark_current_live_fetch()
             _write_combo_status(True)
             _record_live_success()
 
@@ -3040,7 +3061,7 @@ def main() -> int:
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
         "non-movie filtering, original-film metadata lookup, stabilized AMC browser fetch, "
-        "AMC A-List metadata + clean public logs v45 -> "
+        "AMC A-List metadata + clean public logs v47 -> "
         f"{args.output_notebook}"
     )
     return 0

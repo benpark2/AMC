@@ -1289,15 +1289,15 @@ desired = [
                     second = scraper(None, theatres[1], "https://example.invalid/showtimes", ns["date"](2026, 9, 27))
                     self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
                     third = scraper(None, theatres[2], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
-                    # Even three consecutive blocks across multiple theatres and
-                    # dates must not preempt the representative first-six probe.
+                    # Even consecutive blocks across multiple theatres/dates
+                    # must not preempt any first-pass combination.
                     self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
                     fourth = scraper(None, theatres[3], "https://example.invalid/showtimes", ns["date"](2026, 9, 27))
                     self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
                     fifth = scraper(None, theatres[4], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
                     self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
                     sixth = scraper(None, theatres[5], "https://example.invalid/showtimes", ns["date"](2026, 9, 27))
-                    self.assertTrue(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
+                    self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
                     before_seventh = dict(network)
                     seventh = scraper(None, theatres[6], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
             finally:
@@ -1310,14 +1310,13 @@ desired = [
         self.assertEqual(fifth[0]["movie_title"], "Cached Film 5")
         self.assertEqual(sixth[0]["movie_title"], "Cached Film 6")
         self.assertEqual(seventh[0]["movie_title"], "Cached Film 7")
-        self.assertEqual(before_seventh, network)
+        self.assertEqual(before_seventh["browser"] + 1, network["browser"])
         self.assertEqual(network["static"], 0)
-        self.assertEqual(network["browser"], 6)
-        self.assertEqual(ns["_AMC_LIVE_METRICS"]["explicit_block_combos"], 6)
-        self.assertEqual(ns["_AMC_LIVE_METRICS"]["circuit_cache_skips"], 1)
-        self.assertEqual(len(ns["_AMC_LIVE_HEALTH"]["probed_combos"]), 6)
-        self.assertTrue(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
-        self.assertIn("multiple theatres and dates", ns["_AMC_LIVE_HEALTH"]["reason"])
+        self.assertEqual(network["browser"], 7)
+        self.assertEqual(ns["_AMC_LIVE_METRICS"]["explicit_block_combos"], 7)
+        self.assertEqual(ns["_AMC_LIVE_METRICS"]["circuit_cache_skips"], 0)
+        self.assertEqual(len(ns["_AMC_LIVE_HEALTH"]["probed_combos"]), 7)
+        self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
 
     def test_three_explicit_blocks_from_one_theatre_do_not_open_global_circuit(self):
         source = self._patched_source()
@@ -1428,16 +1427,110 @@ desired = [
                     scraper(None, theatres[4], "https://example.invalid/showtimes", ns["date"](2026, 9, 27))
                     self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
 
-                    # The third consecutive post-success block now spans multiple
-                    # theatres and dates, so the next exact cached combo can skip.
+                    # Even the third block following a success cannot deprive
+                    # the remaining combination of its first browser chance.
                     scraper(None, theatres[5], "https://example.invalid/showtimes", ns["date"](2026, 9, 26))
-                    self.assertTrue(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
-                    before_skip = dict(network)
-                    skipped = scraper(None, theatres[6], "https://example.invalid/showtimes", ns["date"](2026, 9, 27))
-                    self.assertEqual(before_skip, network)
-                    self.assertEqual(skipped[0]["movie_title"], "Cached Reset Film 7")
+                    self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
+                    before_seventh = dict(network)
+                    seventh = scraper(None, theatres[6], "https://example.invalid/showtimes", ns["date"](2026, 9, 27))
+                    self.assertEqual(before_seventh["browser"] + 1, network["browser"])
+                    self.assertEqual(seventh[0]["movie_title"], "Cached Reset Film 7")
+                    self.assertEqual(ns["_AMC_LIVE_METRICS"]["circuit_cache_skips"], 0)
             finally:
                 os.chdir(old_cwd)
+
+    def test_all_nine_combos_attempted_even_after_eight_explicit_blocks(self):
+        """A late success after eight blocks must not be lost to circuit skip."""
+        source = self._patched_source()
+        ns = {}
+        exec(compile(source, "<patched-notebook-test>", "exec"), ns)
+        scraper = ns["scrape_amc_showtimes_for_date"]
+        theatres = [f"AMC Test {i}" for i in range(3)]
+        dates = [ns["date"](2026, 9, day) for day in (26, 27, 28)]
+        ns["THEATRES"] = [{"name": theater, "url": "https://example.invalid/showtimes"} for theater in theatres]
+        ns["dates"] = dates
+        order = list(ns["balanced_amc_request_order"](ns["THEATRES"], dates, dates[0]))
+        browser_calls = []
+        success_html = "".join(
+            f'<div aria-label="Showtimes for Movie {i}"><a href="/showtimes/{100+i}">8:{i:02d} PM</a></div>'
+            for i in range(1, 7)
+        )
+
+        def browser(url, params=None, timeout_ms=30000):
+            browser_calls.append(params["date"])
+            if len(browser_calls) < 9:
+                return 200, "<html><body>Verify you are human</body></html>"
+            return 200, success_html
+
+        ns["fetch_html_with_browser"] = browser
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docs").mkdir()
+            (root / "docs" / "last_run_utc.txt").write_text(
+                datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ") + "\n", encoding="utf-8"
+            )
+            cached = [
+                {"movie_id": i, "movie": f"Cached Film {i}", "theater": th["name"],
+                 "format": "", "date": day.isoformat(), "start": "7:00 pm", "runtime_min": 90,
+                 "a_list_excluded": False}
+                for i, (th, day) in enumerate(order, start=1)
+            ]
+            (root / "docs" / "index.html").write_text(
+                '<html><body><script id="showtimes-data" type="application/json">'
+                + json.dumps({"movies": [], "showtimes": cached})
+                + '</script></body></html>', encoding="utf-8"
+            )
+            old_cwd = os.getcwd()
+            os.chdir(root)
+            try:
+                with patch.dict(os.environ, {"AMC_LIVE_SPACING_SECONDS": "0", "AMC_EXPLICIT_BLOCK_COOLDOWN_SECONDS": "0"}, clear=False):
+                    for index, (theater, day) in enumerate(order, start=1):
+                        rows = scraper(None, theater["name"], theater["url"], day)
+                        self.assertTrue(rows)
+                        self.assertEqual(len(browser_calls), index)
+                        if index < 9:
+                            self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
+            finally:
+                os.chdir(old_cwd)
+        self.assertEqual(len(browser_calls), 9)
+        self.assertEqual(ns["_AMC_LIVE_METRICS"]["circuit_cache_skips"], 0)
+        self.assertEqual(ns["_AMC_LIVE_METRICS"]["combos_cached"], 8)
+        self.assertEqual(ns["_AMC_LIVE_METRICS"]["combos_live"], 1)
+        self.assertFalse(ns["_AMC_LIVE_HEALTH"]["circuit_open"])
+
+    def test_showtime_source_badges_by_movie_not_assumed_timestamp(self):
+        """One movie can mix live/cached theatres and dates; never invent dates."""
+        showtimes = [
+            {"movie_id": 1, "theater": "AMC Test A", "date": "2026-10-24", "start": "12:00 pm"},
+            {"movie_id": 1, "theater": "AMC Test A", "date": "2026-10-24", "start": "8:00 pm"},
+            {"movie_id": 1, "theater": "AMC Test B", "date": "2026-10-25", "start": "9:00 pm"},
+            {"movie_id": 2, "theater": "AMC Test A", "date": "2026-10-24", "start": "2:00 pm"},
+            {"movie_id": 3, "theater": "AMC Test B", "date": "2026-10-25", "start": "7:00 pm"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "amc_previous_report_fallback.txt"
+            marker.write_text("AMC Test A | 2026-10-24\nmalformed entry\n", encoding="utf-8")
+            cached_combos = postprocess.read_cached_showtime_combos(marker)
+            self.assertEqual(cached_combos, {("amc test a", "2026-10-24")})
+        statuses = postprocess.movie_showtime_freshness(showtimes, cached_combos)
+        self.assertEqual(statuses[1][0], "mixed")
+        self.assertIn("1/2", statuses[1][1])
+        self.assertEqual(statuses[2][0], "cached")
+        self.assertNotIn("updated", statuses[2][1].lower())
+        self.assertEqual(statuses[3][0], "fresh")
+
+        soup = BeautifulSoup(
+            '<table><thead><tr><th>#</th><th>Movie</th><th>RT_C/A</th><th>IMDb</th>'
+            '<th>Showtimes</th><th>Runtime</th></tr></thead><tbody>'
+            '<tr data-movie-id="1"><td>1</td><td>Movie Example</td><td></td><td></td>'
+            '<td>AMC Test A 2026-10-24</td><td>100 min</td></tr></tbody></table>',
+            "html.parser",
+        )
+        postprocess.apply_final_table_schema(soup, soup.table, {1: "Movie Example"}, {}, statuses)
+        note = soup.select_one('span.showtimes-freshness[data-source="mixed"]')
+        self.assertIsNotNone(note)
+        self.assertIn("Partly cached", note.get_text())
+        self.assertEqual(len(soup.select("thead th")), 6)  # no extra wide column
 
     def test_amc_live_loads_are_spaced_and_metrics_written_outside_notebook(self):
         source = self._patched_source()
@@ -3813,6 +3906,139 @@ class PreviousLanguageRecoveryTests(unittest.TestCase):
         focus = soup.select_one('td.audience-focus-cell')
         self.assertEqual(focus.get('data-audience-focus'), 'Filipino')
         self.assertIn('retained from previous report', focus.get('title'))
+
+
+class AMCShowtimeFetchDateTests(unittest.TestCase):
+    """Dates must travel across report generations without being backdated."""
+
+    def setUp(self):
+        self.a = ("amc orange 30", "2026-10-24")
+        self.b = ("amc tustin 14 at the district", "2026-10-25")
+        self.showings = [
+            {"movie_id": 1, "movie": "Sample", "theater": "AMC Orange 30", "date": "2026-10-24"},
+            {"movie_id": 1, "movie": "Sample", "theater": "AMC Tustin 14 @ The District", "date": "2026-10-25"},
+        ]
+
+    def test_recovered_cached_dates_keep_original_timestamp(self):
+        previous = {self.a: "2026-10-22", self.b: "2026-10-23"}
+        live = {self.a: "2026-10-24"}
+        resolved = postprocess.resolve_showtime_fetch_dates(
+            self.showings, {self.a, self.b}, previous, live
+        )
+        self.assertEqual(resolved[self.a], "2026-10-22")
+        self.assertEqual(resolved[self.b], "2026-10-23")
+        # If another run later inherits this same date, the older date persists.
+        again = postprocess.resolve_showtime_fetch_dates(
+            self.showings, {self.a, self.b}, resolved, {}
+        )
+        self.assertEqual(again, resolved)
+
+    def test_fresh_replaces_old_but_unknown_stays_old(self):
+        resolved = postprocess.resolve_showtime_fetch_dates(
+            self.showings, {self.b}, {self.a: "2026-10-21"}, {self.a: "2026-10-24"}
+        )
+        self.assertEqual(resolved[self.a], "2026-10-24")
+        self.assertIsNone(resolved[self.b])
+
+    def test_reads_previous_report_payload_and_rejects_bad_dates(self):
+        data = {"amc_fetch_dates": [
+            {"theater": "AMC Orange 30", "date": "2026-10-24", "fetched_on": "2026-10-22"},
+            {"theater": "AMC Tustin 14 @ The District", "date": "2026-10-25", "fetched_on": "2026-13-55"},
+        ]}
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "old.html"
+            p.write_text('<html><script id="showtimes-data" type="application/json">'
+                         + json.dumps(data) + '</script></html>', encoding="utf-8")
+            prior = postprocess.read_previous_fetch_dates(p, "2026-10-24")
+            self.assertEqual(prior, {self.a: "2026-10-22"})
+            data["amc_fetch_dates"][0]["fetched_on"] = "2026-10-30"
+            p.write_text('<script id="showtimes-data" type="application/json">'
+                         + json.dumps(data) + '</script>', encoding="utf-8")
+            self.assertEqual(postprocess.read_previous_fetch_dates(p, "2026-10-24"), {})
+            p.write_text('<script id="showtimes-data" type="application/json">'
+                         + json.dumps({"showtimes": self.showings}) + '</script>', encoding="utf-8")
+            self.assertEqual(postprocess.read_previous_fetch_dates(p, "2026-10-24"), {})
+
+    def test_live_fetch_markers_survive_workflow_retry(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "amc-orange-30-2026-10-24.json"
+            p.write_text(json.dumps({"theater": "AMC Orange 30", "date": "2026-10-24",
+                                     "fetched_on": "2026-10-23"}), encoding="utf-8")
+            dates = postprocess.read_workflow_fetch_dates(Path(d), "2026-10-24")
+            self.assertEqual(dates[self.a], "2026-10-23")
+            (Path(d) / "corrupt.json").write_text("not json", encoding="utf-8")
+            self.assertEqual(postprocess.read_workflow_fetch_dates(Path(d), "2026-10-24"), dates)
+
+    def test_rendered_labels_preserve_original_blob_for_cache_and_a_list(self):
+        soup = BeautifulSoup("<html></html>", "html.parser")
+        td = soup.new_tag("td")
+        original = (
+            "AMC Orange 30<br/>• 2026-10-24: 7:00 pm⛔ [Laser at AMC]<br/>"
+            "AMC Tustin 14 @ The District<br/>• 2026-10-25: 8:00 pm"
+        )
+        td.append(BeautifulSoup(original, "html.parser"))
+        # A parsed HTML fragment under a soup can have children nested inside
+        # that fragment; BeautifulSoup stringification/reparse mimics table cells.
+        td = BeautifulSoup(f"<td>{original}</td>", "html.parser").td
+        before = td.get_text("\n", strip=True)
+        postprocess.label_showtime_fetch_dates(soup, td, {self.a: "2026-10-23", self.b: None})
+        self.assertEqual(td.get_text("\n", strip=True), before)
+        self.assertEqual(len(td.select(".showtime-fetch-date")), 2)
+        self.assertEqual(td.select(".showtime-fetch-date")[0]["data-label"], " · Fetched 2026-10-23")
+        self.assertIn("Old", td.select(".showtime-fetch-date")[1]["data-label"])
+        parsed = postprocess.parse_showtimes_blob(td.get_text("\n", strip=True))
+        self.assertEqual(len(parsed), 2)
+        self.assertTrue(parsed[0]["a_list_excluded"])
+
+    def test_postprocess_footer_and_serialized_metadata(self):
+        html = """<html><head></head><body><main>
+            <table class="dataframe"><thead><tr>
+              <th>movie_title</th><th>rt_c/a</th><th>imdb_rating</th><th>showtimes</th><th>runtime</th>
+            </tr></thead><tbody><tr>
+              <td>Test Feature</td><td>81/70</td><td>7.2</td>
+              <td>AMC Orange 30<br/>• 2026-10-24: 7:00 pm⛔ [Laser at AMC]<br/>
+              AMC Tustin 14 @ The District<br/>• 2026-10-25: 8:00 pm</td><td>1h 45m</td>
+            </tr></tbody></table></main></body></html>"""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "docs").mkdir()
+            (root / "build/amc_live_fetch_dates").mkdir(parents=True)
+            (root / "docs/index.html").write_text(html, encoding="utf-8")
+            (root / "build/amc_previous_report_fallback.txt").write_text(
+                "AMC Tustin 14 @ The District | 2026-10-25\n", encoding="utf-8"
+            )
+            (root / "build/amc_live_fetch_dates/live.json").write_text(json.dumps({
+                "theater": "AMC Orange 30", "date": "2026-10-24", "fetched_on": "2026-10-24"
+            }), encoding="utf-8")
+            (root / "build/previous_report.html").write_text(
+                '<script id="showtimes-data" type="application/json">'
+                + json.dumps({"amc_fetch_dates": [
+                    {"theater": "AMC Tustin 14 @ The District", "date": "2026-10-25", "fetched_on": "2026-10-22"}
+                ]}) + '</script>', encoding="utf-8"
+            )
+            oldcwd = Path.cwd()
+            try:
+                os.chdir(root)
+                with patch.object(postprocess, 'HTML_PATH', Path('docs/index.html')), \
+                     patch.object(postprocess, 'wikipedia_thumbnail_url', return_value=None):
+                    postprocess.main()
+            finally:
+                os.chdir(oldcwd)
+            page = BeautifulSoup((root / 'docs/index.html').read_text(encoding='utf-8'), 'html.parser')
+            js = json.loads(page.find('script', id='showtimes-data').string)
+            prov = {(x['theater'], x['date']): x['fetched_on'] for x in js['amc_fetch_dates']}
+            self.assertEqual(prov[self.a], "2026-10-24")
+            self.assertEqual(prov[self.b], "2026-10-22")
+            labels = page.select('.showtime-fetch-date')
+            self.assertEqual(len(labels), 2)
+            self.assertIn('2026-10-24', labels[0]['data-label'])
+            self.assertIn('2026-10-22', labels[1]['data-label'])
+            warning = page.find(id='amc-cache-notice')
+            self.assertEqual(warning.name, 'details')
+            self.assertTrue(warning.parent.name in {'main', 'body'})
+            self.assertGreater(list(warning.parent.descendants).index(warning),
+                               list(warning.parent.descendants).index(page.find('table')))
+            self.assertIsNone(warning.get('open'))
 
 
 class AttachedOutputContextTests(unittest.TestCase):
