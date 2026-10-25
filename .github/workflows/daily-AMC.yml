@@ -59,8 +59,8 @@ jobs:
 
           # AMC occasionally returns a queue/bot/interstitial response to a
           # GitHub-hosted runner even though the same scraper worked moments
-          # earlier. Retry ONLY that specific all-showtimes-empty failure from a
-          # fresh Papermill process. Any unrelated notebook error fails
+          # earlier. Retry ONLY a verified incomplete theater/date schedule
+          # from a fresh Papermill process. Any unrelated notebook error fails
           # immediately instead of being hidden by retries.
           attempt=1
           max_attempts=3
@@ -73,7 +73,8 @@ jobs:
             # Do not clear build/amc_combo_cache: fresh rows recovered earlier
             # in this workflow are still useful for intermittent AMC blocks.
             rm -f build/amc_live_metrics.json build/amc_previous_report_fallback.txt
-            rm -rf build/scenef_combo_sources
+            rm -rf build/scenef_combo_sources build/scenef_combo_diagnostics
+            rm -f build/scenef_fetch_diagnostic.json
             echo "[INFO] Papermill attempt ${attempt}/${max_attempts}"
 
             set +e
@@ -132,19 +133,60 @@ jobs:
                       f"date_valid={check.get('date_valid', False)}"
                       f"{final_location}"
                   )
+          # v50: SceneF diagnostics are sidecar JSON, not notebook output.
+          # Print after EVERY Papermill attempt (including unsuccessful ones)
+          # and do not publish these reason codes in docs/index.html.
+          fetch_diagnostic = Path("build/scenef_fetch_diagnostic.json")
+          if fetch_diagnostic.is_file():
+              try:
+                  item = json.loads(fetch_diagnostic.read_text(encoding="utf-8"))
+                  if isinstance(item, dict):
+                      print(
+                          "[SCENEF-FETCH] "
+                          f"reason={item.get('reason', 'unknown')} "
+                          f"http={item.get('http_status', '-')}"
+                      )
+              except (ValueError, OSError):
+                  print("[SCENEF-FETCH] reason=diagnostic_unreadable")
+          combo_diagnostics = Path("build/scenef_combo_diagnostics")
+          if combo_diagnostics.is_dir():
+              for item_path in sorted(combo_diagnostics.glob("*.json")):
+                  try:
+                      item = json.loads(item_path.read_text(encoding="utf-8"))
+                      if not isinstance(item, dict):
+                          continue
+                      available = ",".join(item.get("available_dates") or []) or "-"
+                      print(
+                          "[SCENEF-COMBO] "
+                          f"theatre={item.get('theater', '?')!r} "
+                          f"date={item.get('date', '?')} "
+                          f"reason={item.get('reason', '?')} "
+                          f"decision={item.get('decision', '-')} "
+                          f"decision_reason={item.get('decision_reason', '-')} "
+                          f"venue_slots={item.get('venue_screenings', 0)} "
+                          f"date_slots={item.get('date_screenings', 0)} "
+                          f"stale_or_unverified={item.get('unverified_screenings', 0) + item.get('stale_screenings', 0)} "
+                          f"disputed={item.get('disputed_screenings', 0)} "
+                          f"available_dates={available} "
+                          f"candidate={item.get('candidate_slots', 0)} "
+                          f"runner={item.get('runner_slots', 0)} "
+                          f"previous={item.get('previous_slots', 0)}"
+                      )
+                  except (ValueError, OSError, TypeError):
+                      print("[SCENEF-COMBO] reason=diagnostic_unreadable")
           PY
 
             if [ "${pm_status}" -eq 0 ]; then
               break
             fi
 
-            if ! grep -Fq "No fresh AMC showtimes were parsed for the requested dates." "${log_file}"; then
-              echo "[ERROR] Papermill failed for a reason unrelated to the AMC empty-showtimes condition."
+            if ! grep -Fq "AMC/SceneF report coverage incomplete for requested dates." "${log_file}"; then
+              echo "[ERROR] Papermill failed for a reason unrelated to AMC/SceneF schedule completeness."
               exit "${pm_status}"
             fi
 
             if [ "${attempt}" -ge "${max_attempts}" ]; then
-              echo "[ERROR] AMC returned no parsable showtimes on all ${max_attempts} attempts."
+              echo "[ERROR] AMC/SceneF could not complete the requested theater/date schedule after ${max_attempts} attempts; see [AMC-METRICS] and [SCENEF-*] diagnostics above."
               exit "${pm_status}"
             fi
 
