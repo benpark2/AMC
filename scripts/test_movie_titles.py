@@ -1527,9 +1527,8 @@ desired = [
             "html.parser",
         )
         postprocess.apply_final_table_schema(soup, soup.table, {1: "Movie Example"}, {}, statuses)
-        note = soup.select_one('span.showtimes-freshness[data-source="mixed"]')
-        self.assertIsNotNone(note)
-        self.assertIn("Partly cached", note.get_text())
+        # Theatre/date-level fetch indicators replace the redundant summary.
+        self.assertIsNone(soup.select_one('span.showtimes-freshness'))
         self.assertEqual(len(soup.select("thead th")), 6)  # no extra wide column
 
     def test_amc_live_loads_are_spaced_and_metrics_written_outside_notebook(self):
@@ -3433,6 +3432,73 @@ class AudienceFocusTests(unittest.TestCase):
                 self.assertNotIn("Japanese", result.tags)
                 self.assertNotIn("Spanish-language", result.tags)
 
+    def test_kids_focused_from_explicit_wikidata_audience_or_genre(self):
+        # Film-level intent, not its certification or suitability for families.
+        cases = (
+            "a children's animated fantasy film",
+            "a film made for preschoolers",
+            "a feature film aimed at young children",
+            "a kids' educational movie",
+        )
+        for description in cases:
+            with self.subTest(description=description):
+                result = posters.classify_audience_focus(
+                    self.context(), self.entity(description=description)
+                )
+                self.assertIn("Kids-focused", result.tags)
+                self.assertTrue(any("Wikidata" in reason for reason in result.reasons))
+
+        posters._LABEL_CACHE["Q2099"] = "children's film"
+        entity = self.entity(claims={
+            "P136": [{"mainsnak": {"datavalue": {"value": {"id": "Q2099"}}}}]
+        })
+        self.assertIn("Kids-focused", posters.classify_audience_focus(self.context(), entity).tags)
+
+    def test_kids_focused_from_verified_wikipedia_context(self):
+        descriptions = (
+            "British children's adventure films | 2027 films",
+            "The feature is targeted at preschoolers.",
+            "A movie designed for children.",
+        )
+        for focus_text in descriptions:
+            with self.subTest(focus_text=focus_text):
+                result = posters.classify_audience_focus(
+                    self.context(), self.entity(), supplemental_focus_text=focus_text
+                )
+                self.assertIn("Kids-focused", result.tags)
+                self.assertTrue(any("Wikipedia" in reason for reason in result.reasons))
+
+    def test_kids_focused_excludes_merely_family_friendly_or_child_characters(self):
+        # Conservative: animation, family genres, ratings and adapted children's
+        # books alone do not establish the film's intended primary audience.
+        cases = (
+            ("family-friendly animated comedy film", "family movie"),
+            ("PG-rated cartoon feature", "animated family adventure film"),
+            ("film featuring children and their parents", "children are its protagonists"),
+            ("adaptation of a children's book", "based on children's literature"),
+            ("American family film", "Family films | 2027 animated films"),
+        )
+        for description, wiki_text in cases:
+            with self.subTest(description=description):
+                result = posters.classify_audience_focus(
+                    self.context(title="Happy Children in a Park"),
+                    self.entity(description=description),
+                    supplemental_focus_text=wiki_text,
+                    supplemental_genres=frozenset({"kids & family", "animation"}),
+                )
+                self.assertNotIn("Kids-focused", result.tags)
+
+    def test_kids_focus_coexists_with_other_audience_tags(self):
+        result = posters.classify_audience_focus(
+            self.context(title="Example (Hindi)"),
+            self.entity(description="a children's animated musical film"),
+            supplemental_languages=frozenset({"hindi"}),
+            supplemental_genres=frozenset({"music"}),
+        )
+        self.assertIn("Kids-focused", result.tags)
+        self.assertIn("Indian", result.tags)
+        self.assertIn("Music/Concert", result.tags)
+
     def test_rt_language_and_genre_enrich_audience_focus(self):
         result = posters.classify_audience_focus(
             self.context(),
@@ -3760,6 +3826,35 @@ class AudienceFocusTests(unittest.TestCase):
         self.assertIsNotNone(cell)
         self.assertIn("Black-focused", cell.get_text(" ", strip=True))
 
+    def test_children_tag_in_full_report_from_wikipedia_genre(self):
+        # Verify the batched page-context path actually reaches the public
+        # Audience Focus cell; do not classify a merely family-friendly film.
+        html = (
+            '<html><head></head><body><table class="dataframe"><thead><tr>'
+            '<th>#</th><th>Movie</th><th>RT_C/A</th><th>IMDb</th><th>Showtimes</th><th>Runtime</th>'
+            '</tr></thead><tbody><tr data-movie-id="1"><td>1</td>'
+            '<td><div class="movie-cell-title">The Little Adventure</div>'
+            '<img class="movie-poster" data-wikipedia-page="The Little Adventure (film)" src="a.jpg"></td>'
+            '<td>85/92</td><td>7</td><td>AMC Test<br>• 2026-09-20: 12:00 pm</td>'
+            '<td>1h 20m</td></tr></tbody></table></body></html>'
+        )
+        soup = BeautifulSoup(html, "html.parser")
+        context_page = {
+            "the little adventure (film)": {
+                "title": "The Little Adventure (film)",
+                "extract": "The Little Adventure is a 2026 children's animated adventure film.",
+                "categories": [{"title": "Category:2026 animated films"}],
+            }
+        }
+        with patch.object(posters, "_audience_entity_for_context", return_value=self.entity()), \
+             patch.object(posters, "_wikipedia_focus_pages", return_value=context_page), \
+             patch.object(posters, "_rt_metadata_for_context", return_value=None), \
+             patch.object(posters, "_prior_verified_language_index", return_value={}):
+            self.assertEqual(posters._add_audience_focus_column(soup, 2026), 1)
+        cell = soup.select_one(".audience-focus-cell")
+        self.assertIn("Kids-focused", cell["data-audience-focus"])
+        self.assertIn("Wikipedia", cell["data-audience-reasons"])
+
     def test_generated_column_is_appended_and_idempotent(self):
         html = (
             '<html><head></head><body><table class="dataframe"><thead><tr>'
@@ -3984,8 +4079,13 @@ class AMCShowtimeFetchDateTests(unittest.TestCase):
         postprocess.label_showtime_fetch_dates(soup, td, {self.a: "2026-10-23", self.b: None})
         self.assertEqual(td.get_text("\n", strip=True), before)
         self.assertEqual(len(td.select(".showtime-fetch-date")), 2)
-        self.assertEqual(td.select(".showtime-fetch-date")[0]["data-label"], " · Fetched 2026-10-23")
-        self.assertIn("Old", td.select(".showtime-fetch-date")[1]["data-label"])
+        self.assertIn("max-width: 100%", postprocess.CSS)
+        self.assertIn("white-space: normal", postprocess.CSS)
+        self.assertNotIn(".showtimes-freshness{", postprocess.CSS)
+        self.assertEqual(td.select(".showtime-fetch-date")[0]["data-label"], "Fetched 10/23/26")
+        self.assertEqual(td.select(".showtime-fetch-date")[1]["data-label"], "Old")
+        self.assertIn("2026-10-23", td.select(".showtime-fetch-date")[0]["title"])
+        self.assertIn("unknown", td.select(".showtime-fetch-date")[1]["aria-label"])
         parsed = postprocess.parse_showtimes_blob(td.get_text("\n", strip=True))
         self.assertEqual(len(parsed), 2)
         self.assertTrue(parsed[0]["a_list_excluded"])
@@ -4031,8 +4131,8 @@ class AMCShowtimeFetchDateTests(unittest.TestCase):
             self.assertEqual(prov[self.b], "2026-10-22")
             labels = page.select('.showtime-fetch-date')
             self.assertEqual(len(labels), 2)
-            self.assertIn('2026-10-24', labels[0]['data-label'])
-            self.assertIn('2026-10-22', labels[1]['data-label'])
+            self.assertEqual(labels[0]['data-label'], 'Fetched 10/24/26')
+            self.assertEqual(labels[1]['data-label'], 'Fetched 10/22/26')
             warning = page.find(id='amc-cache-notice')
             self.assertEqual(warning.name, 'details')
             self.assertTrue(warning.parent.name in {'main', 'body'})
@@ -4176,7 +4276,8 @@ class SceneFFallbackTests(unittest.TestCase):
             soup = BeautifulSoup('<html></html>', 'html.parser')
             postprocess.label_showtime_fetch_dates(soup, td, {key: None}, current)
             self.assertEqual(before, td.get_text('\n', strip=True))
-            self.assertIn('verified 2026-10-24', td.select_one('.showtime-fetch-date')['data-label'])
+            self.assertEqual(td.select_one('.showtime-fetch-date')['data-label'], 'SceneF 10/24/26')
+            self.assertIn('verified 2026-10-24', td.select_one('.showtime-fetch-date')['title'])
 
     def test_blocked_amc_uses_scenef_only_when_replacement_is_richer(self):
         from scripts import scenef_showtimes
@@ -4259,8 +4360,10 @@ class SceneFFallbackTests(unittest.TestCase):
             self.assertEqual(slot['provider'], 'scenef')
             self.assertEqual(slot['verified_on'], '2026-10-23')
             self.assertIsNone(slot['fetched_on'])
-            self.assertIn('SceneF fetched 2026-10-24, verified 2026-10-23', html.select_one('.showtime-fetch-date')['data-label'])
-            self.assertIn('SceneF third-party showtimes', html.get_text(' ', strip=True))
+            self.assertEqual(html.select_one('.showtime-fetch-date')['data-label'], 'SceneF 10/23/26')
+            self.assertIn('fetched 2026-10-24, verified 2026-10-23', html.select_one('.showtime-fetch-date')['title'])
+            self.assertIsNone(html.select_one('.showtimes-freshness'))
+            self.assertIn('SceneF third-party showtimes', html.select_one('.showtime-fetch-date')['title'])
             self.assertIsNotNone(html.find(id='scenef-schedule-notice'))
             self.assertTrue(html.select_one('a[href="https://scenef.com/week?region=orangecounty"]'))
             self.assertEqual(len(payload['showtimes']), 1)
@@ -4269,8 +4372,138 @@ class SceneFFallbackTests(unittest.TestCase):
     def test_patch_adds_comparison_without_calling_scenef_for_healthy_amc(self):
         from scripts.patch_notebook_titles import AMC_SCRAPE_REPLACEMENT
         self.assertIn('if _coverage_problem or _no_rows:', AMC_SCRAPE_REPLACEMENT)
-        self.assertIn('_scenef_improves(_scenef_rows, prior)', AMC_SCRAPE_REPLACEMENT)
+        self.assertIn('_scenef_improves(_scenef_rows, final_rows)', AMC_SCRAPE_REPLACEMENT)
+        self.assertIn('_scenef_improves(_scenef_rows, _old)', AMC_SCRAPE_REPLACEMENT)
         self.assertIn('_finish_combo("scenef"', AMC_SCRAPE_REPLACEMENT)
+
+    def test_v50_parse_diagnostics_reveal_why_scenef_has_no_rows(self):
+        import copy
+        from datetime import timezone
+        from scripts.scenef_showtimes import parse_combo
+        now = datetime(2026, 10, 24, 16, 0, tzinfo=timezone.utc)
+
+        def check(feed, theater, day, reason):
+            diag = {}
+            rows, _ = parse_combo(feed, theater, day, now=now, diagnostic=diag)
+            self.assertEqual(rows, [])
+            self.assertEqual(diag["reason"], reason)
+            return diag
+
+        feed = self._feed()
+        check({}, "AMC Orange 30", "2026-10-25", "region_mismatch")
+        wrong_timezone = dict(feed, timezone="America/New_York")
+        check(wrong_timezone, "AMC Orange 30", "2026-10-25", "timezone_mismatch")
+        old_board = dict(feed, data_as_of="2026-10-15T13:00:00Z")
+        check(old_board, "AMC Orange 30", "2026-10-25", "board_stale_or_undated")
+        no_arrays = dict(feed, screenings=None)
+        check(no_arrays, "AMC Orange 30", "2026-10-25", "feed_schema_missing_arrays")
+        check(feed, "AMC Woodbridge 5", "2026-10-25", "theater_not_found")
+        ambiguous = copy.deepcopy(feed)
+        ambiguous['venues'].append({"id": "amc-orange-copy", "name": "AMC Orange 30"})
+        check(ambiguous, "AMC Orange 30", "2026-10-25", "theater_ambiguous")
+        wrong_date = check(feed, "AMC Orange 30", "2026-11-01", "requested_date_absent")
+        self.assertEqual(wrong_date['available_dates'], ['2026-10-25'])
+        self.assertEqual(wrong_date['venue_screenings'], 2)
+        self.assertEqual(wrong_date['date_screenings'], 0)
+        stale_screenings = copy.deepcopy(feed)
+        for entry in stale_screenings['screenings']:
+            entry['verified_at'] = "2026-10-10T14:00:00Z"
+        stale = check(stale_screenings, "AMC Orange 30", "2026-10-25", "date_screenings_rejected_by_validation")
+        self.assertEqual(stale['unverified_screenings'], 2)
+        disputed = copy.deepcopy(feed)
+        for entry in disputed['screenings']:
+            entry['confidence'] = 'disputed'
+        d = check(disputed, "AMC Orange 30", "2026-10-25", "date_screenings_rejected_by_validation")
+        self.assertEqual(d['disputed_screenings'], 2)
+        valid = {}
+        rows, _ = parse_combo(feed, "AMC Orange 30", "2026-10-25", now=now, diagnostic=valid)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(valid['reason'], 'valid_candidate')
+
+    def test_v50_fetch_diagnostics_report_http_and_content_failures_without_secrets(self):
+        from scripts import scenef_showtimes
+        import requests as _requests
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            oldcwd = Path.cwd()
+            try:
+                os.chdir(tmp)
+                errors = [
+                    (_requests.Timeout('time out'), 'request_timeout'),
+                    (_requests.ConnectionError('sensitive URL token'), 'network_error'),
+                ]
+                for error, code in errors:
+                    scenef_showtimes.fetch_board.cache_clear()
+                    with patch.object(scenef_showtimes.requests, 'get', side_effect=error):
+                        self.assertIsNone(scenef_showtimes.fetch_board())
+                    diagnostic = json.loads(Path('build/scenef_fetch_diagnostic.json').read_text())
+                    self.assertEqual(diagnostic['reason'], code)
+                    self.assertNotIn('sensitive', json.dumps(diagnostic))
+                for content_type, payload, code in [
+                    ('text/html', '<html>Blocked</html>', 'non_json_response'),
+                    ('application/json', 'not-json', 'invalid_json'),
+                ]:
+                    scenef_showtimes.fetch_board.cache_clear()
+                    response = SimpleNamespace(status_code=200, headers={'content-type':content_type},
+                                               raise_for_status=lambda: None,
+                                               json=lambda: (_ for _ in ()).throw(ValueError('not-json')))
+                    with patch.object(scenef_showtimes.requests, 'get', return_value=response):
+                        self.assertIsNone(scenef_showtimes.fetch_board())
+                    diagnostic = json.loads(Path('build/scenef_fetch_diagnostic.json').read_text())
+                    self.assertEqual(diagnostic['reason'], code)
+                scenef_showtimes.fetch_board.cache_clear()
+                response = SimpleNamespace(status_code=403, headers={'content-type':'application/json'},
+                                           raise_for_status=lambda: (_ for _ in ()).throw(_requests.HTTPError('403')))
+                with patch.object(scenef_showtimes.requests, 'get', return_value=response):
+                    self.assertIsNone(scenef_showtimes.fetch_board())
+                diagnostic = json.loads(Path('build/scenef_fetch_diagnostic.json').read_text())
+                self.assertEqual((diagnostic['reason'],diagnostic['http_status']), ('http_error',403))
+            finally:
+                os.chdir(oldcwd)
+                scenef_showtimes.fetch_board.cache_clear()
+
+    def test_v50_get_combo_and_comparison_persist_actions_only_diagnostics(self):
+        from scripts import scenef_showtimes
+        from datetime import timezone
+        now = datetime.now(timezone.utc)
+        with tempfile.TemporaryDirectory() as tmp:
+            oldcwd = Path.cwd()
+            try:
+                os.chdir(tmp)
+                # Stub a currently fresh board that has no screenings on the
+                # requested day. The parser's date filtering remains unchanged.
+                feed = self._feed()
+                feed['data_as_of'] = now.isoformat()
+                with patch.object(scenef_showtimes, 'fetch_board', return_value=feed):
+                    rows, _ = scenef_showtimes.get_combo('AMC Orange 30', '2026-11-01')
+                self.assertEqual(rows, [])
+                path = Path('build/scenef_combo_diagnostics/amc-orange-30-2026-11-01.json')
+                item = json.loads(path.read_text())
+                self.assertEqual(item['reason'], 'requested_date_absent')
+                old_rows = self._rows({'Feature': ['7:00 pm', '9:00 pm']})
+                scenef_showtimes.record_combo_decision('AMC Orange 30', '2026-11-01',
+                    accepted=False, reason='previous_report_not_improved', candidate=list(old_rows),
+                    runner=[], previous=list(old_rows))
+                updated = json.loads(path.read_text())
+                self.assertEqual(updated['decision_reason'], 'previous_report_not_improved')
+                self.assertEqual(updated['candidate_slots'], 2)
+                self.assertEqual(updated['previous_slots'], 2)
+                self.assertEqual(updated['reason'], 'requested_date_absent')
+            finally:
+                os.chdir(oldcwd)
+
+    def test_v50_incomplete_coverage_and_retry_reason_agree(self):
+        from scripts.patch_notebook_titles import DF_SHOW_INSERT
+        workflow = (Path(__file__).parent.parent / '.github/workflows/daily-AMC.yml').read_text()
+        self.assertIn('AMC/SceneF report coverage incomplete for requested dates.', DF_SHOW_INSERT)
+        self.assertIn('Missing or rejected theater/date schedules:', DF_SHOW_INSERT)
+        self.assertIn('grep -Fq "AMC/SceneF report coverage incomplete for requested dates."', workflow)
+        self.assertIn('build/scenef_combo_diagnostics', workflow)
+        self.assertIn('[SCENEF-FETCH]', workflow)
+        self.assertIn('[SCENEF-COMBO]', workflow)
+        self.assertLess(workflow.index('pm_status=${PIPESTATUS[0]}'), workflow.index('[SCENEF-COMBO]'))
+        self.assertNotIn('No fresh AMC showtimes were parsed for the requested dates.', DF_SHOW_INSERT)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

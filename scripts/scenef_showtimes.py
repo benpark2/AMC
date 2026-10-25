@@ -17,6 +17,8 @@ from urllib.parse import urlparse, quote
 from zoneinfo import ZoneInfo
 import re
 import unicodedata
+import json
+from pathlib import Path
 
 import requests
 
@@ -106,50 +108,139 @@ def _venue_for(theater: str, venues: list[dict]) -> dict | None:
     return approx[0] if len(approx) == 1 else None
 
 
-def parse_combo(feed: object, theater: str, day: str, *, now: datetime | None = None) -> tuple[list[dict], dict]:
-    """Translate only strongly grounded screenings to existing AMC-row shape.
+# Diagnostics are written as build artifacts, not notebook stdout, so retries
+# can expose rejection reasons in Actions without publishing them in the report.
+# Values are compact counts/reason codes, never response bodies or credentials.
+FETCH_DIAGNOSTIC = Path("build/scenef_fetch_diagnostic.json")
+COMBO_DIAGNOSTIC_DIR = Path("build/scenef_combo_diagnostics")
 
-    Screening fields ``venueId``, ``filmKey``, ``startsAt``, ``nightOf`` and
-    ``verified_at`` are from the open-source SceneF MCP client. The film and
-    venue IDs must exist in the SAME feed; missing fields fail closed.
+
+def _save_diagnostic(path: Path, values: dict) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(values, sort_keys=True), encoding="utf-8")
+    except OSError:
+        # Diagnostics must never alter the showtime retrieval decision.
+        pass
+
+
+def _combo_diagnostic_path(theater: str, day: str) -> Path:
+    # The same normalized combination key is used for all updates to its
+    # decision; do not include arbitrary vendor content in the file path.
+    slug = re.sub(r"[^a-z0-9]+", "-", str(theater).lower()).strip("-")
+    return COMBO_DIAGNOSTIC_DIR / f"{slug}-{day}.json"
+
+
+def _record_combo_diagnostic(theater: str, day: str, values: dict) -> None:
+    path = _combo_diagnostic_path(theater, day)
+    try:
+        current = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        if not isinstance(current, dict):
+            current = {}
+    except (ValueError, OSError):
+        current = {}
+    current.update({"theater": str(theater), "date": str(day)})
+    current.update(values)
+    _save_diagnostic(path, current)
+
+
+def record_combo_decision(theater: str, day: str, *, accepted: bool,
+                          reason: str, candidate: list[dict],
+                          runner: list[dict], previous: list[dict]) -> None:
+    """Log coverage/recency decisions, including rejected but nonempty feeds.
+
+    Distinct film and movie/time counts avoid misleading duplicates from
+    screening formats. This function intentionally never changes eligibility.
+    """
+    summary = {}
+    for name, rows in (("candidate", candidate), ("runner", runner), ("previous", previous)):
+        films, slots = _coverage(rows)
+        summary[f"{name}_films"] = len(films)
+        summary[f"{name}_slots"] = len(slots)
+    _record_combo_diagnostic(theater, day, {
+        "decision": "accepted" if accepted else "rejected",
+        "decision_reason": reason,
+        **summary,
+    })
+
+
+def parse_combo(feed: object, theater: str, day: str, *,
+                now: datetime | None = None,
+                diagnostic: dict | None = None) -> tuple[list[dict], dict]:
+    """Validate SceneF rows without weakening the v48 theater/date checks.
+
+    ``diagnostic`` is an optional output dict for reason codes/counters. The
+    original return shape remains unchanged for existing callers and tests.
     """
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     meta: dict = {"provider": "scenef", "region": REGION}
-    if not isinstance(feed, dict) or feed.get("region") != REGION:
+    diag = diagnostic if diagnostic is not None else {}
+
+    def reject(reason: str) -> tuple[list[dict], dict]:
+        diag["reason"] = reason
         return [], meta
+
+    if not isinstance(feed, dict):
+        return reject("feed_unavailable")
+    if feed.get("region") != REGION:
+        return reject("region_mismatch")
     if feed.get("timezone") not in ("America/Los_Angeles", "US/Pacific"):
-        return [], meta
-    if not _recent(feed.get("data_as_of") or feed.get("generated"), now, MAX_BOARD_AGE_H):
-        return [], meta
-    meta["data_as_of"] = feed.get("data_as_of") or feed.get("generated")
-    venues = feed.get("venues")
-    films = feed.get("films")
-    screenings = feed.get("screenings")
+        return reject("timezone_mismatch")
+    board_time = feed.get("data_as_of") or feed.get("generated")
+    if not _recent(board_time, now, MAX_BOARD_AGE_H):
+        return reject("board_stale_or_undated")
+    meta["data_as_of"] = board_time
+    venues, films, screenings = (feed.get(k) for k in ("venues", "films", "screenings"))
     if not (isinstance(venues, list) and isinstance(films, list) and isinstance(screenings, list)):
-        return [], meta
+        return reject("feed_schema_missing_arrays")
+    diag.update({"venues": len(venues), "films": len(films), "screenings": len(screenings)})
+
     venue = _venue_for(theater, venues)
     if not venue or not venue.get("id"):
-        return [], meta
+        # Distinguish missing AMC venues from ambiguous approximate name
+        # matches, without changing the strict venue selector itself.
+        requested = _theater_key(theater)
+        amc = [v for v in venues if isinstance(v, dict) and _is_amc_venue(v)]
+        exact = [v for v in amc if requested in {
+            _theater_key(v.get("name")), _theater_key(v.get("short"))
+        }]
+        approx = [v for v in amc if any(
+            requested in _theater_variants(v.get(k)) or
+            _theater_key(v.get(k)) in _theater_variants(theater)
+            for k in ("name", "short") if v.get(k)
+        )]
+        diag.update({"amc_venues": len(amc), "exact_matches": len(exact),
+                     "approx_matches": len(approx)})
+        return reject("theater_ambiguous" if len(exact) > 1 or len(approx) > 1
+                      else "theater_not_found")
+
     film_by_key = {f.get("key"): f for f in films if isinstance(f, dict) and f.get("key")}
     result: list[dict] = []
     seen: set[tuple] = set()
     verified = []
+    diag.update({"venue_screenings": 0, "date_screenings": 0, "invalid_film_or_time": 0,
+                 "unverified_screenings": 0, "stale_screenings": 0,
+                 "disputed_screenings": 0, "valid_screenings": 0})
+    available_dates: set[str] = set()
     for s in screenings:
         if not isinstance(s, dict) or s.get("venueId") != venue["id"]:
             continue
+        diag["venue_screenings"] += 1
         film = film_by_key.get(s.get("filmKey"))
-        if not film or not str(film.get("title") or "").strip():
-            continue
         instant = _datetime(s.get("startsAt"))
-        if instant is None:
+        if not film or not str(film.get("title") or "").strip() or instant is None:
+            diag["invalid_film_or_time"] += 1
             continue
         local = instant.astimezone(PACIFIC)
-        # Respect the requested *calendar* date, not SceneF's 4am nightOf
-        # label. Cross-midnight screenings must not shift across days.
+        available_dates.add(local.date().isoformat())
+        # Local start date, not nightOf, controls the requested calendar day.
         if local.date().isoformat() != day:
             continue
-        verified_at = s.get("verified_at") or (s.get("provenance") or {}).get("lastVerifiedAt")
+        diag["date_screenings"] += 1
+        provenance = s.get("provenance") if isinstance(s.get("provenance"), dict) else {}
+        verified_at = s.get("verified_at") or provenance.get("lastVerifiedAt")
         if not _recent(verified_at, now, MAX_VERIFY_AGE_H):
+            diag["unverified_screenings"] += 1
             continue
         fresh = s.get("freshness")
         if isinstance(fresh, dict) and (
@@ -157,9 +248,11 @@ def parse_combo(feed: object, theater: str, day: str, *, now: datetime | None = 
             or fresh.get("retained") is True
             or fresh.get("source_status") in ("held", "failed", "unknown")
         ):
+            diag["stale_screenings"] += 1
             continue
-        confidence = s.get("confidence") or (s.get("provenance") or {}).get("confidence")
+        confidence = s.get("confidence") or provenance.get("confidence")
         if confidence not in ("venue-published", "corroborated", "single-source"):
+            diag["disputed_screenings"] += 1
             continue
         title = str(film["title"]).strip()
         time_txt = local.strftime("%I:%M %p").lstrip("0").lower()
@@ -177,11 +270,11 @@ def parse_combo(feed: object, theater: str, day: str, *, now: datetime | None = 
             "show_time": time_txt,
             "format_label": "; ".join(str(t) for t in tags if isinstance(t, str)) or None,
             "runtime_min": runtime if isinstance(runtime, int) and 0 < runtime < 500 else None,
-            # SceneF does NOT certify AMC A-List eligibility. Postprocessor
-            # shows an explicit status warning for SceneF-sourced combos.
             "a_list_excluded": False,
             "scenef_alist_unverified": True,
         })
+    diag["valid_screenings"] = len(result)
+    diag["available_dates"] = sorted(available_dates)[:8]
     if result:
         if venue.get("scenef_url") and str(venue["scenef_url"]).startswith("https://scenef.com/"):
             meta["scenef_url"] = venue["scenef_url"]
@@ -189,29 +282,68 @@ def parse_combo(feed: object, theater: str, day: str, *, now: datetime | None = 
             meta["scenef_url"] = "https://scenef.com/theater/" + quote(str(venue["id"]), safe="") + "?region=" + REGION
         meta["verified_at"] = min(verified).isoformat() if verified else None
         meta["rows"] = len(result)
+        diag["reason"] = "valid_candidate"
+    elif not diag["venue_screenings"]:
+        diag["reason"] = "theater_has_no_screenings"
+    elif not diag["date_screenings"]:
+        diag["reason"] = "requested_date_absent" if available_dates else "screenings_invalid_film_or_time"
+    else:
+        diag["reason"] = "date_screenings_rejected_by_validation"
     return result, meta
 
 
 @lru_cache(maxsize=1)
 def fetch_board() -> dict | None:
-    """One modest SceneF request per Papermill attempt, no extra retries."""
+    """One SceneF request per Papermill attempt; record why it failed."""
+    diag = {"reason": "request_not_completed"}
     try:
         response = requests.get(
             URL, params={"region": REGION, "compact": "1"},
             headers={"User-Agent": "AMC-weekend-report/1.0 (SceneF fallback; https://scenef.com/agents)", "Accept": "application/json"},
             timeout=12,
         )
+        diag["http_status"] = response.status_code
         response.raise_for_status()
         if "json" not in response.headers.get("content-type", "").lower():
+            diag["reason"] = "non_json_response"
             return None
-        data = response.json()
-        return data if isinstance(data, dict) else None
-    except (requests.RequestException, ValueError):
+        try:
+            data = response.json()
+        except ValueError:
+            diag["reason"] = "invalid_json"
+            return None
+        if not isinstance(data, dict):
+            diag["reason"] = "invalid_json_structure"
+            return None
+        diag["reason"] = "ok"
+        return data
+    except requests.Timeout:
+        diag["reason"] = "request_timeout"
         return None
+    except requests.HTTPError:
+        diag["reason"] = "http_error"
+        return None
+    except requests.RequestException:
+        # Do not print exception strings: request/response details sometimes
+        # embed authentication or query information.
+        diag["reason"] = "network_error"
+        return None
+    finally:
+        _save_diagnostic(FETCH_DIAGNOSTIC, diag)
 
 
 def get_combo(theater: str, day: str) -> tuple[list[dict], dict]:
-    return parse_combo(fetch_board(), theater, day)
+    diagnostic = {}
+    board = fetch_board()
+    rows, meta = parse_combo(board, theater, day, diagnostic=diagnostic)
+    if board is None:
+        try:
+            fetch = json.loads(FETCH_DIAGNOSTIC.read_text(encoding="utf-8"))
+            diagnostic["reason"] = fetch.get("reason") or "feed_unavailable"
+        except (OSError, ValueError):
+            pass
+    _record_combo_diagnostic(theater, day, diagnostic)
+    return rows, meta
 
 
 def _coverage(rows: list[dict]) -> tuple[set[str], set[tuple[str, str]]]:

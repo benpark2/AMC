@@ -2325,10 +2325,10 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
                 _scenef_rows, _scenef_meta = _scenef_get_combo(theatre_name, wanted)
                 _old = _previous_report_rows()
                 # The candidate must improve on both stores if they differ.
-                _eligible = bool(_scenef_rows) and all(
-                    _scenef_improves(_scenef_rows, prior)
-                    for prior in (final_rows, _old)
-                )
+                _scenef_checked = bool(_scenef_rows)
+                _runner_improved = _scenef_checked and _scenef_improves(_scenef_rows, final_rows)
+                _previous_improved = _scenef_checked and _scenef_improves(_scenef_rows, _old)
+                _eligible = bool(_runner_improved and _previous_improved)
                 # Never overwrite newer verified evidence with an older feed.
                 _scenef_verified = str(_scenef_meta.get("verified_at") or "")
                 _previous_fetch = None
@@ -2347,8 +2347,28 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
                                 break
                 except Exception:
                     pass
-                if _previous_fetch and _scenef_verified[:10] < str(_previous_fetch)[:10]:
+                _older_than_cache = bool(_previous_fetch and _scenef_verified[:10] < str(_previous_fetch)[:10])
+                if _older_than_cache:
                     _eligible = False
+                if not _scenef_checked:
+                    _scenef_decision = "no_eligible_rows"
+                elif not _runner_improved:
+                    _scenef_decision = "runner_cache_not_improved"
+                elif not _previous_improved:
+                    _scenef_decision = "previous_report_not_improved"
+                elif _older_than_cache:
+                    _scenef_decision = "verification_older_than_cache"
+                else:
+                    _scenef_decision = "strict_coverage_improvement"
+                # v50: keep per-pair coverage/freshness reasons in a build file.
+                # The workflow logs them *after* Papermill, including failed
+                # attempts, without exposing operational details in the HTML.
+                from scripts.scenef_showtimes import record_combo_decision as _scenef_record_decision
+                _scenef_record_decision(
+                    theatre_name, wanted, accepted=_eligible,
+                    reason=_scenef_decision, candidate=_scenef_rows,
+                    runner=final_rows, previous=_old,
+                )
                 print(
                     f"[INFO] SceneF coverage comparison theatre={theatre_name!r} date={wanted} "
                     f"runner={len(final_rows)} previous={len(_old)} "
@@ -2357,6 +2377,16 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
             except Exception as _scenef_error:
                 _scenef_rows, _scenef_meta, _eligible, _old = [], {}, False, []
                 print(f"[WARN] SceneF backup unavailable for {theatre_name} {wanted}: {_scenef_error}")
+                # A parser integration error must also be visible in Actions,
+                # rather than silently resembling a legitimate empty feed.
+                try:
+                    from scripts.scenef_showtimes import record_combo_decision as _scenef_record_decision
+                    _scenef_record_decision(
+                        theatre_name, wanted, accepted=False, reason="integration_error",
+                        candidate=[], runner=final_rows, previous=[],
+                    )
+                except Exception:
+                    pass
             if _eligible:
                 # Only exact identical movie-and-clock slots inherit an AMC
                 # A-List EXCLUSION. Absence of ⛔ is never proof of eligibility.
@@ -2568,8 +2598,8 @@ for _theatre_name in _configured_theatre_names:
 
 if _incomplete_reasons:
     raise RuntimeError(
-        "No fresh AMC showtimes were parsed for the requested dates. "
-        "The AMC scrape was structurally incomplete: " + "; ".join(_incomplete_reasons) + "."
+        "AMC/SceneF report coverage incomplete for requested dates. "
+        "Missing or rejected theater/date schedules: " + "; ".join(_incomplete_reasons) + "."
     )
 
 """
@@ -3141,7 +3171,7 @@ def main() -> int:
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
         "non-movie filtering, original-film metadata lookup, stabilized AMC browser fetch, "
-        "AMC A-List metadata + clean public logs v48 -> "
+        "AMC A-List metadata + clean public logs v50 -> "
         f"{args.output_notebook}"
     )
     return 0
