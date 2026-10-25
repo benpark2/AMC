@@ -78,7 +78,7 @@ jobs:
             echo "[INFO] Papermill attempt ${attempt}/${max_attempts}"
 
             set +e
-            papermill \
+            AMC_PAPERMILL_ATTEMPT="${attempt}" papermill \
               build/AMC_Scraper_5.patched.ipynb \
               build/report.executed.ipynb \
               2>&1 | tee "${log_file}"
@@ -100,6 +100,7 @@ jobs:
                   "[AMC-METRICS] "
                   f"live={data.get('combos_live', 0)} "
                   f"reused={data.get('combos_reused', 0)} "
+                  f"retry_skipped={data.get('combos_retry_skipped', 0)} "
                   f"mixed={data.get('combos_mixed', 0)} "
                   f"cached={data.get('combos_cached', 0)} "
                   f"scenef={data.get('combos_scenef', 0)} "
