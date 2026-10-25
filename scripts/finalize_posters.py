@@ -41,7 +41,8 @@ language/country, explicit genre/subject/description wording, selected
 production/distribution organizations, and the selected English Wikipedia
 article's introductory summary/categories.  It never infers a cultural identity
 from actors or other people attached to a film.  Generic geographic setting
-alone is not enough for an identity-focus flag. Missing metadata defaults to
+alone is not enough for an identity-focus flag. An explicit "Kids-focused" label requires evidence the movie was made for
+children, not simply that it is suitable for a family. Missing metadata defaults to
 ``General`` rather than guessing. Verified language metadata from the immediately
 previous report may be retained during a provider outage, but only for the same
 film identity and without replacing fresh contradictory evidence.
@@ -132,10 +133,11 @@ TMDB_MOVIE_RE = re.compile(r"^https?://(?:www\.)?themoviedb\.org/movie/\d+/?(?:[
 _PREVIOUS_POSTER_INDEX: dict[str, list[dict[str, str | int | None]]] | None = None
 
 # Audience-focus labels are intentionally descriptive and evidence based.  The
-# first four describe an explicit thematic/marketing focus.  The remaining
+# first five describe an explicit thematic/marketing focus.  The remaining
 # labels describe language/market context for international films.
 AUDIENCE_TAG_ORDER = (
     "Music/Concert",
+    "Kids-focused",
     "Faith-oriented",
     "LGBTQ+-focused",
     "Black-focused",
@@ -247,6 +249,20 @@ LATINO_FOCUS_TEXT_PATTERNS = (
     r"\bdominican community\b",
     r"\bpuerto rican culture\b",
     r"\bcuban[- ]american\b",
+)
+
+# "Kids-focused" describes films MADE FOR children, not merely movies that
+# children can safely watch. Never infer this from animation, a G/PG rating,
+# "family" genre, a child character, or a family-friendly review alone.
+# The expressions require explicit target-audience/children's-film wording in
+# a verified movie's Wikidata description/genre or Wikipedia film context.
+KIDS_TARGETED_PATTERNS = (
+    r"\b(?:children[’']?s|kids[’']?|preschool(?:ers[’']?)?|pre[- ]school|toddlers[’']?)\s+(?:(?:animated|animation|feature|musical|adventure|comedy|educational|fantasy|short|live[- ]action)\s+){0,3}(?:films?|movies?|cinema|entertainment|programming|cartoons?)\b",
+    r"\b(?:films?|movies?|animations?|cartoons?|cinema|features?|programming|entertainment)\s+(?:made|created|designed|intended|produced|aimed|targeted)\s+(?:specifically\s+)?(?:for|at|toward|towards)\s+(?:young\s+)?(?:children|kids|preschoolers|toddlers)\b",
+    r"\b(?:films?|movies?|animations?|cartoons?|cinema|features?|programming|entertainment)\s+for\s+(?:young\s+)?(?:children|kids|preschoolers|toddlers)\b",
+    r"\b(?:aimed|targeted|geared|directed)\s+(?:primarily\s+|specifically\s+)?(?:at|toward|towards)\s+(?:young\s+)?(?:children|kids|preschoolers|toddlers)\b",
+    r"\b(?:intended|designed|made|created)\s+(?:primarily\s+|specifically\s+)?for\s+(?:young\s+)?(?:children|kids|preschoolers|toddlers)\b",
+    r"\b(?:preschool|pre[- ]school|toddler)\s+(?:audiences?|viewers?|films?|movies?|entertainment|programming|animation)\b",
 )
 
 # Wikipedia intro/category text needs stricter patterns than structured
@@ -2157,6 +2173,9 @@ def classify_audience_focus(
         _add_entity_market_focus(tags, reasons, entity_languages, countries)
 
         focus_text = _explicit_focus_text(entity)
+        if _matches_any_pattern(focus_text, KIDS_TARGETED_PATTERNS):
+            tags.add("Kids-focused")
+            reasons.append("Kids-focused: film described as made for children in Wikidata")
         if _matches_any_pattern(focus_text, MUSIC_EVENT_METADATA_PATTERNS):
             tags.add("Music/Concert")
             reasons.append("Music/Concert: explicit music/concert metadata")
@@ -2217,6 +2236,9 @@ def classify_audience_focus(
     if supplemental_focus_text:
         focus_text = supplemental_focus_text.casefold()
         _add_wikipedia_market_focus(tags, reasons, focus_text)
+        if _matches_any_pattern(focus_text, KIDS_TARGETED_PATTERNS):
+            tags.add("Kids-focused")
+            reasons.append("Kids-focused: explicit child-audience wording in Wikipedia film context")
         if _matches_any_pattern(focus_text, MUSIC_EVENT_METADATA_PATTERNS):
             tags.add("Music/Concert")
             reasons.append("Music/Concert: explicit Wikipedia film context")
@@ -2479,7 +2501,7 @@ def _add_audience_focus_column(soup: BeautifulSoup, reference_year: int) -> int:
 
     th = soup.new_tag("th")
     th.string = "Audience Focus"
-    th["title"] = "Descriptive cultural/market context; does not change ratings"
+    th["title"] = "Intended audience, themes and language/market context; not a content suitability rating"
     header_row.append(th)
 
     # Snapshot of previously verified language evidence. No extra network calls.
@@ -2527,8 +2549,8 @@ def _add_audience_focus_column(soup: BeautifulSoup, reference_year: int) -> int:
             supplemental_genres=(rt_metadata.genres if rt_metadata else frozenset()),
         )
         thematic_tags = {
-            "Faith-oriented", "LGBTQ+-focused", "Black-focused",
-            "Latino/Hispanic-focused",
+            "Kids-focused", "Faith-oriented", "LGBTQ+-focused",
+            "Black-focused", "Latino/Hispanic-focused",
         }
         needs_page_context = bool(page_title and not (set(initial.tags) & thematic_tags))
         if needs_page_context:

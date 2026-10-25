@@ -145,34 +145,36 @@ pre, code, kbd, samp, tt,
 .amc-cache-notice summary{cursor:pointer;font-weight:600;}
 .amc-cache-notice p{margin:8px 0 0;line-height:1.5;}
 
-/* Lightweight per-theatre/date provenance, with text rendered via CSS so the
-   lossless previous-report showtime parser still sees the original date lines. */
+/* One tiny, wrap-safe provenance badge per theatre/date line. CSS-generated
+   text leaves the original showtime DOM text untouched for future cache/A-List
+   recovery. If the column is narrow, the badge moves to the next line rather
+   than extending the table or clipping "Old". Full dates/source stay in title,
+   aria-label and serialized JSON even though the visual text is shortened. */
 .showtime-fetch-date::after{
   content: attr(data-label);
-  margin-left: 6px;
+  display: inline-block;
+  box-sizing: border-box;
+  max-width: 100%;
+  margin: 2px 2px 2px 5px;
+  padding: 1px 5px;
   font-size: 10px;
-  line-height: 1.2;
+  line-height: 1.35;
   color: var(--muted);
-  white-space: nowrap;
+  background: rgba(15,23,42,0.045);
+  border: 1px solid var(--grid-soft);
+  border-radius: 5px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  vertical-align: baseline;
 }
-.showtime-fetch-date[data-source="old"]::after{font-weight: 650;}
-.showtime-fetch-date[data-source="scenef"]::after{font-weight: 600;}
-
-/* A showtime's source can vary by theatre/date even within one movie. The
-   compact per-movie label reports that mixture without implying that the
-   report-generated timestamp is a fresh AMC retrieval time. */
-.showtimes-freshness{
-  display: block;
-  margin-top: 7px;
-  font-size: 11px;
-  line-height: 1.4;
-  color: var(--muted);
-  font-weight: 500;
+.showtime-fetch-date[data-source="old"]::after{
+  font-weight: 700;
+  color: #92400e;
+  background: #fffbeb;
+  border-color: #fde68a;
 }
-.showtimes-freshness[data-source="cached"],
-.showtimes-freshness[data-source="mixed"]{
-  font-weight: 650;
-  color: var(--text);
+.showtime-fetch-date[data-source="scenef"]::after{
+  font-weight: 600;
 }
 
 /* ========== Page chrome ========== */
@@ -1102,14 +1104,21 @@ def label_showtime_fetch_dates(
             verified = sf["verified_on"]
             marker["data-source"] = "scenef"
             fetched = sf.get("scenef_fetched_on")
-            marker["data-label"] = (
-                f" · SceneF fetched {fetched}, verified {verified} (third-party)"
-                if fetched else f" · SceneF verified {verified} (third-party)"
+            # The badge shows the provider's verification date, not an AMC
+            # fetch date; the SceneF fetch date is kept separately in the title.
+            marker["data-label"] = f"SceneF {verified[5:7]}/{verified[8:10]}/{verified[2:4]}"
+            marker["title"] = (
+                f"SceneF third-party showtimes; fetched {fetched}, verified {verified}. "
+                "AMC A-List eligibility unverified."
+                if fetched else
+                f"SceneF third-party showtimes; verified {verified}. "
+                "AMC A-List eligibility unverified."
             )
             marker["aria-label"] = f"Third-party showtimes from SceneF, verified {verified}; AMC A-List status unverified"
         else:
             marker["data-source"] = "known" if fetched_on else "old"
-            marker["data-label"] = f" · Fetched {fetched_on}" if fetched_on else " · Old (fetch date unknown)"
+            marker["data-label"] = f"Fetched {fetched_on[5:7]}/{fetched_on[8:10]}/{fetched_on[2:4]}" if fetched_on else "Old"
+            marker["title"] = f"AMC showtimes fetched on {fetched_on}" if fetched_on else "Old schedule; original AMC fetch date unknown"
             marker["aria-label"] = f"AMC fetched on {fetched_on}" if fetched_on else "AMC fetch date unknown; old schedule"
         node.insert_after(marker)
 
@@ -1283,17 +1292,8 @@ def apply_final_table_schema(
         imdb_td = _linked_score_td(soup, _fmt_score(get_text(idx_imdb)), get_text(idx_imdb_url) or None)
         show_td = _clone_cell_as_td(soup, get_cell(idx_showtimes))
         label_showtime_fetch_dates(soup, show_td, fetch_dates or {}, scenef_provenance)
-        # Show a compact source indicator inside the existing Showtimes column.
-        # A separate per-movie timestamp would be misleading for mixed-source
-        # dates/theatres and for reports whose underlying cache was inherited.
-        freshness = (showtime_freshness or {}).get(mid_int)
-        if freshness:
-            kind, label, explanation = freshness
-            note = soup.new_tag("span", **{"class": "showtimes-freshness"})
-            note["data-source"] = kind
-            note["title"] = explanation
-            note.string = label
-            show_td.append(note)
+        # Theatre/date badges above already communicate freshness and origin.
+        # Do not append a redundant per-movie "fresh / cached / mixed" label.
         runtime_td = _clone_cell_as_td(soup, get_cell(idx_runtime))
 
         # Rebuild row
@@ -1468,7 +1468,6 @@ def main() -> None:
     # provenance in the current report. Do not re-date inherited cached rows.
     fallback_marker = Path("build/amc_previous_report_fallback.txt")
     cached_combos = read_cached_showtime_combos(fallback_marker)
-    freshness_by_movie = movie_showtime_freshness(showtimes, cached_combos)
     # Read the previous report BEFORE replacing docs/index.html. This metadata
     # follows exact theatre/date pairs into the next run's cached fallback.
     # Fresh dates come from notebook markers recorded at successful AMC fetch.
@@ -1490,10 +1489,9 @@ def main() -> None:
     # two apart so the report cannot silently relabel SceneF as live AMC.
     for key in scenef_provenance:
         fetch_dates[key] = None
-    freshness_by_movie = mark_scenef_showtime_freshness(showtimes, freshness_by_movie, scenef_provenance)
     apply_final_table_schema(
-        soup, table, movie_by_id, poster_by_id, freshness_by_movie, fetch_dates,
-        scenef_provenance,
+        soup, table, movie_by_id, poster_by_id,
+        fetch_dates=fetch_dates, scenef_provenance=scenef_provenance,
     )
 
     
