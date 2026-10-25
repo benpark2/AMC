@@ -1999,6 +1999,7 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         "browser_launches": 0,
         "combos_live": 0,
         "combos_reused": 0,
+        "combos_retry_skipped": 0,
         "combos_mixed": 0,
         "combos_cached": 0,
         "combos_failed": 0,
@@ -2227,6 +2228,47 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         elif len(failures) >= 4 and len(theatres) >= 2 and len(dates_seen) >= 2:
             _live_health["circuit_open"] = True
             _live_health["reason"] = "repeated empty/incomplete AMC responses across theatres and dates"
+
+    # v51: On a Papermill retry, don't re-request an AMC schedule that was
+    # already *successfully* retrieved and passed source/parser coverage checks
+    # earlier in this SAME workflow. We require all three independent pieces:
+    # saved rows, a successful non-fallback status, and the per-combo live-fetch
+    # marker. A cached prior-report/SceneF fallback or a partially parsed
+    # schedule must still receive another live opportunity on a retry.
+    # The environment marker is set ONLY by the GitHub workflow, so an ordinary
+    # first attempt or direct notebook execution still checks every combo.
+    try:
+        _papermill_attempt = int(__import__("os").environ.get("AMC_PAPERMILL_ATTEMPT", "1"))
+    except (TypeError, ValueError):
+        _papermill_attempt = 1
+    if _papermill_attempt > 1 and out and _status_path.is_file():
+        _live_marker = _AMCPath("build/amc_live_fetch_dates") / f"{_cache_slug}-{wanted}.json"
+        if _live_marker.is_file():
+            try:
+                _prior_status = json.loads(_status_path.read_text(encoding="utf-8"))
+                _prior_marker = json.loads(_live_marker.read_text(encoding="utf-8"))
+                _prior_rows = _clean_rows()
+                _prior_state = _coverage_state()
+                if (
+                    isinstance(_prior_status, dict)
+                    and _prior_status.get("complete") is True
+                    and not _prior_status.get("fallback")
+                    and _prior_status.get("theatre") == theatre_name
+                    and _prior_status.get("date") == wanted
+                    and isinstance(_prior_marker, dict)
+                    and _prior_marker.get("theater") == theatre_name
+                    and _prior_marker.get("date") == wanted
+                    and _prior_rows
+                    and _prior_state.get("complete")
+                    and int(_prior_state.get("parsed_titles") or 0) > 0
+                ):
+                    _write_combo_status(True, reason="verified AMC data retained from earlier Papermill attempt")
+                    _live_metrics["combos_retry_skipped"] = int(_live_metrics.get("combos_retry_skipped") or 0) + 1
+                    _finish_combo("reused")
+                    print(f"[AMC-RETRY] Reusing verified earlier AMC schedule without browser: {theatre_name} {wanted}")
+                    return _prior_rows
+            except (OSError, ValueError, TypeError) as _retry_read_error:
+                print(f"[WARN] Could not validate previous AMC retry cache for {theatre_name} {wanted}: {_retry_read_error}")
 
     # Every distinct theatre/date in the configured matrix receives one live
     # attempt first. Only redundant later calls can encounter the cache-only
@@ -3171,7 +3213,7 @@ def main() -> int:
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
         "non-movie filtering, original-film metadata lookup, stabilized AMC browser fetch, "
-        "AMC A-List metadata + clean public logs v50 -> "
+        "AMC A-List metadata + clean public logs v51 -> "
         f"{args.output_notebook}"
     )
     return 0

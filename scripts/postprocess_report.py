@@ -1078,6 +1078,7 @@ def resolve_scenef_provenance(
 def label_showtime_fetch_dates(
     soup: BeautifulSoup, show_td, fetch_dates: dict[tuple[str, str], str | None],
     scenef_provenance: dict[tuple[str, str], dict] | None = None,
+    current_live_combos: set[tuple[str, str]] | None = None,
 ) -> None:
     """Attach a label after *each* theatre/date showtime line without changing its text.
 
@@ -1098,8 +1099,14 @@ def label_showtime_fetch_dates(
             continue
         key = _combo_key(theater, match.group(1))
         fetched_on = fetch_dates.get(key)
-        marker = soup.new_tag("span", **{"class": "showtime-fetch-date"})
         sf = (scenef_provenance or {}).get(key)
+        # Current workflow includes successful live AMC downloads and verified
+        # runner-local reuse. Keep the actual fetched_on in serialized JSON for
+        # future cached reports, but avoid cluttering the table with a label.
+        # Never hide third-party SceneF attribution this way.
+        if not sf and key in (current_live_combos or set()):
+            continue
+        marker = soup.new_tag("span", **{"class": "showtime-fetch-date"})
         if sf:
             verified = sf["verified_on"]
             marker["data-source"] = "scenef"
@@ -1195,6 +1202,7 @@ def apply_final_table_schema(
     showtime_freshness: dict[int, tuple[str, str, str]] | None = None,
     fetch_dates: dict[tuple[str, str], str | None] | None = None,
     scenef_provenance: dict[tuple[str, str], dict] | None = None,
+    current_live_combos: set[tuple[str, str]] | None = None,
 ) -> None:
     thead = table.find("thead")
     tbody = table.find("tbody")
@@ -1291,7 +1299,10 @@ def apply_final_table_schema(
 
         imdb_td = _linked_score_td(soup, _fmt_score(get_text(idx_imdb)), get_text(idx_imdb_url) or None)
         show_td = _clone_cell_as_td(soup, get_cell(idx_showtimes))
-        label_showtime_fetch_dates(soup, show_td, fetch_dates or {}, scenef_provenance)
+        label_showtime_fetch_dates(
+            soup, show_td, fetch_dates or {}, scenef_provenance,
+            current_live_combos=current_live_combos,
+        )
         # Theatre/date badges above already communicate freshness and origin.
         # Do not append a redundant per-movie "fresh / cached / mixed" label.
         runtime_td = _clone_cell_as_td(soup, get_cell(idx_runtime))
@@ -1492,6 +1503,7 @@ def main() -> None:
     apply_final_table_schema(
         soup, table, movie_by_id, poster_by_id,
         fetch_dates=fetch_dates, scenef_provenance=scenef_provenance,
+        current_live_combos=set(live_dates),
     )
 
     

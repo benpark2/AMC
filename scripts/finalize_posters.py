@@ -2159,6 +2159,20 @@ def classify_audience_focus(
         tags.add("Music/Concert")
         reasons.append("Music/Concert: Rotten Tomatoes genre metadata")
 
+    # A verified Rotten Tomatoes "Kids & Family" classification explicitly
+    # names children as an intended audience, unlike "Family" by itself.
+    # This is genre-level evidence, never a blanket animation/PG inference.
+    # The RT page has already passed film title/year/runtime identity checks
+    # before its genre metadata reaches this classifier.
+    if any(
+        re.fullmatch(r"(?:kids?\s*(?:&|and)\s*family|"
+                     r"children[’']?s?\s+(?:films?|movies?|cinema)|"
+                     r"kids?\s+(?:films?|movies?|cinema))", genre.strip(), flags=re.IGNORECASE)
+        for genre in supplemental_genres
+    ):
+        tags.add("Kids-focused")
+        reasons.append("Kids-focused: Rotten Tomatoes identifies a child-targeted genre")
+
     # Title wording is used only for a small set of unambiguous faith terms.
     # This is a generic fallback for new releases whose Wikidata/Wikipedia
     # records have not yet accumulated subject or genre metadata.

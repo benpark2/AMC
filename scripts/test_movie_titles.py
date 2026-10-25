@@ -1146,7 +1146,7 @@ desired = [
         workflow = Path(__file__).resolve().parents[1] / ".github/workflows/daily-AMC.yml"
         text = workflow.read_text(encoding="utf-8")
         loop_start = text.index("while true; do")
-        papermill_start = text.index("            papermill ", loop_start)
+        papermill_start = text.index('AMC_PAPERMILL_ATTEMPT="${attempt}" papermill ', loop_start)
         retry_prelude = text[loop_start:papermill_start]
         self.assertIn(
             "rm -f build/amc_live_metrics.json build/amc_previous_report_fallback.txt",
@@ -1155,6 +1155,8 @@ desired = [
         # The successful schedule cache must *not* be destroyed across retries.
         self.assertNotIn("rm -rf build/amc_combo_cache", retry_prelude)
         self.assertIn("f\"reused={data.get('combos_reused', 0)} ", text)
+        self.assertIn('AMC_PAPERMILL_ATTEMPT="${attempt}" papermill', text)
+        self.assertIn("f\"retry_skipped={data.get('combos_retry_skipped', 0)} ", text)
         self.assertIn("f\"mixed={data.get('combos_mixed', 0)} ", text)
 
     def test_amc_static_helper_does_not_launch_duplicate_browser_fallback(self):
@@ -2237,6 +2239,63 @@ desired = [
         self.assertEqual(network["static"], 0)
         self.assertEqual(first_counts["static"], 0)
         self.assertGreater(network["browser"], first_counts["browser"])
+
+    def test_retry_skips_only_prior_verified_amc_combos(self):
+        """Papermill retry avoids redundant browser loads but retains safeguards."""
+        source = self._patched_source()
+        rendered = ''.join(
+            f'<div aria-label="Showtimes for Movie {i}"><a href="/showtimes/{100+i}">8:{i:02d} PM</a></div>'
+            for i in range(1, 7)
+        )
+        for mutation, should_skip in (
+            ("none", True),
+            ("fallback-status", False),
+            ("missing-live-marker", False),
+            ("missing-combo-status", False),
+            ("corrupt-combo-cache", False),
+        ):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as tmp:
+                cwd = Path.cwd()
+                os.chdir(tmp)
+                try:
+                    calls = []
+                    def run(attempt):
+                        ns = {}
+                        exec(compile(source, "<retry-reduced-browser-tests>", "exec"), ns)
+                        ns["fetch_html_with_browser"] = (
+                            lambda url, params=None, timeout_ms=30000: calls.append(1) or (200, rendered)
+                        )
+                        with patch.dict(os.environ, {"AMC_PAPERMILL_ATTEMPT": str(attempt)}):
+                            rows = ns["scrape_amc_showtimes_for_date"](
+                                None, "AMC Example 10", "https://example.invalid/showtimes",
+                                ns["date"](2026, 9, 26),
+                            )
+                        return rows, ns["_AMC_LIVE_METRICS"]
+                    first, first_metrics = run(1)
+                    self.assertEqual(len(first), 6)
+                    self.assertEqual(len(calls), 1)
+                    status_file = Path("build/amc_combo_status/amc-example-10-2026-09-26.json")
+                    marker_file = Path("build/amc_live_fetch_dates/amc-example-10-2026-09-26.json")
+                    cache_file = Path("build/amc_combo_cache/amc-example-10-2026-09-26.json")
+                    self.assertTrue(status_file.exists())
+                    self.assertTrue(marker_file.exists())
+                    if mutation == "fallback-status":
+                        status = json.loads(status_file.read_text())
+                        status["fallback"] = True
+                        status_file.write_text(json.dumps(status))
+                    elif mutation == "missing-live-marker":
+                        marker_file.unlink()
+                    elif mutation == "missing-combo-status":
+                        status_file.unlink()
+                    elif mutation == "corrupt-combo-cache":
+                        cache_file.write_text("not json")
+                    second, second_metrics = run(2)
+                    self.assertEqual(len(second), 6)
+                    self.assertEqual(len(calls), 1 if should_skip else 2)
+                    self.assertEqual(second_metrics["combos_retry_skipped"], int(should_skip))
+                    self.assertEqual(second_metrics["combos_reused"], int(should_skip))
+                finally:
+                    os.chdir(cwd)
 
     def test_recent_same_weekend_report_is_last_good_fallback_and_keeps_noalist(self):
         source = self._patched_source()
@@ -3468,6 +3527,22 @@ class AudienceFocusTests(unittest.TestCase):
                 self.assertIn("Kids-focused", result.tags)
                 self.assertTrue(any("Wikipedia" in reason for reason in result.reasons))
 
+    def test_kids_focused_uses_verified_rt_kids_genre_but_not_family_alone(self):
+        # Kids & Family is an explicit child-audience category at a matched RT
+        # movie URL; "Family" alone is only a suitability/general genre cue.
+        for genre in ("kids & family", "Kids and Family", "children's film"):
+            with self.subTest(genre=genre):
+                result = posters.classify_audience_focus(
+                    self.context(), None, supplemental_genres=frozenset({genre})
+                )
+                self.assertIn("Kids-focused", result.tags)
+                self.assertTrue(any("Rotten Tomatoes" in x for x in result.reasons))
+        for genre in ("family", "family-friendly", "animation", "adventure", "pg"):
+            with self.subTest(genre=genre):
+                self.assertNotIn("Kids-focused", posters.classify_audience_focus(
+                    self.context(), None, supplemental_genres=frozenset({genre})
+                ).tags)
+
     def test_kids_focused_excludes_merely_family_friendly_or_child_characters(self):
         # Conservative: animation, family genres, ratings and adapted children's
         # books alone do not establish the film's intended primary audience.
@@ -3484,7 +3559,7 @@ class AudienceFocusTests(unittest.TestCase):
                     self.context(title="Happy Children in a Park"),
                     self.entity(description=description),
                     supplemental_focus_text=wiki_text,
-                    supplemental_genres=frozenset({"kids & family", "animation"}),
+                    supplemental_genres=frozenset({"family", "animation"}),
                 )
                 self.assertNotIn("Kids-focused", result.tags)
 
@@ -3528,6 +3603,32 @@ class AudienceFocusTests(unittest.TestCase):
         self.assertEqual(meta.poster_url, "https://resizing.flixster.com/example-poster.jpg")
         self.assertEqual(meta.languages, frozenset({"japanese"}))
         self.assertEqual(meta.genres, frozenset({"music"}))
+
+    def test_verified_kids_genre_reaches_final_report_column(self):
+        # A matched RT movie genre travels through the full report enrichment,
+        # rather than existing only as a directly invoked classifier rule.
+        html = """<table class='dataframe'><thead><tr>
+          <th>Movie</th><th>RT_C/A</th><th>IMDb</th><th>Showtimes</th><th>Runtime</th>
+        </tr></thead><tbody><tr>
+          <td><div class='movie-cell-title'>Example Feature</div></td>
+          <td data-source-url='https://www.rottentomatoes.com/m/example_feature'>90/80</td>
+          <td data-source-url='https://www.imdb.com/title/tt1234567/'>7.4</td>
+          <td>AMC Example 10<br/>• 2026-10-24: 7:00 pm</td><td>1h 49m</td>
+        </tr></tbody></table>"""
+        soup = BeautifulSoup(html, "html.parser")
+        metadata = posters.RtPageMetadata(
+            title="Example Feature", poster_url=None,
+            languages=frozenset({"english"}), genres=frozenset({"kids & family", "animation"}),
+            release_year=2026, runtime_min=109,
+        )
+        with patch.object(posters, "_rt_metadata_for_context", return_value=metadata), \
+             patch.object(posters, "_audience_entity_for_context", return_value=None), \
+             patch.object(posters, "_wikipedia_focus_pages", return_value={}), \
+             patch.object(posters, "_prior_verified_language_index", return_value={}):
+            self.assertEqual(posters._add_audience_focus_column(soup, 2026), 1)
+        focus = soup.select_one("td.audience-focus-cell")
+        self.assertIn("Kids-focused", focus["data-audience-focus"])
+        self.assertIn("Rotten Tomatoes", focus["data-audience-reasons"])
 
     def test_hidden_imdb_source_url_remains_identity_bridge(self):
         soup = BeautifulSoup(
@@ -4064,6 +4165,34 @@ class AMCShowtimeFetchDateTests(unittest.TestCase):
             (Path(d) / "corrupt.json").write_text("not json", encoding="utf-8")
             self.assertEqual(postprocess.read_workflow_fetch_dates(Path(d), "2026-10-24"), dates)
 
+    def test_current_run_amc_hides_badge_but_preserves_cached_and_scenef(self):
+        soup = BeautifulSoup("<html></html>", "html.parser")
+        td = BeautifulSoup(
+            "<td>AMC Orange 30<br/>• 2026-10-24: 7:00 pm⛔<br/>"
+            "AMC Tustin 14 @ The District<br/>• 2026-10-25: 8:00 pm</td>",
+            "html.parser",
+        ).td
+        before = td.get_text("\n", strip=True)
+        postprocess.label_showtime_fetch_dates(
+            soup, td, {self.a: "2026-10-24", self.b: "2026-10-22"},
+            current_live_combos={self.a},
+        )
+        self.assertEqual(td.get_text("\n", strip=True), before)
+        labels = td.select(".showtime-fetch-date")
+        self.assertEqual(len(labels), 1)
+        self.assertEqual(labels[0]["data-label"], "Fetched 10/22/26")
+        self.assertTrue(postprocess.parse_showtimes_blob(before)[0]["a_list_excluded"])
+
+        td2 = BeautifulSoup(
+            "<td>AMC Orange 30<br/>• 2026-10-24: 7:00 pm</td>", "html.parser"
+        ).td
+        postprocess.label_showtime_fetch_dates(
+            soup, td2, {self.a: None},
+            scenef_provenance={self.a: {"verified_on": "2026-10-24", "scenef_fetched_on": "2026-10-24"}},
+            current_live_combos={self.a},
+        )
+        self.assertEqual(td2.select_one(".showtime-fetch-date")["data-source"], "scenef")
+
     def test_rendered_labels_preserve_original_blob_for_cache_and_a_list(self):
         soup = BeautifulSoup("<html></html>", "html.parser")
         td = soup.new_tag("td")
@@ -4130,9 +4259,10 @@ class AMCShowtimeFetchDateTests(unittest.TestCase):
             self.assertEqual(prov[self.a], "2026-10-24")
             self.assertEqual(prov[self.b], "2026-10-22")
             labels = page.select('.showtime-fetch-date')
-            self.assertEqual(len(labels), 2)
-            self.assertEqual(labels[0]['data-label'], 'Fetched 10/24/26')
-            self.assertEqual(labels[1]['data-label'], 'Fetched 10/22/26')
+            # The current-run AMC label is intentionally invisible, but its
+            # exact fetch date is retained in serialized JSON for later runs.
+            self.assertEqual(len(labels), 1)
+            self.assertEqual(labels[0]['data-label'], 'Fetched 10/22/26')
             warning = page.find(id='amc-cache-notice')
             self.assertEqual(warning.name, 'details')
             self.assertTrue(warning.parent.name in {'main', 'body'})
