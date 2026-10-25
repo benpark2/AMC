@@ -156,6 +156,7 @@ pre, code, kbd, samp, tt,
   white-space: nowrap;
 }
 .showtime-fetch-date[data-source="old"]::after{font-weight: 650;}
+.showtime-fetch-date[data-source="scenef"]::after{font-weight: 600;}
 
 /* A showtime's source can vary by theatre/date even within one movie. The
    compact per-movie label reports that mixture without implying that the
@@ -991,7 +992,91 @@ def resolve_showtime_fetch_dates(
     return result
 
 
-def label_showtime_fetch_dates(soup: BeautifulSoup, show_td, fetch_dates: dict[tuple[str, str], str | None]) -> None:
+def read_scenef_provenance(directory: Path, today: str) -> dict[tuple[str, str], dict]:
+    """Per-combination proof of SceneF acceptance from this Papermill run."""
+    result = {}
+    if not directory.is_dir():
+        return result
+    for path in directory.glob("*.json"):
+        try:
+            rec = json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            continue
+        if not isinstance(rec, dict) or rec.get("provider") != "scenef":
+            continue
+        key = _combo_key(rec.get("theater"), rec.get("date"))
+        verified = rec.get("verified_at")
+        try:
+            from datetime import datetime
+            date_value = datetime.fromisoformat(str(verified).replace("Z", "+00:00")).date().isoformat()
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if not key[0] or not _safe_fetch_date(date_value, today):
+            continue
+        url = str(rec.get("scenef_url") or "")
+        if not url.startswith("https://scenef.com/"):
+            url = "https://scenef.com/week?region=orangecounty"
+        result[key] = {
+            "provider": "scenef",
+            "verified_on": date_value,
+            "fetched_on": None,  # Do not claim a third-party fetch was AMC.
+            "scenef_fetched_on": _safe_fetch_date(rec.get("fetched_on"), today),
+            "scenef_url": url,
+        }
+    return result
+
+
+def read_previous_scenef_provenance(report_path: Path, today: str) -> dict[tuple[str, str], dict]:
+    """Only preserve SceneF origin when an exact previous-report slot is reused."""
+    if not report_path.is_file():
+        return {}
+    try:
+        doc = BeautifulSoup(report_path.read_text(encoding="utf-8"), "html.parser")
+        tag = doc.find("script", id="showtimes-data")
+        payload = json.loads(tag.string or tag.get_text() or "{}") if tag else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+    result = {}
+    for rec in payload.get("amc_fetch_dates") or []:
+        if not isinstance(rec, dict) or rec.get("provider") != "scenef":
+            continue
+        key = _combo_key(rec.get("theater"), rec.get("date"))
+        verified = _safe_fetch_date(rec.get("verified_on"), today)
+        if not key[0] or not verified:
+            continue
+        url = str(rec.get("scenef_url") or "")
+        result[key] = {
+            "provider": "scenef", "verified_on": verified,
+            "fetched_on": None,
+            "scenef_fetched_on": _safe_fetch_date(rec.get("scenef_fetched_on"), today),
+            "scenef_url": url if url.startswith("https://scenef.com/") else "https://scenef.com/week?region=orangecounty",
+        }
+    return result
+
+
+def resolve_scenef_provenance(
+    showtimes: list[dict], cached_combos: set[tuple[str, str]],
+    previous: dict[tuple[str, str], dict], current: dict[tuple[str, str], dict],
+    live_dates: dict[tuple[str, str], str],
+) -> dict[tuple[str, str], dict]:
+    """AMC live takes precedence, then accepted SceneF, then old SceneF."""
+    cached = {_combo_key(t, d) for t, d in cached_combos}
+    valid = {_combo_key(x.get("theater"), x.get("date")) for x in showtimes}
+    result = {}
+    for key in valid:
+        if key in live_dates:
+            continue
+        if key in current:
+            result[key] = current[key]
+        elif key in cached and key in previous:
+            result[key] = previous[key]
+    return result
+
+
+def label_showtime_fetch_dates(
+    soup: BeautifulSoup, show_td, fetch_dates: dict[tuple[str, str], str | None],
+    scenef_provenance: dict[tuple[str, str], dict] | None = None,
+) -> None:
     """Attach a label after *each* theatre/date showtime line without changing its text.
 
     The CSS-generated wording and aria-label keep original showtime table text
@@ -1012,9 +1097,20 @@ def label_showtime_fetch_dates(soup: BeautifulSoup, show_td, fetch_dates: dict[t
         key = _combo_key(theater, match.group(1))
         fetched_on = fetch_dates.get(key)
         marker = soup.new_tag("span", **{"class": "showtime-fetch-date"})
-        marker["data-source"] = "known" if fetched_on else "old"
-        marker["data-label"] = f" · Fetched {fetched_on}" if fetched_on else " · Old (fetch date unknown)"
-        marker["aria-label"] = f"AMC fetched on {fetched_on}" if fetched_on else "AMC fetch date unknown; old schedule"
+        sf = (scenef_provenance or {}).get(key)
+        if sf:
+            verified = sf["verified_on"]
+            marker["data-source"] = "scenef"
+            fetched = sf.get("scenef_fetched_on")
+            marker["data-label"] = (
+                f" · SceneF fetched {fetched}, verified {verified} (third-party)"
+                if fetched else f" · SceneF verified {verified} (third-party)"
+            )
+            marker["aria-label"] = f"Third-party showtimes from SceneF, verified {verified}; AMC A-List status unverified"
+        else:
+            marker["data-source"] = "known" if fetched_on else "old"
+            marker["data-label"] = f" · Fetched {fetched_on}" if fetched_on else " · Old (fetch date unknown)"
+            marker["aria-label"] = f"AMC fetched on {fetched_on}" if fetched_on else "AMC fetch date unknown; old schedule"
         node.insert_after(marker)
 
 
@@ -1055,10 +1151,41 @@ def movie_showtime_freshness(showtimes: list[dict], cached_combos: set[tuple[str
     return status
 
 
+def mark_scenef_showtime_freshness(
+    showtimes: list[dict], freshness_by_movie: dict[int, tuple[str, str, str]],
+    scenef_provenance: dict[tuple[str, str], dict],
+) -> dict[int, tuple[str, str, str]]:
+    """Never describe third-party schedules as fresh AMC showtimes."""
+    by_movie: dict[int, set[tuple[str, str]]] = {}
+    for row in showtimes:
+        try:
+            movie_id = int(row["movie_id"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        by_movie.setdefault(movie_id, set()).add(_combo_key(row.get("theater"), row.get("date")))
+    updated = dict(freshness_by_movie)
+    for movie_id, combos in by_movie.items():
+        from_sf = combos & scenef_provenance.keys()
+        if not from_sf:
+            continue
+        if len(from_sf) == len(combos):
+            updated[movie_id] = (
+                "scenef", "SceneF third-party showtimes",
+                "All displayed schedules came from SceneF, not directly from AMC; A-List eligibility unverified",
+            )
+        else:
+            updated[movie_id] = (
+                "mixed", f"Includes SceneF ({len(from_sf)}/{len(combos)} theater/dates)",
+                "Some schedules came from SceneF rather than AMC; third-party A-List eligibility unverified",
+            )
+    return updated
+
+
 def apply_final_table_schema(
     soup: BeautifulSoup, table, movie_by_id: dict[int, str], poster_by_id: dict[int, str],
     showtime_freshness: dict[int, tuple[str, str, str]] | None = None,
     fetch_dates: dict[tuple[str, str], str | None] | None = None,
+    scenef_provenance: dict[tuple[str, str], dict] | None = None,
 ) -> None:
     thead = table.find("thead")
     tbody = table.find("tbody")
@@ -1155,7 +1282,7 @@ def apply_final_table_schema(
 
         imdb_td = _linked_score_td(soup, _fmt_score(get_text(idx_imdb)), get_text(idx_imdb_url) or None)
         show_td = _clone_cell_as_td(soup, get_cell(idx_showtimes))
-        label_showtime_fetch_dates(soup, show_td, fetch_dates or {})
+        label_showtime_fetch_dates(soup, show_td, fetch_dates or {}, scenef_provenance)
         # Show a compact source indicator inside the existing Showtimes column.
         # A separate per-movie timestamp would be misleading for mixed-source
         # dates/theatres and for reports whose underlying cache was inherited.
@@ -1354,7 +1481,20 @@ def main() -> None:
     previous_dates = read_previous_fetch_dates(Path("build/previous_report.html"), fetch_today)
     live_dates = read_workflow_fetch_dates(Path("build/amc_live_fetch_dates"), fetch_today)
     fetch_dates = resolve_showtime_fetch_dates(showtimes, cached_combos, previous_dates, live_dates)
-    apply_final_table_schema(soup, table, movie_by_id, poster_by_id, freshness_by_movie, fetch_dates)
+    previous_scenef = read_previous_scenef_provenance(Path("build/previous_report.html"), fetch_today)
+    current_scenef = read_scenef_provenance(Path("build/scenef_combo_sources"), fetch_today)
+    scenef_provenance = resolve_scenef_provenance(
+        showtimes, cached_combos, previous_scenef, current_scenef, live_dates
+    )
+    # Third-party verification dates are NOT AMC's own fetch dates. Keep the
+    # two apart so the report cannot silently relabel SceneF as live AMC.
+    for key in scenef_provenance:
+        fetch_dates[key] = None
+    freshness_by_movie = mark_scenef_showtime_freshness(showtimes, freshness_by_movie, scenef_provenance)
+    apply_final_table_schema(
+        soup, table, movie_by_id, poster_by_id, freshness_by_movie, fetch_dates,
+        scenef_provenance,
+    )
 
     
     # Build movies list (authoritative for input validation)
@@ -1455,6 +1595,29 @@ def main() -> None:
             container.append(notice)
 
     
+    if scenef_provenance:
+        # Source attribution is mandatory for republication; keep it visible
+        # but out of the reader's way beneath the planner and movie table.
+        sf_note = soup.new_tag("details", id="scenef-schedule-notice", **{"class": "amc-cache-notice"})
+        heading = soup.new_tag("summary")
+        heading.string = f"Third-party showtime source: SceneF ({len(scenef_provenance)} theater/date schedule(s))"
+        sf_note.append(heading)
+        for (_theater, _date), _record in sorted(scenef_provenance.items()):
+            item = soup.new_tag("p")
+            item.append(f"{_theater} | {_date} — verified {_record['verified_on']} · ")
+            link = soup.new_tag("a", href=_record["scenef_url"])
+            link.string = "Showtimes via SceneF.com"
+            item.append(link)
+            item.append(" · AMC A-List eligibility is not verified for third-party showtimes.")
+            sf_note.append(item)
+        container.append(sf_note)
+        credit = soup.new_tag("p", **{"class": "report-generated"})
+        credit.append("Third-party listings: ")
+        sf_link = soup.new_tag("a", href="https://scenef.com/week?region=orangecounty")
+        sf_link.string = "Showtimes via SceneF.com"
+        credit.append(sf_link)
+        container.append(credit)
+
     body = soup.body or soup
     #old code: body.insert(0, BeautifulSoup(PLANNER_HTML, "html.parser"))
     container.insert(insert_pos, BeautifulSoup(PLANNER_HTML, "html.parser"))
@@ -1468,7 +1631,8 @@ def main() -> None:
         # Persist exact source dates inside the committed HTML for future runs.
         # null signifies unknown/old rather than a guessed report timestamp.
         "amc_fetch_dates": [
-            {"theater": key[0], "date": key[1], "fetched_on": fetch_dates[key]}
+            dict({"theater": key[0], "date": key[1], "fetched_on": fetch_dates[key]},
+                 **scenef_provenance.get(key, {}))
             for key in sorted(fetch_dates)
         ],
     }, ensure_ascii=False)

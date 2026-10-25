@@ -2069,7 +2069,7 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
         key = {
             "live": "combos_live", "reused": "combos_reused",
             "mixed": "combos_mixed", "cached": "combos_cached",
-            "failed": "combos_failed",
+            "scenef": "combos_scenef", "failed": "combos_failed",
         }.get(outcome)
         if key:
             _live_metrics[key] = int(_live_metrics.get(key) or 0) + 1
@@ -2314,6 +2314,86 @@ AMC_SCRAPE_REPLACEMENT = r'''def scrape_amc_showtimes_for_date(session: requests
     _no_rows = not final_rows
 
     if _coverage_problem or _no_rows:
+        # v48: SceneF is a third-party option only after AMC yielded no usable
+        # complete live result. Compare it to BOTH runner-local and previous-
+        # publication cache BEFORE replacement. A fresh board timestamp does
+        # not prove greater completeness than an earlier AMC schedule.
+        if not final_rows or (_coverage_problem and not _fresh_row_slots):
+            try:
+                from scripts.scenef_showtimes import get_combo as _scenef_get_combo
+                from scripts.scenef_showtimes import improves_coverage as _scenef_improves
+                _scenef_rows, _scenef_meta = _scenef_get_combo(theatre_name, wanted)
+                _old = _previous_report_rows()
+                # The candidate must improve on both stores if they differ.
+                _eligible = bool(_scenef_rows) and all(
+                    _scenef_improves(_scenef_rows, prior)
+                    for prior in (final_rows, _old)
+                )
+                # Never overwrite newer verified evidence with an older feed.
+                _scenef_verified = str(_scenef_meta.get("verified_at") or "")
+                _previous_fetch = None
+                try:
+                    _old_html = _AMCPath("build/previous_report.html")
+                    if _old_html.is_file():
+                        _prior_soup = BeautifulSoup(_old_html.read_text(encoding="utf-8"), "html.parser")
+                        _prior_node = _prior_soup.find("script", id="showtimes-data")
+                        _prior_json = json.loads((_prior_node.string or _prior_node.get_text()) if _prior_node else "{}")
+                        _prev_key = lambda x: re.sub(r"[^a-z0-9]+", " ", str(x or "").replace("@", " at ").lower()).strip()
+                        for _rec in (_prior_json.get("amc_fetch_dates") or []):
+                            if (isinstance(_rec, dict)
+                                and _prev_key(_rec.get("theater")) == _prev_key(theatre_name)
+                                and _rec.get("date") == wanted):
+                                _previous_fetch = _rec.get("verified_on") or _rec.get("fetched_on")
+                                break
+                except Exception:
+                    pass
+                if _previous_fetch and _scenef_verified[:10] < str(_previous_fetch)[:10]:
+                    _eligible = False
+                print(
+                    f"[INFO] SceneF coverage comparison theatre={theatre_name!r} date={wanted} "
+                    f"runner={len(final_rows)} previous={len(_old)} "
+                    f"candidate={len(_scenef_rows)} accepted={bool(_eligible)}"
+                )
+            except Exception as _scenef_error:
+                _scenef_rows, _scenef_meta, _eligible, _old = [], {}, False, []
+                print(f"[WARN] SceneF backup unavailable for {theatre_name} {wanted}: {_scenef_error}")
+            if _eligible:
+                # Only exact identical movie-and-clock slots inherit an AMC
+                # A-List EXCLUSION. Absence of ⛔ is never proof of eligibility.
+                _old_excluded = {
+                    (str(r.get("movie_title") or "").casefold(),
+                     str(r.get("show_time") or "").casefold())
+                    for r in (list(final_rows) + list(_old)) if r.get("a_list_excluded")
+                }
+                for _item in _scenef_rows:
+                    if (str(_item.get("movie_title") or "").casefold(),
+                        str(_item.get("show_time") or "").casefold()) in _old_excluded:
+                        _item["a_list_excluded"] = True
+                try:
+                    from zoneinfo import ZoneInfo as _SFZone
+                    _source_dir = _AMCPath("build/scenef_combo_sources")
+                    _source_dir.mkdir(parents=True, exist_ok=True)
+                    _scenef_meta.update({
+                        "theater": theatre_name, "date": wanted,
+                        "fetched_on": datetime.now(_SFZone("America/Los_Angeles")).date().isoformat(),
+                        "provider": "scenef",
+                    })
+                    (_source_dir / f"{_cache_slug}-{wanted}.json").write_text(
+                        json.dumps(_scenef_meta, ensure_ascii=False), encoding="utf-8"
+                    )
+                    # An earlier notebook retry may have fetched AMC for this
+                    # slot. SceneF now won a different, more complete comparison;
+                    # its source must not be mislabeled as AMC in postprocessing.
+                    _old_live_marker = _AMCPath("build/amc_live_fetch_dates") / f"{_cache_slug}-{wanted}.json"
+                    _old_live_marker.unlink(missing_ok=True)
+                except Exception as _e:
+                    print(f"[WARN] Could not persist SceneF provenance: {_e}")
+                _write_combo_status(True, reason="SceneF third-party source; A-List eligibility unverified")
+                _record_live_failure("AMC failed; SceneF fallback used", explicit_block=_saw_explicit_browser_block)
+                _finish_combo("scenef", explicit_block=_saw_explicit_browser_block)
+                print(f"[INFO] SceneF backup used: {theatre_name} {wanted}: {len(_scenef_rows)} third-party slots")
+                return _scenef_rows
+
         debug_dir = _AMCPath("build/amc_debug")
         debug_dir.mkdir(parents=True, exist_ok=True)
         debug_path = debug_dir / f"{_cache_slug}-{wanted}.html"
@@ -3061,7 +3141,7 @@ def main() -> int:
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
         "non-movie filtering, original-film metadata lookup, stabilized AMC browser fetch, "
-        "AMC A-List metadata + clean public logs v47 -> "
+        "AMC A-List metadata + clean public logs v48 -> "
         f"{args.output_notebook}"
     )
     return 0

@@ -4079,5 +4079,198 @@ class AttachedOutputContextTests(unittest.TestCase):
         self.assertTrue(ctx.relax_runtime)
 
 
+
+class SceneFFallbackTests(unittest.TestCase):
+    """No actual SceneF network access: contract-fixture and failure tests."""
+
+    def _rows(self, mapping):
+        return [{"movie_title": title, "show_time": at} for title, times in mapping.items() for at in times]
+
+    def test_only_strict_improvement_can_replace_cached_schedule(self):
+        from scripts.scenef_showtimes import improves_coverage
+        old = self._rows({"Test Movie A": ["1:00 pm", "6:00 pm"],
+                          "Test Movie B": ["2:00 pm"]})
+        sparse = self._rows({"Test Movie A": ["1:00 pm"]})
+        equal = list(old)
+        better = old + self._rows({"Test Movie B": ["9:00 pm"]})
+        missing_film = self._rows({"Test Movie A": ["1:00 pm", "6:00 pm", "9:00 pm", "10:00 pm"]})
+        self.assertFalse(improves_coverage(sparse, old))
+        self.assertFalse(improves_coverage(equal, old))
+        self.assertFalse(improves_coverage(missing_film, old))
+        self.assertTrue(improves_coverage(better, old))
+        # Repeated records, including format variations, aren't more showtimes.
+        self.assertFalse(improves_coverage(old + [dict(old[0])], old))
+        self.assertFalse(improves_coverage(self._rows({"One Movie": ["8:00 pm"]}), []))
+        self.assertTrue(improves_coverage(self._rows({
+            "One Movie": ["1:00 pm", "8:00 pm"], "Second": ["4:00 pm"]
+        }), []))
+
+    def _feed(self, *, verified="2026-10-24T14:00:00Z", name="AMC Orange 30"):
+        return {
+            "region": "orangecounty", "timezone": "America/Los_Angeles",
+            "data_as_of": "2026-10-24T15:00:00Z",
+            "venues": [{"id": "amc-orange", "name": name}],
+            "films": [{"key": "film-a", "title": "Test Movie A", "runtimeMin": 114},
+                      {"key": "film-b", "title": "Test Movie B", "runtimeMin": 95}],
+            "screenings": [
+                {"venueId": "amc-orange", "filmKey": "film-a",
+                 "startsAt": "2026-10-25T19:00:00-07:00", "nightOf": "2026-10-25",
+                 "verified_at": verified, "confidence": "single-source",
+                 "source_tier": "licensed-feed", "freshness": {"status": "current", "source_status": "ok"}},
+                {"venueId": "amc-orange", "filmKey": "film-b",
+                 "startsAt": "2026-10-25T21:00:00-07:00", "nightOf": "2026-10-25",
+                 "verified_at": verified, "confidence": "single-source",
+                 "source_tier": "licensed-feed", "freshness": {"status": "current", "source_status": "ok"}},
+            ],
+        }
+
+    def test_contract_parser_rejects_wrong_date_venue_and_staleness(self):
+        import copy
+        from datetime import timezone
+        from scripts.scenef_showtimes import parse_combo
+        now = datetime(2026, 10, 24, 16, 0, tzinfo=timezone.utc)
+        rows, meta = parse_combo(self._feed(), "AMC Orange 30", "2026-10-25", now=now)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["show_date"], "2026-10-25")
+        self.assertTrue(all(r["scenef_alist_unverified"] for r in rows))
+        self.assertIn('scenef.com', meta['scenef_url'])
+        self.assertEqual(parse_combo(self._feed(), "AMC Woodbridge 5", "2026-10-25", now=now)[0], [])
+        self.assertEqual(parse_combo(self._feed(), "AMC Orange 30", "2026-10-24", now=now)[0], [])
+        stale = copy.deepcopy(self._feed(verified="2026-10-15T00:00:00Z"))
+        self.assertEqual(parse_combo(stale, "AMC Orange 30", "2026-10-25", now=now)[0], [])
+        wrong = copy.deepcopy(self._feed())
+        wrong['screenings'][0]['confidence'] = 'disputed'
+        wrong['screenings'][1]['freshness']['retained'] = True
+        self.assertEqual(parse_combo(wrong, "AMC Orange 30", "2026-10-25", now=now)[0], [])
+        # Two chain candidates with the same name must not choose randomly.
+        ambiguous = copy.deepcopy(self._feed())
+        ambiguous['venues'].append({"id":"amc-orange-other", "name":"AMC Orange 30"})
+        self.assertEqual(parse_combo(ambiguous, "AMC Orange 30", "2026-10-25", now=now)[0], [])
+
+    def test_scenef_provenance_preserves_third_party_identity_across_cache(self):
+        showing = [{"theater": "AMC Orange 30", "date": "2026-10-25"}]
+        key = postprocess._combo_key('AMC Orange 30', '2026-10-25')
+        today = '2026-10-25'
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            source_dir = root / 'scenef'
+            source_dir.mkdir()
+            record = {"provider": "scenef", "theater": "AMC Orange 30", "date": today,
+                      "fetched_on": today, "verified_at": "2026-10-24T14:00:00Z",
+                      "scenef_url": "https://scenef.com/theater/amc-orange?region=orangecounty"}
+            (source_dir / 'accepted.json').write_text(json.dumps(record), encoding='utf-8')
+            current = postprocess.read_scenef_provenance(source_dir, today)
+            self.assertEqual(current[key]['verified_on'], '2026-10-24')
+            self.assertEqual(postprocess.resolve_scenef_provenance(showing, set(), {}, current, {}), current)
+            prior_file = root / 'previous.html'
+            prior_file.write_text('<script id="showtimes-data" type="application/json">'
+                                  + json.dumps({'amc_fetch_dates': [dict(record, verified_on='2026-10-24')]})
+                                  + '</script>', encoding='utf-8')
+            previous = postprocess.read_previous_scenef_provenance(prior_file, today)
+            self.assertEqual(postprocess.resolve_scenef_provenance(showing, {key}, previous, {}, {}), previous)
+            # A fresh AMC fetch takes precedence over any old SceneF metadata.
+            self.assertFalse(postprocess.resolve_scenef_provenance(showing, {key}, previous, current,
+                                                                   {key: '2026-10-25'}))
+            td = BeautifulSoup('<td>AMC Orange 30<br/>• 2026-10-25: 7:00 pm</td>', 'html.parser').td
+            before = td.get_text('\n', strip=True)
+            soup = BeautifulSoup('<html></html>', 'html.parser')
+            postprocess.label_showtime_fetch_dates(soup, td, {key: None}, current)
+            self.assertEqual(before, td.get_text('\n', strip=True))
+            self.assertIn('verified 2026-10-24', td.select_one('.showtime-fetch-date')['data-label'])
+
+    def test_blocked_amc_uses_scenef_only_when_replacement_is_richer(self):
+        from scripts import scenef_showtimes
+        source = NotebookPatcherTests()._patched_source()
+        ns = {}
+        exec(compile(source, "<scenef-live-fallback-test>", "exec"), ns)
+        scraper = ns['scrape_amc_showtimes_for_date']
+        ns['fetch_html_with_browser'] = lambda url, params=None, timeout_ms=30000: (200, '<html>Access Denied</html>')
+        movie_times = [
+            ('Example Feature A', '7:00 pm', True),
+            ('Example Feature B', '8:00 pm', False),
+        ]
+        base = [
+            {"movie_title": t, "theatre": "AMC Orange 30", "show_date": "2026-10-25",
+             "show_time": clock, "a_list_excluded": excluded}
+            for t, clock, excluded in movie_times
+        ]
+        extra = {"movie_title": "Example Feature C", "theatre": "AMC Orange 30",
+                 "show_date": "2026-10-25", "show_time": "9:00 pm", "a_list_excluded": False}
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / 'docs').mkdir()
+            (root / 'docs/last_run_utc.txt').write_text(datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'))
+            payload = {'showtimes': [
+                {'movie': r['movie_title'], 'theater': 'AMC Orange 30', 'date': '2026-10-25',
+                 'start': r['show_time'], 'a_list_excluded': r['a_list_excluded']}
+                for r in base
+            ]}
+            (root / 'docs/index.html').write_text('<html><script id="showtimes-data" type="application/json">'
+                                                  + json.dumps(payload) + '</script></html>')
+            meta = {'verified_at': '2026-10-25T13:00:00Z',
+                    'scenef_url': 'https://scenef.com/theater/amc-orange?region=orangecounty'}
+            oldcwd = Path.cwd()
+            try:
+                os.chdir(root)
+                with patch.object(scenef_showtimes, 'get_combo', return_value=(list(base), meta)):
+                    rows = scraper(None, 'AMC Orange 30', 'https://example.invalid', ns['date'](2026, 10, 25))
+                self.assertEqual(len(rows), 2)
+                self.assertTrue((root/'build/amc_previous_report_fallback.txt').exists())
+                # The second isolated run sees a fuller SceneF feed.
+                (root/'build/amc_previous_report_fallback.txt').unlink()
+                with patch.object(scenef_showtimes, 'get_combo', return_value=(base+[extra], dict(meta))):
+                    rows = scraper(None, 'AMC Orange 30', 'https://example.invalid', ns['date'](2026, 10, 25))
+                self.assertEqual(len(rows), 3)
+                self.assertTrue(any(r['a_list_excluded'] for r in rows))
+                self.assertEqual(ns['_AMC_LIVE_METRICS']['combos_scenef'], 1)
+                self.assertTrue((root/'build/scenef_combo_sources/amc-orange-30-2026-10-25.json').exists())
+                self.assertFalse((root/'build/amc_previous_report_fallback.txt').exists())
+            finally:
+                os.chdir(oldcwd)
+
+    def test_public_report_marks_scenef_source_and_preserves_origin(self):
+        template = """<html><head></head><body><main><table class="dataframe"><thead><tr>
+        <th>movie_title</th><th>rt_c/a</th><th>imdb_rating</th><th>showtimes</th><th>runtime</th>
+        </tr></thead><tbody><tr><td>Example Feature</td><td>81/70</td><td>7.2</td>
+        <td>AMC Orange 30<br/>• 2026-10-25: 7:00 pm⛔ [Laser at AMC]</td><td>1h 45m</td>
+        </tr></tbody></table></main></body></html>"""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root/'docs').mkdir()
+            (root/'build/scenef_combo_sources').mkdir(parents=True)
+            (root/'docs/index.html').write_text(template, encoding='utf-8')
+            record = {
+                'provider': 'scenef', 'theater': 'AMC Orange 30', 'date': '2026-10-25',
+                'verified_at': '2026-10-23T21:00:00Z', 'fetched_on': '2026-10-24',
+                'scenef_url': 'https://scenef.com/theater/amc-orange?region=orangecounty'
+            }
+            (root/'build/scenef_combo_sources/a.json').write_text(json.dumps(record), encoding='utf-8')
+            cwd = Path.cwd()
+            try:
+                os.chdir(root)
+                with patch.object(postprocess, 'HTML_PATH', Path('docs/index.html')), \
+                     patch.object(postprocess, 'wikipedia_thumbnail_url', return_value=None):
+                    postprocess.main()
+            finally:
+                os.chdir(cwd)
+            html = BeautifulSoup((root/'docs/index.html').read_text(encoding='utf-8'), 'html.parser')
+            payload = json.loads(html.select_one('#showtimes-data').string)
+            slot = payload['amc_fetch_dates'][0]
+            self.assertEqual(slot['provider'], 'scenef')
+            self.assertEqual(slot['verified_on'], '2026-10-23')
+            self.assertIsNone(slot['fetched_on'])
+            self.assertIn('SceneF fetched 2026-10-24, verified 2026-10-23', html.select_one('.showtime-fetch-date')['data-label'])
+            self.assertIn('SceneF third-party showtimes', html.get_text(' ', strip=True))
+            self.assertIsNotNone(html.find(id='scenef-schedule-notice'))
+            self.assertTrue(html.select_one('a[href="https://scenef.com/week?region=orangecounty"]'))
+            self.assertEqual(len(payload['showtimes']), 1)
+            self.assertTrue(payload['showtimes'][0]['a_list_excluded'])
+
+    def test_patch_adds_comparison_without_calling_scenef_for_healthy_amc(self):
+        from scripts.patch_notebook_titles import AMC_SCRAPE_REPLACEMENT
+        self.assertIn('if _coverage_problem or _no_rows:', AMC_SCRAPE_REPLACEMENT)
+        self.assertIn('_scenef_improves(_scenef_rows, prior)', AMC_SCRAPE_REPLACEMENT)
+        self.assertIn('_finish_combo("scenef"', AMC_SCRAPE_REPLACEMENT)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
