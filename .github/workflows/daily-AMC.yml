@@ -73,6 +73,7 @@ jobs:
             # Do not clear build/amc_combo_cache: fresh rows recovered earlier
             # in this workflow are still useful for intermittent AMC blocks.
             rm -f build/amc_live_metrics.json build/amc_previous_report_fallback.txt
+            rm -rf build/scenef_combo_sources
             echo "[INFO] Papermill attempt ${attempt}/${max_attempts}"
 
             set +e
@@ -100,6 +101,7 @@ jobs:
                   f"reused={data.get('combos_reused', 0)} "
                   f"mixed={data.get('combos_mixed', 0)} "
                   f"cached={data.get('combos_cached', 0)} "
+                  f"scenef={data.get('combos_scenef', 0)} "
                   f"failed={data.get('combos_failed', 0)} "
                   f"static={data.get('static_requests', 0)} "
                   f"browser={data.get('browser_launches', 0)} "
