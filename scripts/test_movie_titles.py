@@ -4718,5 +4718,185 @@ class SceneFFallbackTests(unittest.TestCase):
         self.assertNotIn('No fresh AMC showtimes were parsed for the requested dates.', DF_SHOW_INSERT)
 
 
+class V53ProviderIdentityRegressionTests(unittest.TestCase):
+    """Same-name remakes and exact-ID language recovery, without title hacks."""
+
+    @staticmethod
+    def _production_imdb_function():
+        import csv
+        from datetime import date
+        from typing import Dict, List, Optional, Tuple
+        nb = json.loads((Path(__file__).parent.parent / "notebooks/AMC_Scraper_5.ipynb").read_text())
+        patched = patch_notebook(nb)
+        source = "\n".join(
+            "".join(cell.get("source", [])) for cell in patched["cells"]
+            if cell.get("cell_type") == "code"
+            and not "".join(cell.get("source", [])).lstrip().startswith("!")
+        )
+        tree = ast.parse(source)
+        fn = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "build_imdb_lookup")
+        class FakeFuzz:
+            @staticmethod
+            def ratio(a, b):
+                return 100 if a == b else 0
+        def safe_int(value):
+            try:
+                return int(value)
+            except (ValueError, TypeError):
+                return None
+        def safe_float(value):
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return None
+        ns = {
+            "requests": __import__("requests"), "Dict": Dict, "List": List,
+            "Optional": Optional, "Tuple": Tuple, "gzip": gzip, "csv": csv,
+            "date": date, "re": re, "fuzz": FakeFuzz,
+            "candidate_title_variants": candidate_title_variants,
+            "normalize_title_for_match": lambda title: re.sub(r"[^a-z0-9]+", " ", title.casefold()).strip(),
+            "metadata_release_year_hint": metadata_release_year_hint,
+            "_safe_int": safe_int, "_safe_float": safe_float,
+            "_download_to_path": lambda *args: None,
+            "IMDB_BASICS_URL": "offline:basics", "IMDB_RATINGS_URL": "offline:ratings",
+        }
+        exec(compile(ast.Module(body=[fn], type_ignores=[]), "<v53-imdb>", "exec"), ns)
+        return ns
+
+    def test_same_title_imdb_respects_amc_runtime_over_old_film_vote_counts(self):
+        ns = self._production_imdb_function()
+        with tempfile.TemporaryDirectory() as directory:
+            basic = Path(directory) / "title.basics.tsv.gz"
+            rating = Path(directory) / "title.ratings.tsv.gz"
+            with gzip.open(basic, "wt") as stream:
+                stream.write("tconst\ttitleType\tprimaryTitle\toriginalTitle\tisAdult\tstartYear\truntimeMinutes\n")
+                stream.write("tt10000001\tmovie\tSample Breeder\tSample Breeder\t0\t2020\t107\n")
+                stream.write("tt10000002\tmovie\tSample Breeder\tSample Breeder\t0\t2026\t97\n")
+            with gzip.open(rating, "wt") as stream:
+                stream.write("tconst\taverageRating\tnumVotes\n")
+                stream.write("tt10000001\t5.0\t10000\n")
+                stream.write("tt10000002\t7.2\t10\n")
+            ns["IMDB_BASICS_GZ"] = basic
+            ns["IMDB_RATINGS_GZ"] = rating
+            match = ns["build_imdb_lookup"](None, ["Sample Breeder"], {"Sample Breeder": 97})
+            self.assertEqual(match["Sample Breeder"][2], "https://www.imdb.com/title/tt10000002/")
+            repertory = ns["build_imdb_lookup"](None, ["Sample Breeder"], {"Sample Breeder": 107})
+            self.assertEqual(repertory["Sample Breeder"][2], "https://www.imdb.com/title/tt10000001/")
+
+    def test_short_reused_title_rt_checks_current_release_and_rejects_old(self):
+        fixture = NotebookPatcherTests()
+        source = fixture._patched_source()
+        ns = {}
+        exec(compile(source, "<v53-rt>", "exec"), ns)
+        year = ns["date"].today().year
+        calls = []
+        def fetch(session, url, params=None, tries=2):
+            calls.append(url)
+            if url.endswith(f"/m/sample_breeder_{year}"):
+                return 200, (f"<h1>Sample Breeder</h1><p>Release Date (Theaters) Oct 26, {year}</p>"
+                             '<p>Runtime 1h 37m</p><score-board tomatometerscore="79"></score-board>')
+            if url.endswith("/m/sample_breeder"):
+                return 200, ("<h1>Sample Breeder</h1><p>Release Date Jan 1, 2020</p>"
+                             '<p>Runtime 1h 47m</p><score-board tomatometerscore="60"></score-board>')
+            return 404, ""
+        ns["fetch_html"] = fetch
+        audience, critic, url = ns["rt_get_scores"](
+            None, "Sample Breeder", {}, runtime_min=97
+        )
+        self.assertEqual(critic, 79)
+        self.assertTrue(url.endswith(f"/m/sample_breeder_{year}"))
+        self.assertFalse(any("/napi/search/" in u for u in calls))
+
+    def test_short_title_does_not_accept_older_provider_year_with_wrong_runtime(self):
+        source = NotebookPatcherTests()._patched_source()
+        ns = {}
+        exec(compile(source, "<v53-repertory>", "exec"), ns)
+        year = ns["date"].today().year
+        def fetch(session, url, params=None, tries=2):
+            if "/napi/search/" in url:
+                return 200, json.dumps({"movies": [{
+                    "name": "Sample Breeder", "year": year - 6,
+                    "url": "/m/sample_breeder",
+                }]})
+            if url.endswith("/m/sample_breeder"):
+                return 200, (
+                    f"<h1>Sample Breeder</h1>Release Date (Theaters) Jan 1, {year - 6} "
+                    'Runtime 1h 47m <score-board tomatometerscore="60"></score-board>'
+                )
+            return 404, ""
+        ns["fetch_html"] = fetch
+        # AMC says 97m. The provider's 107m older release is not good enough.
+        self.assertEqual(
+            ns["rt_get_scores"](None, "Sample Breeder", {}, runtime_min=97),
+            (None, None, None),
+        )
+        # A 107m AMC repertory screening can still match the older film.
+        self.assertEqual(
+            ns["rt_get_scores"](None, "Sample Breeder", {}, runtime_min=107)[1],
+            60,
+        )
+
+    def test_short_title_poster_identity_rejects_conflicting_runtime(self):
+        context = posters.MovieContext(
+            "Sample Breeder", "Sample Breeder", None, 97,
+            frozenset(), False,
+        )
+        def item(runtime):
+            return {
+                "id": "Q123",
+                "claims": {
+                    "P31": [{"mainsnak": {"datavalue": {"value": {"id": "Q11424"}}}}],
+                    "P2047": [{"mainsnak": {"datavalue": {"value": {
+                        "amount": "+" + str(runtime), "unit": "http://www.wikidata.org/entity/Q7727"
+                    }}}}],
+                },
+            }
+        self.assertIn("ambiguous-runtime", posters._entity_contradictions(item(107), context))
+        self.assertNotIn("ambiguous-runtime", posters._entity_contradictions(item(97), context))
+
+    def test_exact_imdb_wikidata_query_fallback_restores_japanese(self):
+        title = "The Irregular at Magic High School The Movie -Yotsuba Succession Arc-"
+        imdb = "tt38652027"
+        qid = "Q135011207"
+        calls = []
+        def fake_api(base, **kwargs):
+            calls.append((base, kwargs))
+            if kwargs.get("list") == "search":
+                return {"query": {"search": []}}
+            if base == posters.WIKIDATA_QUERY_API:
+                self.assertIn(imdb, kwargs["query"])
+                return {"results": {"bindings": [{"item": {"value": "http://www.wikidata.org/entity/" + qid}}]}}
+            return None
+        entity = {
+            "id": qid,
+            "labels": {"en": {"value": "The Irregular at Magic High School The Movie: Yotsuba Succession Arc"}},
+            "aliases": {}, "descriptions": {"en": {"value": "2026 Japanese animated film"}},
+            "sitelinks": {},
+            "claims": {
+                "P31": [{"mainsnak": {"datavalue": {"value": {"id": "Q11424"}}}}],
+                "P345": [{"mainsnak": {"datavalue": {"value": imdb}}}],
+                "P364": [{"mainsnak": {"datavalue": {"value": {"id": "Q5287"}}}}],
+            },
+        }
+        context = posters.MovieContext(title, title, None, 104, frozenset(), False)
+        with patch.object(posters, "_api_json", side_effect=fake_api), \
+             patch.object(posters, "_wikidata_entities", return_value=[entity]), \
+             patch.object(posters, "_wikidata_labels", side_effect=lambda qids: (
+                 {"Q5287": "japanese"} if "Q5287" in qids else {}
+             )):
+            result = posters._audience_entity_for_context(context, imdb_id=imdb, wikipedia_page=None)
+            self.assertIsNotNone(result)
+            labels = posters.classify_audience_focus(context, result)
+        self.assertIn("Japanese", labels.tags)
+        self.assertTrue(any(base == posters.WIKIDATA_QUERY_API for base, _ in calls))
+
+    def test_wikidata_query_never_accepts_unverified_imdb_identity(self):
+        with patch.object(posters, "_api_json", side_effect=[
+            {"query": {"search": []}},
+            {"results": {"bindings": [{"item": {"value": "http://www.wikidata.org/entity/Q999"}}]}},
+        ]):
+            self.assertEqual(posters._wikidata_qids_for_imdb("not-an-imdb-id"), [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

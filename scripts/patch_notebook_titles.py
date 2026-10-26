@@ -382,6 +382,14 @@ RT_GET_SCORES_REPLACEMENT = r'''def rt_get_scores(
         if runtime_min is not None and page_runtime is not None:
             if abs(int(page_runtime) - int(runtime_min)) > 20:
                 return False
+        # For very short reused titles, a years-old page with a merely
+        # approximate runtime is too easy to confuse with a new film. This
+        # remains safe for genuine repertory screenings whose runtime agrees.
+        if (hinted_year is None and runtime_min is not None
+                and page_year is not None and page_year < date.today().year - 2
+                and len(re.findall(r"[A-Za-z0-9]+", query_title)) <= 2
+                and (page_runtime is None or abs(int(page_runtime) - int(runtime_min)) > 5)):
+            return False
         return True
 
     def _canonical_url(soup: BeautifulSoup, fallback: str) -> str:
@@ -421,8 +429,14 @@ RT_GET_SCORES_REPLACEMENT = r'''def rt_get_scores(
             if debug:
                 print(f"[RT] Rejected identity mismatch: {rt_url}")
             return None
-        aud, crit = rt_parse_scores(decoded, soup)
         page_year = _page_release_year(soup)
+        if (hinted_year is None and best_blank_year is not None
+                and page_year is not None
+                and abs(page_year - best_blank_year) > 1):
+            # An old scored movie must not displace a newly verified exact
+            # release just because the newer film has no RT scores yet.
+            return None
+        aud, crit = rt_parse_scores(decoded, soup)
         canonical = _canonical_url(soup, rt_url)
         result = (aud, crit, canonical)
         if aud is not None or crit is not None:
@@ -434,6 +448,27 @@ RT_GET_SCORES_REPLACEMENT = r'''def rt_get_scores(
 
     current_year = date.today().year
     hinted_year = metadata_release_year_hint(title, reference_year=current_year)
+
+    # Short, reused titles are the most ambiguous provider-search results.
+    # Try a known-year URL for the current release only when AMC supplies a
+    # runtime, and validate BOTH the page's year and its runtime. This is a
+    # probe, not an assumption that every current showing is a new film:
+    # repertory films continue through ordinary title search if it misses.
+    if hinted_year is None and runtime_min is not None:
+        for candidate_title in candidate_title_variants(title)[:2]:
+            if not 1 <= len(re.findall(r"[A-Za-z0-9]+", candidate_title)) <= 2:
+                continue
+            slug = rt_slugify(candidate_title)
+            if not slug:
+                continue
+            early = _fetch_validated(
+                f"{RT_BASE}/m/{slug}_{current_year}", candidate_title, current_year
+            )
+            if early is not None:
+                cache[cache_key] = early
+                return early
+            if best_blank_year == current_year:
+                break
 
     def _search_item_year(item, path: str) -> Optional[int]:
         raw_year = item.get("year") or item.get("releaseYear") or item.get("release_year")
@@ -2954,6 +2989,84 @@ def _patch_imdb_year_priority(source: str) -> tuple[str, bool]:
     return "".join(lines[:start]) + updated_tuple + "".join(lines[end:]), True
 
 
+def _patch_imdb_amc_runtime_evidence(source: str) -> tuple[str, bool]:
+    """Use AMC's runtime ahead of IMDb vote totals for same-title identities.
+
+    Modify only the unique build_imdb_lookup() function and its call; the
+    committed source notebook is never changed directly.
+    """
+    functions = _top_level_functions(source, "build_imdb_lookup")
+    if not functions:
+        return source, False
+    if len(functions) != 1:
+        raise RuntimeError("Expected a single build_imdb_lookup function")
+    fn = functions[0]
+    if len(fn.args.args) != 2:
+        raise RuntimeError("IMDb lookup signature changed")
+    lines = source.splitlines(keepends=True)
+    definition = lines[fn.lineno - 1]
+    if not definition.strip().startswith("def build_imdb_lookup(") or "):" not in definition:
+        # The actual notebook returns a typing annotation, while lightweight
+        # fixture functions may not; accept either validated signature.
+        if not definition.strip().startswith("def build_imdb_lookup(") or ") ->" not in definition:
+            raise RuntimeError("IMDb lookup definition format changed")
+    if "titles: List[str]) ->" in definition:
+        lines[fn.lineno - 1] = definition.replace(
+            "titles: List[str]) ->", "titles: List[str], amc_runtimes=None) ->", 1
+        )
+    elif "titles):" in definition:
+        lines[fn.lineno - 1] = definition.replace("titles):", "titles, amc_runtimes=None):", 1)
+    else:
+        raise RuntimeError("IMDb lookup definition format changed")
+    source = "".join(lines)
+    definition_now = lines[fn.lineno - 1]
+    source = source.replace(
+        definition_now,
+        definition_now + "    amc_runtimes = amc_runtimes or {}\n", 1,
+    )
+    score_marker = "            score_key = (\n                year_match,\n                exact,\n                fuzz_score,\n"
+    if source.count(score_marker) != 1:
+        raise RuntimeError("IMDb scoring tuple changed")
+    source = source.replace(score_marker, """            amc_runtime = amc_runtimes.get(title)
+            candidate_runtime = cand.get('runtimeMinutes')
+            runtime_rank = 0
+            if amc_runtime is not None and candidate_runtime is not None:
+                runtime_delta = abs(int(amc_runtime) - int(candidate_runtime))
+                runtime_rank = (3 if runtime_delta <= 5 else
+                                2 if runtime_delta <= 10 else
+                                1 if runtime_delta <= 20 else -2)
+            score_key = (
+                year_match,
+                exact,
+                fuzz_score,
+                runtime_rank,
+""", 1)
+    call = "build_imdb_lookup(session, movie_titles)"
+    if source.count(call) > 1:
+        raise RuntimeError("Expected at most one IMDb lookup invocation")
+    if call in source:
+        source = source.replace(call, """build_imdb_lookup(session, movie_titles, {
+    title: int(values.iloc[0])
+    for title in movie_titles
+    for values in [df_show.loc[df_show['movie_title'] == title, 'runtime_min'].dropna()]
+    if not values.empty and not re.search(
+        r'\\b(?:q\\s*&\\s*a|double\\s+feature|marathon|live\\s+event|concert|filmmaker)\\b',
+        title, flags=re.IGNORECASE
+    )
+})""", 1)
+    # After year_match was inserted at the start of score_key in an earlier
+    # version, the original acceptance guard still inspected the OLD tuple
+    # offsets. That silently dropped many otherwise exact movie identities
+    # and allowed less reliable downstream title-only backfills to take over.
+    old_guard = "chosen_key[0] == 1 or chosen_key[1] >= 90"
+    if old_guard in source:
+        source = source.replace(
+            old_guard, "chosen_key[1] == 1 or chosen_key[2] >= 90", 1
+        )
+    ast.parse(source)
+    return source, True
+
+
 def _validate_imdb_patch(source: str) -> None:
     """
     Statically validate the transformed build_imdb_lookup().
@@ -3013,6 +3126,7 @@ def patch_notebook(notebook: dict) -> dict:
     df_show_insertions = 0
     imdb_function_patches = 0
     imdb_year_priority_patches = 0
+    imdb_runtime_patches = 0
     rt_parser_replacements = 0
     rt_get_scores_replacements = 0
     rt_lookup_loop_replacements = 0
@@ -3074,6 +3188,8 @@ def patch_notebook(notebook: dict) -> dict:
         imdb_function_patches += int(did_patch_imdb)
         source, did_patch_imdb_year = _patch_imdb_year_priority(source)
         imdb_year_priority_patches += int(did_patch_imdb_year)
+        source, did_patch_imdb_runtime = _patch_imdb_amc_runtime_evidence(source)
+        imdb_runtime_patches += int(did_patch_imdb_runtime)
 
         source, did_patch_rt = _replace_function(
             source,
@@ -3163,6 +3279,7 @@ def patch_notebook(notebook: dict) -> dict:
         "df_show non-movie filter": df_show_insertions,
         "build_imdb_lookup patch": imdb_function_patches,
         "IMDb original-year priority patch": imdb_year_priority_patches,
+        "IMDb AMC-runtime identity patch": imdb_runtime_patches,
         "rt_parse_scores replacement": rt_parser_replacements,
         "rt_get_scores replacement": rt_get_scores_replacements,
         "RT runtime-aware lookup loop": rt_lookup_loop_replacements,
@@ -3213,7 +3330,7 @@ def main() -> int:
     print(
         "[OK] AST-scoped patch applied and validated: title normalization, "
         "non-movie filtering, original-film metadata lookup, stabilized AMC browser fetch, "
-        "AMC A-List metadata + clean public logs v51 -> "
+        "AMC A-List metadata + clean public logs v53 -> "
         f"{args.output_notebook}"
     )
     return 0

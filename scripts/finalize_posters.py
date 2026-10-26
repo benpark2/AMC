@@ -81,6 +81,7 @@ from scripts.movie_titles import (
 HTML_PATH = Path("docs/index.html")
 ENWIKI_API = "https://en.wikipedia.org/w/api.php"
 WIKIDATA_API = "https://www.wikidata.org/w/api.php"
+WIKIDATA_QUERY_API = "https://query.wikidata.org/sparql"
 COMMONS_FILE_REDIRECT = "https://commons.wikimedia.org/wiki/Special:Redirect/file/"
 USER_AGENT = (
     "AMC-weekend-movie-report/6.1 "
@@ -1636,12 +1637,37 @@ def _wikidata_qids_for_imdb(imdb_id: str) -> list[str]:
     try:
         hits = data["query"]["search"] if data else []
     except (KeyError, TypeError):
-        return []
-    return [
+        hits = []
+    qids = [
         str(hit.get("title"))
         for hit in hits
-        if QID_RE.fullmatch(str(hit.get("title", "")))
+        if isinstance(hit, dict) and QID_RE.fullmatch(str(hit.get("title", "")))
     ]
+    if qids:
+        return qids
+    # MediaWiki's haswbstatement search can miss recent items even when an
+    # exact IMDb (P345) identifier is already attached. Query by property as
+    # a bounded second route. The returned entities must still prove P345,
+    # title identity, and year/runtime compatibility at the call site.
+    data = _api_json(
+        WIKIDATA_QUERY_API,
+        format="json",
+        query=(
+            "SELECT ?item WHERE { ?item <http://www.wikidata.org/prop/direct/P345> "
+            f'"{imdb_id.lower()}" . }} LIMIT 5'
+        ),
+    )
+    try:
+        bindings = data["results"]["bindings"] if data else []
+    except (KeyError, TypeError):
+        return []
+    results: list[str] = []
+    for binding in bindings:
+        uri = ((binding.get("item") or {}).get("value") or "") if isinstance(binding, dict) else ""
+        qid = uri.rstrip("/").rsplit("/", 1)[-1]
+        if QID_RE.fullmatch(qid) and qid not in results:
+            results.append(qid)
+    return results
 
 
 def _wikidata_qids_for_title(title: str, limit: int = 12) -> list[str]:
@@ -2633,6 +2659,13 @@ def _entity_contradictions(entity: dict, context: MovieContext) -> list[str]:
         runtimes = _entity_runtimes(entity)
         if runtimes and min(abs(r - context.runtime_min) for r in runtimes) > 20:
             reasons.append("runtime")
+        elif (context.expected_year is None and not context.spoken_languages and runtimes
+              and len(re.findall(r"[A-Za-z0-9]+", context.canonical_title)) <= 2
+              and min(abs(r - context.runtime_min) for r in runtimes) > 5):
+            # A short reused title without a reliable original-year hint is
+            # too ambiguous to accept from a merely approximate runtime.
+            # A same-title film 10 minutes longer could be a distinct release.
+            reasons.append("ambiguous-runtime")
 
     if context.spoken_languages:
         languages = _entity_languages(entity)
