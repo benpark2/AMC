@@ -4193,6 +4193,89 @@ class AMCShowtimeFetchDateTests(unittest.TestCase):
         )
         self.assertEqual(td2.select_one(".showtime-fetch-date")["data-source"], "scenef")
 
+    def test_same_pacific_day_previous_report_amc_has_no_visible_badge(self):
+        """A cached schedule fetched earlier today is not visually stale."""
+        soup = BeautifulSoup("<html></html>", "html.parser")
+        c = ("amc woodbridge 5", "2026-11-01")
+        td = BeautifulSoup(
+            "<td>AMC Orange 30<br/>• 2026-10-24: 7:00 pm⛔<br/>"
+            "AMC Tustin 14 @ The District<br/>• 2026-10-25: 8:00 pm<br/>"
+            "AMC Woodbridge 5<br/>• 2026-11-01: 4:30 pm</td>",
+            "html.parser",
+        ).td
+        original = td.get_text("\n", strip=True)
+        # No current-live marker: all three combinations came from a prior report.
+        dates = {self.a: "2026-10-25", self.b: "2026-10-24", c: None}
+        postprocess.label_showtime_fetch_dates(
+            soup, td, dates, current_live_combos=set(), report_day="2026-10-25"
+        )
+        self.assertEqual(td.get_text("\n", strip=True), original)
+        self.assertEqual(
+            [x["data-label"] for x in td.select(".showtime-fetch-date")],
+            ["Fetched 10/24/26", "Old"],
+        )
+        self.assertTrue(postprocess.parse_showtimes_blob(original)[0]["a_list_excluded"])
+        # An inherited fetch date is retained rather than updated to the report day.
+        self.assertEqual(dates[self.b], "2026-10-24")
+
+    def test_same_day_scenef_attribution_always_remains_visible(self):
+        soup = BeautifulSoup("<html></html>", "html.parser")
+        td = BeautifulSoup(
+            "<td>AMC Orange 30<br/>• 2026-10-24: 7:00 pm</td>", "html.parser"
+        ).td
+        postprocess.label_showtime_fetch_dates(
+            soup, td, {self.a: "2026-10-25"},
+            scenef_provenance={self.a: {
+                "verified_on": "2026-10-25", "scenef_fetched_on": "2026-10-25"
+            }},
+            report_day="2026-10-25",
+        )
+        marker = td.select_one(".showtime-fetch-date")
+        self.assertEqual(marker["data-source"], "scenef")
+        self.assertEqual(marker["data-label"], "SceneF 10/25/26")
+
+    def test_main_same_day_cached_amc_hides_badge_but_keeps_provenance(self):
+        from datetime import datetime, timezone
+        from zoneinfo import ZoneInfo
+        report_day = datetime.now(timezone.utc).astimezone(
+            ZoneInfo("America/Los_Angeles")
+        ).date().isoformat()
+        html = ("<html><head></head><body><main><table class='dataframe'>"
+                "<thead><tr><th>movie_title</th><th>rt_c/a</th>"
+                "<th>imdb_rating</th><th>showtimes</th><th>runtime</th>"
+                "</tr></thead><tbody><tr><td>Test Feature</td><td>81/70</td>"
+                "<td>7.2</td><td>AMC Orange 30<br/>• " + report_day +
+                ": 7:00 pm⛔</td><td>1h 45m</td></tr></tbody></table>"
+                "</main></body></html>")
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "docs").mkdir()
+            (root / "build").mkdir()
+            (root / "docs/index.html").write_text(html, encoding="utf-8")
+            (root / "build/amc_previous_report_fallback.txt").write_text(
+                f"AMC Orange 30 | {report_day}\n", encoding="utf-8"
+            )
+            (root / "build/previous_report.html").write_text(
+                '<script id="showtimes-data" type="application/json">'
+                + json.dumps({"amc_fetch_dates": [{"theater": "AMC Orange 30",
+                    "date": report_day, "fetched_on": report_day}]})
+                + '</script>', encoding="utf-8"
+            )
+            oldcwd = Path.cwd()
+            try:
+                os.chdir(root)
+                with patch.object(postprocess, "HTML_PATH", Path("docs/index.html")), \
+                     patch.object(postprocess, "wikipedia_thumbnail_url", return_value=None):
+                    postprocess.main()
+            finally:
+                os.chdir(oldcwd)
+            page = BeautifulSoup((root / "docs/index.html").read_text(encoding="utf-8"), "html.parser")
+            self.assertFalse(page.select(".showtime-fetch-date"))
+            showings = json.loads(page.select_one("#showtimes-data").string)
+            rec = showings["amc_fetch_dates"][0]
+            self.assertEqual(rec["fetched_on"], report_day)
+            self.assertTrue(any(s.get("a_list_excluded") for s in showings["showtimes"]))
+
     def test_rendered_labels_preserve_original_blob_for_cache_and_a_list(self):
         soup = BeautifulSoup("<html></html>", "html.parser")
         td = soup.new_tag("td")

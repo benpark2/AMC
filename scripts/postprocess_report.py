@@ -1079,8 +1079,9 @@ def label_showtime_fetch_dates(
     soup: BeautifulSoup, show_td, fetch_dates: dict[tuple[str, str], str | None],
     scenef_provenance: dict[tuple[str, str], dict] | None = None,
     current_live_combos: set[tuple[str, str]] | None = None,
+    report_day: str | None = None,
 ) -> None:
-    """Attach a label after *each* theatre/date showtime line without changing its text.
+    """Label only AMC schedules older than the report's Pacific calendar day.
 
     The CSS-generated wording and aria-label keep original showtime table text
     intact for the next run's cached-row/A-List parser.
@@ -1100,11 +1101,12 @@ def label_showtime_fetch_dates(
         key = _combo_key(theater, match.group(1))
         fetched_on = fetch_dates.get(key)
         sf = (scenef_provenance or {}).get(key)
-        # Current workflow includes successful live AMC downloads and verified
-        # runner-local reuse. Keep the actual fetched_on in serialized JSON for
-        # future cached reports, but avoid cluttering the table with a label.
-        # Never hide third-party SceneF attribution this way.
-        if not sf and key in (current_live_combos or set()):
+        # Show no badge for AMC fetched during this workflow OR on this report's
+        # Pacific calendar day (even if recovered from an earlier report today).
+        # Preserve fetched_on in the JSON so tomorrow's report can label it.
+        # SceneF is always attributed visibly; unknown dates still show "Old".
+        if not sf and (key in (current_live_combos or set()) or
+                       (report_day is not None and fetched_on == report_day)):
             continue
         marker = soup.new_tag("span", **{"class": "showtime-fetch-date"})
         if sf:
@@ -1203,6 +1205,7 @@ def apply_final_table_schema(
     fetch_dates: dict[tuple[str, str], str | None] | None = None,
     scenef_provenance: dict[tuple[str, str], dict] | None = None,
     current_live_combos: set[tuple[str, str]] | None = None,
+    report_day: str | None = None,
 ) -> None:
     thead = table.find("thead")
     tbody = table.find("tbody")
@@ -1301,7 +1304,7 @@ def apply_final_table_schema(
         show_td = _clone_cell_as_td(soup, get_cell(idx_showtimes))
         label_showtime_fetch_dates(
             soup, show_td, fetch_dates or {}, scenef_provenance,
-            current_live_combos=current_live_combos,
+            current_live_combos=current_live_combos, report_day=report_day,
         )
         # Theatre/date badges above already communicate freshness and origin.
         # Do not append a redundant per-movie "fresh / cached / mixed" label.
@@ -1503,7 +1506,7 @@ def main() -> None:
     apply_final_table_schema(
         soup, table, movie_by_id, poster_by_id,
         fetch_dates=fetch_dates, scenef_provenance=scenef_provenance,
-        current_live_combos=set(live_dates),
+        current_live_combos=set(live_dates), report_day=fetch_today,
     )
 
     
